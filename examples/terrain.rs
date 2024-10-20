@@ -319,7 +319,7 @@ fn update_healpix(mut commands: Commands, depth: Res<HealpixDepth>) {
         .map(|i| {
             use std::f64::consts::*;
             let x = ((i % WIDTH) as f64).mul_add(TAU / WIDTH as f64, -PI);
-            let y = ((i / WIDTH) as f64).mul_add(PI / HEIGHT as f64, -FRAC_PI_2);
+            let y = ((i / WIDTH) as f64).mul_add(-PI / HEIGHT as f64, FRAC_PI_2);
             cdshealpix::nested::hash(depth.0, x, y) as usize
         })
         .collect();
