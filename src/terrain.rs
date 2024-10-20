@@ -62,6 +62,7 @@ pub fn init_terrain<R: Rng + ?Sized>(
                         .acos(),
                     )
                 })
+                .filter(|n| n.1 > 0.0)
                 .min_by(|a, b| a.1.total_cmp(&b.1))
                 .unwrap();
             if closest.1 > FRAC_PI_3 * 2.0 {

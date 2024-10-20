@@ -160,12 +160,13 @@ fn setup(
 
     commands.spawn((
         PbrBundle {
-            mesh: meshes.add(Sphere::new(5.0)),
+            mesh: meshes.add(Sphere::new(5.0).mesh().uv(32, 18)),
             material: materials.add(StandardMaterial {
                 base_color_texture: Some(image.clone()),
                 ..default()
             }),
-            transform: Transform::from_xyz(0.0, 0.0, 0.0).with_rotation(Quat::from_rotation_x(0.0)),
+            transform: Transform::from_xyz(0.0, 0.0, 0.0)
+                .with_rotation(Quat::from_rotation_x(-FRAC_PI_2)),
             ..default()
         },
         Planet,
