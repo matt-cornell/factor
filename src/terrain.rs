@@ -56,7 +56,7 @@ pub fn init_terrain<R: Rng + ?Sized>(
         .collect::<Box<[_]>>();
     let mut scratch = vec![Vec2::ZERO; len].into_boxed_slice();
     let mut neighbors = Vec::new();
-    for _ in 0..2 {
+    for _ in 0..5 {
         std::mem::swap(&mut scratch, &mut changes);
         for (n, v) in changes.iter_mut().enumerate() {
             neighbors.clear();
