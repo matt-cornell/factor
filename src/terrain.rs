@@ -1,13 +1,41 @@
 use bevy::math::Vec2;
-use rand::distributions::{Standard, Uniform};
+use rand::distributions::Standard;
 use rand::prelude::*;
 use std::f32::consts::*;
+use std::sync::OnceLock;
+use tinyset::SetU64;
+
+static NEIGHBORS: [OnceLock<Box<[u64]>>; 29] = [const { OnceLock::new() }; 29];
+pub fn neighbors_list(depth: u8) -> &'static [u64] {
+    NEIGHBORS[depth as usize].get_or_init(|| {
+        let layer = cdshealpix::nested::get(depth);
+        let len = layer.n_hash();
+        let mut data = Vec::with_capacity(len as usize * 8);
+        for i in 0..len {
+            layer.append_bulk_neighbours(i, &mut data);
+            let new_len = (i as usize + 1) * 8;
+            debug_assert!(
+                data.len() <= new_len,
+                "more than eight neighbors for cell {i}"
+            );
+            data.resize(new_len, u64::MAX);
+        }
+        data.into_boxed_slice()
+    })
+}
+pub fn neighbors(depth: u8, hash: u64) -> &'static [u64] {
+    let max_slice = &neighbors_list(depth)[(hash as usize * 8)..(hash as usize * 8 + 8)];
+    max_slice
+        .split_once(|x| *x == u64::MAX)
+        .map_or(max_slice, |x| x.0)
+}
 
 /// A single cell for the plate tectonics
 #[derive(Debug, Default, Clone, Copy)]
 pub struct TectonicCell {
     pub plate: u8,
     pub height: f32,
+    pub density: u32,
 }
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -15,8 +43,8 @@ pub struct TectonicPlate {
     pub center_lat: f32,
     pub center_long: f32,
     pub height: f32,
-    pub dx: f32,
-    pub dy: f32,
+    pub density: u32,
+    pub motion: Vec2,
     pub scratch: f32,
     pub count: u32,
 }
@@ -27,27 +55,35 @@ impl Distribution<TectonicPlate> for Standard {
             center_lat: rng.gen_range(-1.0f32..1.0).asin(),
             center_long: rng.gen_range(-PI..=PI),
             height: rng.gen_range(-0.1..=0.1),
-            dx: 0.0,
-            dy: 0.0,
+            density: rng.gen_range(1000..=2000),
+            motion: Vec2::ZERO,
             scratch: 0.0,
             count: 0,
         }
     }
 }
 
-pub fn init_terrain<R: Rng + ?Sized>(
+#[derive(Debug, Clone)]
+pub struct TerrainState {
     depth: u8,
-    rng: &mut R,
-) -> (Box<[TectonicCell]>, Box<[TectonicPlate]>) {
-    let noise = rand_distr::Normal::new(0.0, 0.15).unwrap();
+    cells: Box<[TectonicCell]>,
+    plates: Box<[TectonicPlate]>,
+    boundaries: SetU64,
+}
+impl TerrainState {
+    pub fn cells(&self) -> &[TectonicCell] {
+        &self.cells
+    }
+    pub fn plates(&self) -> &[TectonicPlate] {
+        &self.plates
+    }
+}
+
+pub fn init_terrain<R: Rng + ?Sized>(depth: u8, rng: &mut R) -> TerrainState {
+    let noise = rand_distr::Normal::new(0.0, 0.5).unwrap();
     let layer = cdshealpix::nested::get(depth);
     let len = layer.n_hash() as _;
-    let nplates = rng.gen_range(5..=8)
-        * if depth == 0 {
-            0
-        } else {
-            depth.ilog2() as usize
-        };
+    let nplates = rng.gen_range(6..=9);
     let mut changes = rng
         .sample_iter(noise)
         .array_chunks()
@@ -55,16 +91,13 @@ pub fn init_terrain<R: Rng + ?Sized>(
         .take(len)
         .collect::<Box<[_]>>();
     let mut scratch = vec![Vec2::ZERO; len].into_boxed_slice();
-    let mut neighbors = Vec::new();
-    for _ in 0..5 {
+    for _ in 0..(6 + (1 << (depth - 2))) {
         std::mem::swap(&mut scratch, &mut changes);
         for (n, v) in changes.iter_mut().enumerate() {
-            neighbors.clear();
-            layer.append_bulk_neighbours(n as _, &mut neighbors);
-            *v *= 0.1;
-            *v += neighbors.iter().map(|n| scratch[*n as usize]).sum::<Vec2>()
-                / neighbors.len() as f32
-                * 0.9;
+            let neighs = neighbors(depth, n as _);
+            *v *= 0.2;
+            *v += neighs.iter().map(|n| scratch[*n as usize]).sum::<Vec2>() / neighs.len() as f32
+                * 0.8;
         }
     }
     let mut plates: Box<[TectonicPlate]> = rng.sample_iter(Standard).take(nplates).collect();
@@ -120,35 +153,92 @@ pub fn init_terrain<R: Rng + ?Sized>(
             let cell = TectonicCell {
                 plate,
                 height: rng.gen_range(-0.025..=0.025),
+                density: rng.gen_range(100..=1000),
             };
             plates[plate as usize].count += 1;
             cell
         })
         .collect();
-    let mut neighs = Vec::new();
+    let mut boundaries = SetU64::new();
     for i in 0..len {
-        let plate = cells[i as usize].plate;
-        neighs.clear();
-        layer.append_bulk_neighbours(i as _, &mut neighs);
-        if !neighs.iter().any(|n| cells[*n as usize].plate == plate) {
+        let plate = cells[i].plate;
+        let neighs = neighbors(depth, i as _);
+        let mut seen_same = false;
+        let mut seen = SetU64::new();
+        for &n in neighs {
+            let p = cells[n as usize].plate;
+            seen.insert(n);
+            if seen.len() > 1 {
+                boundaries.insert(i as _);
+                if seen_same {
+                    break;
+                }
+            }
+            if p == plate {
+                seen_same = true;
+                if seen.len() > 1 {
+                    break;
+                }
+            }
+        }
+        if !seen_same {
             let new = cells[*neighs.choose(rng).unwrap() as usize].plate;
             plates[plate as usize].count -= 1;
             plates[new as usize].count += 1;
-            cells[i as usize].plate = new;
+            cells[i].plate = new;
         }
     }
     for cell in &mut cells {
-        cell.height += plates[cell.plate as usize].height;
+        let plate = &plates[cell.plate as usize];
+        cell.height += plate.height;
+        cell.density += plate.density;
     }
-    (cells, plates)
+    TerrainState {
+        depth,
+        cells,
+        plates,
+        boundaries,
+    }
 }
-pub fn step_terrain<R: Rng + ?Sized>(
-    depth: u8,
-    terrain: &mut [TectonicCell],
-    plates: &mut [TectonicPlate],
-    rng: &mut R,
-) {
-    let layer = cdshealpix::nested::get(depth);
-    debug_assert_eq!(layer.n_hash(), terrain.len() as u64);
-    let currents = Uniform::new(-0.05, 0.05);
+pub fn step_terrain<R: Rng + ?Sized>(state: &mut TerrainState, rng: &mut R) {
+    let start = std::time::Instant::now();
+    let layer = cdshealpix::nested::get(state.depth);
+    debug_assert_eq!(layer.n_hash(), state.cells.len() as u64);
+    let mut neighbors = Vec::new();
+    let mut scratch = Vec::new();
+    let mut set = tinyset::SetU64::new();
+    for i in state.boundaries.iter() {
+        let cell = state.cells[i as usize];
+        let plate = state.plates[cell.plate as usize];
+        let (cx, cy) = layer.center(i);
+        let _ = set.drain();
+        scratch.push(i);
+        let start = std::time::Instant::now();
+        for _ in 0..1 {
+            neighbors.clear();
+            for n in scratch.drain(..) {
+                layer.append_bulk_neighbours(n as _, &mut neighbors);
+            }
+            scratch.extend(neighbors.drain(..).filter(|e| set.insert(*e)));
+        }
+        println!("{:?}", start.elapsed());
+        // for (c2, p2) in set.iter().filter_map(|&n| {
+        //     let plate = cells[n as usize].plate;
+        //     (cell.plate != plate).then_some((n, plate))
+        // }) {
+        //     let plate2 = plates[p2 as usize];
+        //     if plate.motion.dot(plate2.motion) > -0.1 {
+        //         continue; // they aren't opposed enough to be interesting
+        //     }
+        //     if (plate.center_long - plate2.center_long) * (plate.motion.x - plate2.motion.x)
+        //         + (plate.center_lat - plate2.center_lat) * (plate.motion.y - plate2.motion.y)
+        //         > 0.0
+        //     {
+        //         // divergent
+        //     } else {
+        //         // convergent
+        //     }
+        // }
+    }
+    println!("{:?}", start.elapsed());
 }

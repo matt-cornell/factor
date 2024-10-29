@@ -49,7 +49,7 @@ struct ShowHeightmap(bool);
 struct ShowCenters(bool);
 
 #[derive(Resource)]
-struct TerrainData(Box<[TectonicCell]>, Box<[TectonicPlate]>, Box<[LinearRgba]>);
+struct TerrainData(TerrainState, Box<[LinearRgba]>);
 
 #[derive(Component)]
 struct Planet;
@@ -70,8 +70,10 @@ impl Distribution<LinearRgba> for RandomColor {
     }
 }
 
-const WIDTH: usize = 400;
-const HEIGHT: usize = 200;
+const WIDTH: usize = 600;
+const HEIGHT: usize = 300;
+const VIEW_WIDTH: u32 = 400;
+const VIEW_HEIGHT: u32 = 200;
 
 fn main() {
     App::new()
@@ -135,7 +137,7 @@ fn setup(
         Camera2dBundle {
             camera: Camera {
                 viewport: Some(Viewport {
-                    physical_size: UVec2::new(WIDTH as _, HEIGHT as _),
+                    physical_size: UVec2::new(VIEW_WIDTH, VIEW_HEIGHT),
                     ..default()
                 }),
                 order: 1,
@@ -186,6 +188,11 @@ fn setup(
     commands.spawn((
         SpriteBundle {
             texture: image.clone(),
+            transform: Transform::from_scale(Vec3::new(
+                VIEW_WIDTH as f32 / WIDTH as f32,
+                VIEW_HEIGHT as f32 / HEIGHT as f32,
+                1.0,
+            )),
             ..default()
         },
         map_layer,
@@ -194,16 +201,16 @@ fn setup(
 }
 
 fn setup_terrain(mut commands: Commands, depth: Res<HealpixDepth>) {
-    let (cells, plates) = init_terrain(depth.0, &mut thread_rng());
+    let state = init_terrain(depth.0, &mut thread_rng());
     let colors: Box<[LinearRgba]> = thread_rng()
         .sample_iter(RandomColor)
-        .take(plates.len())
+        .take(state.plates().len())
         .collect();
-    commands.insert_resource(TerrainData(cells, plates, colors));
+    commands.insert_resource(TerrainData(state, colors));
 }
 
 fn recolor_plates(mut terr: ResMut<TerrainData>) {
-    terr.2.fill_with(|| thread_rng().sample(RandomColor));
+    terr.1.fill_with(|| thread_rng().sample(RandomColor));
 }
 
 fn update_colors(
@@ -213,8 +220,8 @@ fn update_colors(
     state: Res<State<AppState>>,
 ) {
     if matches!(state.get(), AppState::Init | AppState::Simulate { .. }) {
-        let TerrainData(cells, _, colors) = &*terr;
-        for (cell, color) in cells.iter().zip(&mut pixels.0) {
+        let TerrainData(state, colors) = &*terr;
+        for (cell, color) in state.cells().iter().zip(&mut pixels.0) {
             if hm.0 {
                 *color = LinearRgba::gray((cell.height + 0.5).clamp(0.0, 1.0));
             } else {
@@ -224,9 +231,8 @@ fn update_colors(
     }
 }
 
-fn update_terrain(depth: Res<HealpixDepth>, mut terr: ResMut<TerrainData>) {
-    let TerrainData(cells, plates, _) = &mut *terr;
-    step_terrain(depth.0, cells, plates, &mut thread_rng());
+fn update_terrain(mut terr: ResMut<TerrainData>) {
+    step_terrain(&mut terr.0, &mut thread_rng());
 }
 
 fn handle_keypresses(
@@ -336,7 +342,7 @@ fn update_map_camera(
     for resize_event in resize_events.read() {
         let window = windows.get(resize_event.window).unwrap();
         let win_size = window.size();
-        let size = UVec2::new(WIDTH as _, HEIGHT as _);
+        let size = UVec2::new(VIEW_WIDTH, VIEW_HEIGHT);
 
         for mut camera in &mut query {
             camera.viewport = Some(Viewport {
@@ -375,11 +381,11 @@ fn update_texture(
     {
         if show_centers.0 {
             if let Some(r) = &terrain {
-                let TerrainData(_, plates, colors) = &**r;
+                let TerrainData(state, colors) = &**r;
                 let mut black = false;
                 let cx = ((n % WIDTH) as f32).mul_add(TAU / WIDTH as f32, -PI);
                 let cy = ((n / WIDTH) as f32).mul_add(-PI / HEIGHT as f32, FRAC_PI_2);
-                for (plate, color) in plates.iter().zip(colors) {
+                for (plate, color) in state.plates().iter().zip(colors) {
                     let sqdist = (cx - plate.center_long).powi(2) + (cy - plate.center_lat).powi(2);
                     if sqdist < 0.005 {
                         *d = color.as_u32();
