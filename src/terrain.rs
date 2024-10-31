@@ -6,17 +6,19 @@ use std::sync::OnceLock;
 use tinyset::SetU64;
 
 static NEIGHBORS: [OnceLock<Box<[u64]>>; 29] = [const { OnceLock::new() }; 29];
+#[allow(clippy::type_complexity)]
+static FAR_NEIGHBORS: [OnceLock<Box<[OnceLock<Box<[u64]>>]>>; 29] = [const { OnceLock::new() }; 29]; // TODO: precompute and save to a file
 pub fn neighbors_list(depth: u8) -> &'static [u64] {
     NEIGHBORS[depth as usize].get_or_init(|| {
         let layer = cdshealpix::nested::get(depth);
         let len = layer.n_hash();
-        let mut data = Vec::with_capacity(len as usize * 8);
+        let mut data = Vec::with_capacity(len as usize * 4);
         for i in 0..len {
             layer.append_bulk_neighbours(i, &mut data);
-            let new_len = (i as usize + 1) * 8;
+            let new_len = (i as usize + 1) * 4;
             debug_assert!(
                 data.len() <= new_len,
-                "more than eight neighbors for cell {i}"
+                "more than four neighbors for cell {i}"
             );
             data.resize(new_len, u64::MAX);
         }
@@ -24,10 +26,43 @@ pub fn neighbors_list(depth: u8) -> &'static [u64] {
     })
 }
 pub fn neighbors(depth: u8, hash: u64) -> &'static [u64] {
-    let max_slice = &neighbors_list(depth)[(hash as usize * 8)..(hash as usize * 8 + 8)];
+    let max_slice = &neighbors_list(depth)[(hash as usize * 4)..(hash as usize * 4 + 4)];
     max_slice
         .split_once(|x| *x == u64::MAX)
         .map_or(max_slice, |x| x.0)
+}
+pub fn far_neighbors(depth: u8, hash: u64) -> &'static [u64] {
+    FAR_NEIGHBORS[depth as usize].get_or_init(|| {
+        vec![OnceLock::new(); cdshealpix::n_hash(depth) as usize].into_boxed_slice()
+    })[hash as usize]
+        .get_or_init(|| {
+            let mut set = Vec::new();
+            let mut edge = vec![hash];
+            for _ in 0..(1 << depth.saturating_sub(3)) {
+                let end = set.len();
+                set.append(&mut edge);
+                for &i in &set[end..] {
+                    edge.extend(
+                        neighbors(depth, i)
+                            .iter()
+                            .copied()
+                            .filter(|e| !set.contains(e)),
+                    );
+                }
+            }
+            set.sort_unstable();
+            set.dedup();
+            set.into_boxed_slice()
+        })
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum CellFeatures {
+    #[default]
+    None,
+    Ridge,
+    Subduction,
+    Mountain,
 }
 
 /// A single cell for the plate tectonics
@@ -36,6 +71,7 @@ pub struct TectonicCell {
     pub plate: u8,
     pub height: f32,
     pub density: u32,
+    pub feats: CellFeatures,
 }
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -76,6 +112,9 @@ impl TerrainState {
     }
     pub fn plates(&self) -> &[TectonicPlate] {
         &self.plates
+    }
+    pub fn boundaries(&self) -> &SetU64 {
+        &self.boundaries
     }
 }
 
@@ -154,6 +193,7 @@ pub fn init_terrain<R: Rng + ?Sized>(depth: u8, rng: &mut R) -> TerrainState {
                 plate,
                 height: rng.gen_range(-0.025..=0.025),
                 density: rng.gen_range(100..=1000),
+                feats: CellFeatures::None,
             };
             plates[plate as usize].count += 1;
             cell
@@ -167,17 +207,18 @@ pub fn init_terrain<R: Rng + ?Sized>(depth: u8, rng: &mut R) -> TerrainState {
         let mut seen = SetU64::new();
         for &n in neighs {
             let p = cells[n as usize].plate;
-            seen.insert(n);
-            if seen.len() > 1 {
-                boundaries.insert(i as _);
-                if seen_same {
-                    break;
-                }
-            }
             if p == plate {
                 seen_same = true;
                 if seen.len() > 1 {
                     break;
+                }
+            } else {
+                seen.insert(n);
+                if seen.len() > 1 {
+                    boundaries.insert(i as _);
+                    if seen_same {
+                        break;
+                    }
                 }
             }
         }
@@ -201,44 +242,28 @@ pub fn init_terrain<R: Rng + ?Sized>(depth: u8, rng: &mut R) -> TerrainState {
     }
 }
 pub fn step_terrain<R: Rng + ?Sized>(state: &mut TerrainState, rng: &mut R) {
-    let start = std::time::Instant::now();
     let layer = cdshealpix::nested::get(state.depth);
     debug_assert_eq!(layer.n_hash(), state.cells.len() as u64);
-    let mut neighbors = Vec::new();
-    let mut scratch = Vec::new();
-    let mut set = tinyset::SetU64::new();
     for i in state.boundaries.iter() {
         let cell = state.cells[i as usize];
         let plate = state.plates[cell.plate as usize];
-        let (cx, cy) = layer.center(i);
-        let _ = set.drain();
-        scratch.push(i);
-        let start = std::time::Instant::now();
-        for _ in 0..1 {
-            neighbors.clear();
-            for n in scratch.drain(..) {
-                layer.append_bulk_neighbours(n as _, &mut neighbors);
+        let set = far_neighbors(state.depth, i);
+        for (c2, p2) in set.iter().filter_map(|&n| {
+            let plate = state.cells[n as usize].plate;
+            (cell.plate != plate).then_some((n, plate))
+        }) {
+            let plate2 = state.plates[p2 as usize];
+            if plate.motion.dot(plate2.motion) > -0.1 {
+                continue; // they aren't opposed enough to be interesting
             }
-            scratch.extend(neighbors.drain(..).filter(|e| set.insert(*e)));
+            if (plate.center_long - plate2.center_long) * (plate.motion.x - plate2.motion.x)
+                + (plate.center_lat - plate2.center_lat) * (plate.motion.y - plate2.motion.y)
+                > 0.0
+            {
+                // divergent
+            } else {
+                // convergent
+            }
         }
-        println!("{:?}", start.elapsed());
-        // for (c2, p2) in set.iter().filter_map(|&n| {
-        //     let plate = cells[n as usize].plate;
-        //     (cell.plate != plate).then_some((n, plate))
-        // }) {
-        //     let plate2 = plates[p2 as usize];
-        //     if plate.motion.dot(plate2.motion) > -0.1 {
-        //         continue; // they aren't opposed enough to be interesting
-        //     }
-        //     if (plate.center_long - plate2.center_long) * (plate.motion.x - plate2.motion.x)
-        //         + (plate.center_lat - plate2.center_lat) * (plate.motion.y - plate2.motion.y)
-        //         > 0.0
-        //     {
-        //         // divergent
-        //     } else {
-        //         // convergent
-        //     }
-        // }
     }
-    println!("{:?}", start.elapsed());
 }
