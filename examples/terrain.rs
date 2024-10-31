@@ -40,9 +40,12 @@ struct HealpixPixels(Box<[LinearRgba]>);
 #[derive(Resource, PartialEq)]
 struct Rotating(bool);
 
-/// Are we showing a heightmap?
-#[derive(Resource)]
-struct ShowHeightmap(bool);
+#[derive(Debug, Resource, PartialEq)]
+enum ColorKind {
+    Plates,
+    Height,
+    Feats,
+}
 
 /// Are we showing the centers of plates?
 #[derive(Resource)]
@@ -84,8 +87,8 @@ fn main() {
         .add_plugins(DefaultPlugins)
         .init_state::<AppState>()
         .add_sub_state::<Simulating>()
-        .insert_resource(HealpixDepth(4))
-        .insert_resource(ShowHeightmap(false))
+        .insert_resource(HealpixDepth(5))
+        .insert_resource(ColorKind::Plates)
         .insert_resource(Rotating(true))
         .insert_resource(ShowCenters(false))
         .insert_resource(ShowBorders(false))
@@ -109,7 +112,7 @@ fn main() {
                 update_colors.run_if(
                     resource_exists::<TerrainData>.and_then(
                         resource_changed::<TerrainData>
-                            .or_else(resource_changed::<ShowHeightmap>)
+                            .or_else(resource_changed::<ColorKind>)
                             .or_else(resource_changed::<ShowBorders>),
                     ),
                 ),
@@ -227,7 +230,7 @@ fn recolor_plates(mut terr: ResMut<TerrainData>) {
 fn update_colors(
     terr: Res<TerrainData>,
     mut pixels: ResMut<HealpixPixels>,
-    hm: Res<ShowHeightmap>,
+    color_kind: Res<ColorKind>,
     bord: Res<ShowBorders>,
     state: Res<State<AppState>>,
 ) {
@@ -236,10 +239,23 @@ fn update_colors(
         for (n, (cell, color)) in state.cells().iter().zip(&mut pixels.0).enumerate() {
             if bord.0 && state.boundaries().contains(n as _) {
                 *color = LinearRgba::RED;
-            } else if hm.0 {
-                *color = LinearRgba::gray((cell.height + 0.5).clamp(0.0, 1.0));
             } else {
-                *color = colors[cell.plate as usize];
+                match *color_kind {
+                    ColorKind::Plates => *color = colors[cell.plate as usize],
+                    ColorKind::Height => {
+                        *color = LinearRgba::gray(cell.height.mul_add(0.25, 0.5).clamp(0.0, 1.0))
+                    }
+                    ColorKind::Feats => {
+                        let base = match cell.feats.kind {
+                            CellFeatureKind::None => LinearRgba::BLACK,
+                            CellFeatureKind::Subduction => LinearRgba::BLUE,
+                            CellFeatureKind::Mountain => LinearRgba::GREEN,
+                            CellFeatureKind::Ridge => LinearRgba::RED,
+                        };
+                        *color =
+                            base.with_luminance((-(cell.feats.dist as f32 * 0.5).powi(2)).exp());
+                    }
+                }
             }
         }
     }
@@ -256,7 +272,7 @@ fn handle_keypresses(
     mut next_state: ResMut<NextState<AppState>>,
     mut depth: ResMut<HealpixDepth>,
     mut rotating: ResMut<Rotating>,
-    mut heights: ResMut<ShowHeightmap>,
+    mut colors: ResMut<ColorKind>,
     mut centers: ResMut<ShowCenters>,
     mut borders: ResMut<ShowBorders>,
     mut depth_evt: EventWriter<DepthChanged>,
@@ -271,8 +287,14 @@ fn handle_keypresses(
     if keys.just_pressed(KeyCode::KeyS) {
         rotating.0 = !rotating.0;
     }
+    if keys.just_pressed(KeyCode::KeyP) {
+        *colors = ColorKind::Plates;
+    }
     if keys.just_pressed(KeyCode::KeyH) {
-        heights.0 = !heights.0;
+        *colors = ColorKind::Height;
+    }
+    if keys.just_pressed(KeyCode::KeyF) {
+        *colors = ColorKind::Feats;
     }
     if keys.just_pressed(KeyCode::KeyB) {
         borders.0 = !borders.0;
