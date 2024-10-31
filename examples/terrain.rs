@@ -44,9 +44,13 @@ struct Rotating(bool);
 #[derive(Resource)]
 struct ShowHeightmap(bool);
 
-/// Are we showing the centers of images?
+/// Are we showing the centers of plates?
 #[derive(Resource)]
 struct ShowCenters(bool);
+
+/// Are we showing the borders of the plates?
+#[derive(Resource)]
+struct ShowBorders(bool);
 
 #[derive(Resource)]
 struct TerrainData(TerrainState, Box<[LinearRgba]>);
@@ -84,7 +88,8 @@ fn main() {
         .insert_resource(ShowHeightmap(false))
         .insert_resource(Rotating(true))
         .insert_resource(ShowCenters(false))
-        .insert_resource(Time::<Fixed>::from_hz(20.0))
+        .insert_resource(ShowBorders(false))
+        .insert_resource(Time::<Fixed>::from_hz(5.0))
         .add_event::<DepthChanged>()
         .add_event::<RecolorPlates>()
         .add_systems(Startup, setup)
@@ -101,7 +106,13 @@ fn main() {
             (
                 update_map_camera,
                 handle_keypresses,
-                update_colors.run_if(resource_exists::<TerrainData>),
+                update_colors.run_if(
+                    resource_exists::<TerrainData>.and_then(
+                        resource_changed::<TerrainData>
+                            .or_else(resource_changed::<ShowHeightmap>)
+                            .or_else(resource_changed::<ShowBorders>),
+                    ),
+                ),
                 rotate_sphere.run_if(resource_equals(Rotating(true))),
             ),
         )
@@ -217,12 +228,15 @@ fn update_colors(
     terr: Res<TerrainData>,
     mut pixels: ResMut<HealpixPixels>,
     hm: Res<ShowHeightmap>,
+    bord: Res<ShowBorders>,
     state: Res<State<AppState>>,
 ) {
     if matches!(state.get(), AppState::Init | AppState::Simulate { .. }) {
         let TerrainData(state, colors) = &*terr;
-        for (cell, color) in state.cells().iter().zip(&mut pixels.0) {
-            if hm.0 {
+        for (n, (cell, color)) in state.cells().iter().zip(&mut pixels.0).enumerate() {
+            if bord.0 && state.boundaries().contains(n as _) {
+                *color = LinearRgba::RED;
+            } else if hm.0 {
                 *color = LinearRgba::gray((cell.height + 0.5).clamp(0.0, 1.0));
             } else {
                 *color = colors[cell.plate as usize];
@@ -236,13 +250,15 @@ fn update_terrain(mut terr: ResMut<TerrainData>) {
 }
 
 fn handle_keypresses(
+    mut commands: Commands,
     keys: Res<ButtonInput<KeyCode>>,
-    mut depth: ResMut<HealpixDepth>,
-    mut rotating: ResMut<Rotating>,
     state: Res<State<AppState>>,
     mut next_state: ResMut<NextState<AppState>>,
+    mut depth: ResMut<HealpixDepth>,
+    mut rotating: ResMut<Rotating>,
     mut heights: ResMut<ShowHeightmap>,
     mut centers: ResMut<ShowCenters>,
+    mut borders: ResMut<ShowBorders>,
     mut depth_evt: EventWriter<DepthChanged>,
     mut recolor_evt: EventWriter<RecolorPlates>,
     mut exit_evt: EventWriter<AppExit>,
@@ -258,7 +274,11 @@ fn handle_keypresses(
     if keys.just_pressed(KeyCode::KeyH) {
         heights.0 = !heights.0;
     }
+    if keys.just_pressed(KeyCode::KeyB) {
+        borders.0 = !borders.0;
+    }
     if keys.just_pressed(KeyCode::KeyR) {
+        commands.remove_resource::<TerrainData>();
         next_state.set(AppState::Healpix);
         depth_evt.send(DepthChanged);
     }
