@@ -5,7 +5,7 @@ use bevy::render::render_asset::RenderAssetUsages;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use bevy::render::view::RenderLayers;
 use bevy::window::WindowResized;
-use factor::terrain::*;
+use factor::terrain::tectonic::*;
 use rand::prelude::*;
 use std::f32::consts::*;
 
@@ -243,8 +243,9 @@ fn update_colors(
                 match *color_kind {
                     ColorKind::Plates => *color = colors[cell.plate as usize],
                     ColorKind::Height => {
-                        *color =
-                            LinearRgba::gray(cell.height.cbrt().tanh().mul_add(0.5, 0.5).clamp(0.0, 1.0))
+                        *color = LinearRgba::gray(
+                            cell.height.cbrt().tanh().mul_add(0.5, 0.5).clamp(0.0, 1.0),
+                        )
                     }
                     ColorKind::Feats => {
                         let base = match cell.feats.kind {

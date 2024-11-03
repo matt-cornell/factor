@@ -1,60 +1,9 @@
+use crate::healpix;
 use bevy::math::Vec2;
 use rand::distributions::Standard;
 use rand::prelude::*;
 use rand_distr::{Normal, StandardNormal};
-use std::sync::OnceLock;
 use tinyset::SetU64;
-
-static NEIGHBORS: [OnceLock<Box<[u64]>>; 29] = [const { OnceLock::new() }; 29];
-#[allow(clippy::type_complexity)]
-static FAR_NEIGHBORS: [OnceLock<Box<[OnceLock<Box<[u64]>>]>>; 29] = [const { OnceLock::new() }; 29]; // TODO: precompute and save to a file
-pub fn neighbors_list(depth: u8) -> &'static [u64] {
-    NEIGHBORS[depth as usize].get_or_init(|| {
-        let layer = cdshealpix::nested::get(depth);
-        let len = layer.n_hash();
-        let mut data = Vec::with_capacity(len as usize * 4);
-        for i in 0..len {
-            layer.append_bulk_neighbours(i, &mut data);
-            let new_len = (i as usize + 1) * 4;
-            debug_assert!(
-                data.len() <= new_len,
-                "more than four neighbors for cell {i}"
-            );
-            data.resize(new_len, u64::MAX);
-        }
-        data.into_boxed_slice()
-    })
-}
-pub fn neighbors(depth: u8, hash: u64) -> &'static [u64] {
-    let max_slice = &neighbors_list(depth)[(hash as usize * 4)..(hash as usize * 4 + 4)];
-    max_slice
-        .split_once(|x| *x == u64::MAX)
-        .map_or(max_slice, |x| x.0)
-}
-pub fn far_neighbors(depth: u8, hash: u64) -> &'static [u64] {
-    FAR_NEIGHBORS[depth as usize].get_or_init(|| {
-        vec![OnceLock::new(); cdshealpix::n_hash(depth) as usize].into_boxed_slice()
-    })[hash as usize]
-        .get_or_init(|| {
-            let mut set = Vec::new();
-            let mut edge = vec![hash];
-            for _ in 0..((1 << depth.saturating_sub(3)) * 3 / 8) {
-                let end = set.len();
-                set.append(&mut edge);
-                for &i in &set[end..] {
-                    edge.extend(
-                        neighbors(depth, i)
-                            .iter()
-                            .copied()
-                            .filter(|e| !set.contains(e)),
-                    );
-                }
-            }
-            set.sort_unstable();
-            set.dedup();
-            set.into_boxed_slice()
-        })
-}
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum CellFeatureKind {
@@ -159,7 +108,7 @@ struct QualityMetrics {
 /// Initialize a plate setup without any quality metrics
 fn init_terrain_impl<R: Rng + ?Sized>(depth: u8, rng: &mut R) -> TerrainState {
     let noise = Normal::new(0.0, 0.5).unwrap();
-    let layer = cdshealpix::nested::get(depth);
+    let layer = healpix::nested::get(depth);
     let len = layer.n_hash() as _;
     let nplates = rng.gen_range(10..=12);
     let mut changes = rng
@@ -172,7 +121,7 @@ fn init_terrain_impl<R: Rng + ?Sized>(depth: u8, rng: &mut R) -> TerrainState {
     for _ in 0..(6 + (1 << (depth - 2))) {
         std::mem::swap(&mut scratch, &mut changes);
         for (n, v) in changes.iter_mut().enumerate() {
-            let neighs = neighbors(depth, n as _);
+            let neighs = healpix::neighbors(depth, n as _);
             *v *= 0.2;
             *v += neighs.iter().map(|n| scratch[*n as usize]).sum::<Vec2>() / neighs.len() as f32
                 * 0.8;
@@ -242,7 +191,7 @@ fn init_terrain_impl<R: Rng + ?Sized>(depth: u8, rng: &mut R) -> TerrainState {
     let mut boundaries = SetU64::new();
     for i in 0..len {
         let plate = cells[i].plate;
-        let neighs = neighbors(depth, i as _);
+        let neighs = healpix::neighbors(depth, i as _);
         let mut seen_same = false;
         let mut seen = SetU64::new();
         for &n in neighs {
@@ -291,12 +240,12 @@ fn step_terrain_impl<R: Rng + ?Sized>(
     use std::f64::consts::*;
     let mountain_spread = Normal::new(0.0, 2.0f32.powi(state.depth as _) * 0.00001).unwrap();
     let mountain_height = Normal::new(0.1, 0.02).unwrap();
-    let layer = cdshealpix::nested::get(state.depth);
+    let layer = healpix::nested::get(state.depth);
     debug_assert_eq!(layer.n_hash(), state.cells.len() as u64);
     for i in state.boundaries.iter() {
         let cell = state.cells[i as usize];
         let plate = state.plates[cell.plate as usize];
-        let set = neighbors(state.depth, i);
+        let set = healpix::neighbors(state.depth, i);
         {
             let cell = &mut state.cells[i as usize];
             if let CellFeature {
@@ -358,10 +307,12 @@ fn step_terrain_impl<R: Rng + ?Sized>(
                     if new == i {
                         continue;
                     }
-                    if far_neighbors(state.depth, new)
-                        .iter()
-                        .any(|&h| !matches!(state.cells[h as usize].feats.kind, CellFeatureKind::None | CellFeatureKind::Mountain))
-                    {
+                    if healpix::far_neighbors(state.depth, new).iter().any(|&h| {
+                        !matches!(
+                            state.cells[h as usize].feats.kind,
+                            CellFeatureKind::None | CellFeatureKind::Mountain
+                        )
+                    }) {
                         continue;
                     }
                     let cell = &mut state.cells[new as usize];
@@ -373,7 +324,7 @@ fn step_terrain_impl<R: Rng + ?Sized>(
                 }
             }
         }
-        for &n in neighbors(state.depth, i) {
+        for &n in healpix::neighbors(state.depth, i) {
             let other = state.cells[n as usize];
             if other.plate != cell.plate {
                 continue;
@@ -382,7 +333,7 @@ fn step_terrain_impl<R: Rng + ?Sized>(
     }
     for i in 0..state.cells.len() {
         let cell = state.cells[i];
-        for &o in neighbors(state.depth, i as _) {
+        for &o in healpix::neighbors(state.depth, i as _) {
             if let CellFeature {
                 kind: CellFeatureKind::Mountain,
                 dist,
@@ -390,7 +341,7 @@ fn step_terrain_impl<R: Rng + ?Sized>(
             {
                 if cell.feats.kind == CellFeatureKind::Mountain
                     && cell.feats.dist < state.cells[o as usize].feats.dist
-                    && far_neighbors(state.depth, i as _)
+                    && healpix::far_neighbors(state.depth, i as _)
                         .iter()
                         .all(|&h| state.cells[h as usize].feats.kind == CellFeatureKind::None)
                     && rng.sample(mountain_spread).abs() as u8 > dist
@@ -415,7 +366,7 @@ fn step_terrain_impl<R: Rng + ?Sized>(
             let mut neigh_count = 0.0;
             let p = state.cells[i].plate;
             let h = state.plates[p as usize].height * 0.05;
-            for &n in neighbors(state.depth, i as _) {
+            for &n in healpix::neighbors(state.depth, i as _) {
                 let c2 = state.cells[n as usize];
                 let mut mul = 1.0;
                 if p != c2.plate {
@@ -433,15 +384,19 @@ fn step_terrain_impl<R: Rng + ?Sized>(
             }
             if neigh_count > 0.0 {
                 let cell = &mut state.cells[i];
-                cell.density = (cell.density as f32 * (1.0 - scale)
-                    + dens_sum / neigh_count * scale) as _;
+                cell.density =
+                    (cell.density as f32 * (1.0 - scale) + dens_sum / neigh_count * scale) as _;
                 cell.height = (cell.height * (1.0 - scale)
-                    + height_sum.mul_add(neigh_count.recip(), rng.gen_range(-0.1..=0.1)) * scale).mul_add(0.95, h);
+                    + height_sum.mul_add(neigh_count.recip(), rng.gen_range(-0.1..=0.1)) * scale)
+                    .mul_add(0.95, h);
             }
         }
     }
     for plate in &mut state.plates {
-        plate.height = plate.base_height.mul_add(0.6, plate.base_height * 0.4).clamp(-0.5, 0.5);
+        plate.height = plate
+            .base_height
+            .mul_add(0.6, plate.base_height * 0.4)
+            .clamp(-0.5, 0.5);
     }
 }
 
