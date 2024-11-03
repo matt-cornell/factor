@@ -38,7 +38,7 @@ pub fn far_neighbors(depth: u8, hash: u64) -> &'static [u64] {
         .get_or_init(|| {
             let mut set = Vec::new();
             let mut edge = vec![hash];
-            for _ in 0..(1 << depth.saturating_sub(3)) {
+            for _ in 0..((1 << depth.saturating_sub(3)) * 3 / 8) {
                 let end = set.len();
                 set.append(&mut edge);
                 for &i in &set[end..] {
@@ -104,6 +104,7 @@ pub struct TectonicPlate {
     pub center_lat: f32,
     pub center_long: f32,
     pub height: f32,
+    pub base_height: f32,
     pub density: u32,
     pub motion: Vec2,
     pub scratch: f32,
@@ -113,11 +114,14 @@ pub struct TectonicPlate {
 impl Distribution<TectonicPlate> for Standard {
     fn sample<R: Rng + ?Sized>(&self, rng: &mut R) -> TectonicPlate {
         use std::f32::consts::PI;
+        let density = rng.gen_range(1000..=2000);
+        let height = rng.gen_range(-0.25..=0.25) - (density - 1000) as f32 * 0.00001;
         TectonicPlate {
             center_lat: rng.gen_range(-1.0f32..1.0).asin(),
             center_long: rng.gen_range(-PI..=PI),
-            height: rng.gen_range(-0.1..=0.1),
-            density: rng.gen_range(1000..=2000),
+            base_height: height,
+            height,
+            density,
             motion: Vec2::new(rng.sample(StandardNormal), rng.sample(StandardNormal)),
             scratch: 0.0,
             count: 0,
@@ -286,7 +290,7 @@ fn step_terrain_impl<R: Rng + ?Sized>(
 ) {
     use std::f64::consts::*;
     let mountain_spread = Normal::new(0.0, 2.0f32.powi(state.depth as _) * 0.00001).unwrap();
-    let mountain_height = Normal::new(0.9, 0.05).unwrap();
+    let mountain_height = Normal::new(0.1, 0.02).unwrap();
     let layer = cdshealpix::nested::get(state.depth);
     debug_assert_eq!(layer.n_hash(), state.cells.len() as u64);
     for i in state.boundaries.iter() {
@@ -327,7 +331,7 @@ fn step_terrain_impl<R: Rng + ?Sized>(
                 cell.feats = CellFeature::RIDGE;
                 cell.density /= 20;
                 cell.density += 100;
-                cell.height = cell.height.mul_add(0.6, 1.0);
+                cell.height = cell.height.mul_add(0.6, 0.2);
             } else {
                 // convergent
                 if cell.density < other.density {
@@ -337,22 +341,36 @@ fn step_terrain_impl<R: Rng + ?Sized>(
                 metrics.bits |= 1 << (lon1 % TAU / FRAC_PI_4) as u8;
                 let cell = &mut state.cells[i as usize];
                 cell.feats = CellFeature::SUBDUCT;
-                cell.height -= 5.0;
+                cell.height -= 0.2;
+                state.plates[cell.plate as usize].height -= 0.005;
                 let (lon2, lat2) = layer.center(c2);
                 let pos1 = Vec2::new(lon1 as _, lat1 as _);
                 let delta = (Vec2::new(lon2 as _, lat2 as _) - pos1).normalize_or_zero();
-                let Vec2 { x, y } = pos1 + plate.motion.normalize_or_zero() * 0.25 + delta * 0.25;
-                let new = layer.hash(
-                    ((x as f64 + PI) % TAU) - PI,
-                    (y as f64).clamp(-FRAC_PI_2, FRAC_PI_2),
-                );
-                // state.plates[cell.plate as usize].motion += delta * 0.01;
-                if new == i {
-                    continue;
+                let diff = plate.motion.normalize_or_zero() * 0.25 + delta * 0.25;
+                state.cells[c2 as usize].height += 0.1;
+                state.plates[other.plate as usize].height += 0.005;
+                for n in 0..3 {
+                    let Vec2 { x, y } = pos1 + diff * (n as f32).mul_add(0.5, 1.0);
+                    let new = layer.hash(
+                        ((x as f64 + PI) % TAU) - PI,
+                        (y as f64).clamp(-FRAC_PI_2, FRAC_PI_2),
+                    );
+                    if new == i {
+                        continue;
+                    }
+                    if far_neighbors(state.depth, new)
+                        .iter()
+                        .any(|&h| !matches!(state.cells[h as usize].feats.kind, CellFeatureKind::None | CellFeatureKind::Mountain))
+                    {
+                        continue;
+                    }
+                    let cell = &mut state.cells[new as usize];
+                    cell.feats = CellFeature {
+                        kind: CellFeatureKind::Mountain,
+                        dist: n / 2,
+                    };
+                    cell.height += 0.7f32.powi(n as _) * rng.sample(mountain_height);
                 }
-                let cell = &mut state.cells[new as usize];
-                cell.feats = CellFeature::MOUNTAIN;
-                cell.height += 1.0;
             }
         }
         for &n in neighbors(state.depth, i) {
@@ -360,48 +378,70 @@ fn step_terrain_impl<R: Rng + ?Sized>(
             if other.plate != cell.plate {
                 continue;
             }
+        }
+    }
+    for i in 0..state.cells.len() {
+        let cell = state.cells[i];
+        for &o in neighbors(state.depth, i as _) {
             if let CellFeature {
                 kind: CellFeatureKind::Mountain,
                 dist,
-            } = other.feats
+            } = cell.feats
             {
                 if cell.feats.kind == CellFeatureKind::Mountain
-                    && cell.feats.dist < other.feats.dist
-                    && far_neighbors(state.depth, i)
+                    && cell.feats.dist < state.cells[o as usize].feats.dist
+                    && far_neighbors(state.depth, i as _)
                         .iter()
                         .all(|&h| state.cells[h as usize].feats.kind == CellFeatureKind::None)
                     && rng.sample(mountain_spread).abs() as u8 > dist
                 {
-                    state.cells[i as usize].feats = CellFeature {
+                    state.cells[o as usize].feats = CellFeature {
                         kind: CellFeatureKind::Mountain,
                         dist: dist + 1,
                     };
                 }
             } else if cell.feats.kind == CellFeatureKind::Mountain
-                && rng.gen_ratio(cell.feats.dist as _, 1)
+                && rng.gen_ratio(cell.feats.dist as _, 4)
             {
-                state.cells[i as usize].feats = CellFeature::NONE;
+                state.cells[i].feats = CellFeature::NONE;
             }
         }
-        let mut dens_sum = 0;
-        let mut height_sum = 0.0;
-        let mut neigh_count = 0;
-        for &n in far_neighbors(state.depth, i) {
-            let c2 = state.cells[n as usize];
-            if cell.plate != c2.plate {
-                continue;
+    }
+    for s in 0..3 {
+        let scale = ((s as f32).powi(4) * -2.0).exp();
+        for i in 0..state.cells.len() {
+            let mut dens_sum = 0.0;
+            let mut height_sum = 0.0;
+            let mut neigh_count = 0.0;
+            let p = state.cells[i].plate;
+            let h = state.plates[p as usize].height * 0.05;
+            for &n in neighbors(state.depth, i as _) {
+                let c2 = state.cells[n as usize];
+                let mut mul = 1.0;
+                if p != c2.plate {
+                    if c2.feats.kind == CellFeatureKind::Ridge {
+                        mul = 0.3;
+                    } else if c2.feats.kind == CellFeatureKind::Subduction {
+                        continue;
+                    } else {
+                        mul = 0.5;
+                    }
+                }
+                dens_sum += c2.density as f32 * mul;
+                height_sum += c2.height * mul;
+                neigh_count += mul;
             }
-            dens_sum += c2.density;
-            height_sum += c2.height;
-            neigh_count += 1;
+            if neigh_count > 0.0 {
+                let cell = &mut state.cells[i];
+                cell.density = (cell.density as f32 * (1.0 - scale)
+                    + dens_sum / neigh_count * scale) as _;
+                cell.height = (cell.height * (1.0 - scale)
+                    + height_sum.mul_add(neigh_count.recip(), rng.gen_range(-0.1..=0.1)) * scale).mul_add(0.95, h);
+            }
         }
-        if neigh_count > 0 {
-            let cell = &mut state.cells[i as usize];
-            cell.density = cell.density * 9 / 10;
-            cell.density += dens_sum / neigh_count;
-            cell.height =
-                height_sum.mul_add((neigh_count as f32).recip(), rng.gen_range(-0.1..=0.1));
-        }
+    }
+    for plate in &mut state.plates {
+        plate.height = plate.base_height.mul_add(0.6, plate.base_height * 0.4).clamp(-0.5, 0.5);
     }
 }
 
@@ -411,7 +451,6 @@ pub fn init_terrain<R: Rng + ?Sized>(depth: u8, rng: &mut R) -> TerrainState {
         let mut state = init_terrain_impl(depth, rng);
         let mut metrics = QualityMetrics::default();
         step_terrain_impl(&mut state, rng, &mut metrics);
-        bevy::log::info!(?metrics, "sample");
         if metrics.converge / scale > 5
             && metrics.diverge / scale > 5
             && (metrics.converge + metrics.diverge) / scale > 12

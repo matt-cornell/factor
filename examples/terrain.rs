@@ -243,7 +243,8 @@ fn update_colors(
                 match *color_kind {
                     ColorKind::Plates => *color = colors[cell.plate as usize],
                     ColorKind::Height => {
-                        *color = LinearRgba::gray(cell.height.mul_add(0.25, 0.5).clamp(0.0, 1.0))
+                        *color =
+                            LinearRgba::gray(cell.height.cbrt().tanh().mul_add(0.5, 0.5).clamp(0.0, 1.0))
                     }
                     ColorKind::Feats => {
                         let base = match cell.feats.kind {
