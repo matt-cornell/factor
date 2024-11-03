@@ -79,13 +79,13 @@ impl Distribution<TectonicPlate> for Standard {
 }
 
 #[derive(Debug, Clone)]
-pub struct TerrainState {
+pub struct TectonicState {
     depth: u8,
     cells: Box<[TectonicCell]>,
     plates: Box<[TectonicPlate]>,
     boundaries: SetU64,
 }
-impl TerrainState {
+impl TectonicState {
     pub fn cells(&self) -> &[TectonicCell] {
         &self.cells
     }
@@ -106,7 +106,7 @@ struct QualityMetrics {
 }
 
 /// Initialize a plate setup without any quality metrics
-fn init_terrain_impl<R: Rng + ?Sized>(depth: u8, rng: &mut R) -> TerrainState {
+fn init_terrain_impl<R: Rng + ?Sized>(depth: u8, rng: &mut R) -> TectonicState {
     let noise = Normal::new(0.0, 0.5).unwrap();
     let layer = healpix::nested::get(depth);
     let len = layer.n_hash() as _;
@@ -223,7 +223,7 @@ fn init_terrain_impl<R: Rng + ?Sized>(depth: u8, rng: &mut R) -> TerrainState {
         cell.height += plate.height;
         cell.density += plate.density;
     }
-    TerrainState {
+    TectonicState {
         depth,
         cells,
         plates,
@@ -233,7 +233,7 @@ fn init_terrain_impl<R: Rng + ?Sized>(depth: u8, rng: &mut R) -> TerrainState {
 
 /// Update a terrain, possibly with some metrics on the quality
 fn step_terrain_impl<R: Rng + ?Sized>(
-    state: &mut TerrainState,
+    state: &mut TectonicState,
     rng: &mut R,
     metrics: &mut QualityMetrics,
 ) {
@@ -400,7 +400,7 @@ fn step_terrain_impl<R: Rng + ?Sized>(
     }
 }
 
-pub fn init_terrain<R: Rng + ?Sized>(depth: u8, rng: &mut R) -> TerrainState {
+pub fn init_terrain<R: Rng + ?Sized>(depth: u8, rng: &mut R) -> TectonicState {
     let scale = 1 << depth;
     loop {
         let mut state = init_terrain_impl(depth, rng);
@@ -416,6 +416,6 @@ pub fn init_terrain<R: Rng + ?Sized>(depth: u8, rng: &mut R) -> TerrainState {
     }
 }
 
-pub fn step_terrain<R: Rng + ?Sized>(state: &mut TerrainState, rng: &mut R) {
+pub fn step_terrain<R: Rng + ?Sized>(state: &mut TectonicState, rng: &mut R) {
     step_terrain_impl(state, rng, &mut QualityMetrics::default());
 }

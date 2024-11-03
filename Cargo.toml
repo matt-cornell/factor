@@ -8,6 +8,7 @@ bevy = "0.14.2"
 bytemuck = { version = "1.19.0", features = ["derive", "extern_crate_std"] }
 cdshealpix = "0.7.0"
 itertools = "0.13.0"
+ordered-float = "4.4.0"
 rand = "0.8.5"
 rand_distr = "0.4.3"
 redb = "2.1.4"

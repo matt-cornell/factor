@@ -5,7 +5,7 @@ use bevy::render::render_asset::RenderAssetUsages;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use bevy::render::view::RenderLayers;
 use bevy::window::WindowResized;
-use factor::terrain::tectonic::*;
+use factor::terrain::noise::*;
 use rand::prelude::*;
 use std::f32::consts::*;
 
@@ -13,16 +13,8 @@ use std::f32::consts::*;
 enum AppState {
     #[default]
     Healpix,
-    Init,
-    Simulate {
-        iter: u16,
-        running: bool,
-    },
+    Heights,
 }
-
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, SubStates)]
-#[source(AppState = AppState::Simulate { running: true, .. })]
-struct Simulating;
 
 /// Depth to use
 #[derive(Resource)]
@@ -40,23 +32,11 @@ struct HealpixPixels(Box<[LinearRgba]>);
 #[derive(Resource, PartialEq)]
 struct Rotating(bool);
 
-#[derive(Debug, Resource, PartialEq)]
-enum ColorKind {
-    Plates,
-    Height,
-    Feats,
-}
-
-/// Are we showing the centers of plates?
 #[derive(Resource)]
-struct ShowCenters(bool);
-
-/// Are we showing the borders of the plates?
-#[derive(Resource)]
-struct ShowBorders(bool);
+struct NoiseSourceRes(Box<dyn NoiseSource + Send + Sync>);
 
 #[derive(Resource)]
-struct TerrainData(TectonicState, Box<[LinearRgba]>);
+struct TerrainData();
 
 #[derive(Component)]
 struct Planet;
@@ -67,9 +47,6 @@ struct MiniMap;
 #[derive(Event)]
 struct DepthChanged;
 
-#[derive(Event)]
-struct RecolorPlates;
-
 struct RandomColor;
 impl Distribution<LinearRgba> for RandomColor {
     fn sample<R: Rng + ?Sized>(&self, rng: &mut R) -> LinearRgba {
@@ -77,8 +54,8 @@ impl Distribution<LinearRgba> for RandomColor {
     }
 }
 
-const WIDTH: usize = 600;
-const HEIGHT: usize = 300;
+const WIDTH: usize = 400;
+const HEIGHT: usize = 200;
 const VIEW_WIDTH: u32 = 400;
 const VIEW_HEIGHT: u32 = 200;
 
@@ -86,51 +63,33 @@ fn main() {
     App::new()
         .add_plugins(DefaultPlugins)
         .init_state::<AppState>()
-        .add_sub_state::<Simulating>()
         .insert_resource(HealpixDepth(5))
-        .insert_resource(ColorKind::Plates)
         .insert_resource(Rotating(true))
-        .insert_resource(ShowCenters(false))
-        .insert_resource(ShowBorders(false))
-        .insert_resource(Time::<Fixed>::from_hz(5.0))
+        .insert_resource(NoiseSourceRes(Box::new(ValueNoise::new(
+            3,
+            // Oracle::new(|| thread_rng().gen()),
+            |lon, lat| (lon + lat) * FRAC_1_PI % 1.0,
+            |a0, a1, w| (a1 - a0) * w + a0,
+        ))))
         .add_event::<DepthChanged>()
-        .add_event::<RecolorPlates>()
-        .add_systems(Startup, setup)
-        .add_systems(PostStartup, update_healpix)
-        .add_systems(
-            PreUpdate,
-            (
-                recolor_plates.run_if(on_event::<RecolorPlates>()),
-                update_healpix.run_if(on_event::<DepthChanged>()),
-            ),
-        )
+        .add_systems(Startup, (setup, update_healpix.after(setup)))
+        .add_systems(PreUpdate, update_healpix.run_if(on_event::<DepthChanged>()))
         .add_systems(
             Update,
             (
                 update_map_camera,
                 handle_keypresses,
-                update_colors.run_if(
-                    resource_exists::<TerrainData>.and_then(
-                        resource_changed::<TerrainData>
-                            .or_else(resource_changed::<ColorKind>)
-                            .or_else(resource_changed::<ShowBorders>),
-                    ),
-                ),
                 rotate_sphere.run_if(resource_equals(Rotating(true))),
             ),
         )
         .add_systems(
-            FixedUpdate,
-            update_terrain
-                .before(update_colors)
-                .run_if(in_state(Simulating)),
-        )
-        .add_systems(
             PostUpdate,
-            update_texture
-                .run_if(resource_changed::<HealpixPixels>.or_else(resource_changed::<ShowCenters>)),
+            update_texture.run_if(
+                resource_changed::<HealpixPixels>
+                    .or_else(resource_exists_and_changed::<NoiseSourceRes>),
+            ),
         )
-        .add_systems(OnEnter(AppState::Init), setup_terrain)
+        .add_systems(OnEnter(AppState::Heights), update_texture)
         .run();
 }
 
@@ -213,60 +172,6 @@ fn setup(
         MiniMap,
     ));
 }
-
-fn setup_terrain(mut commands: Commands, depth: Res<HealpixDepth>) {
-    let state = init_terrain(depth.0, &mut thread_rng());
-    let colors: Box<[LinearRgba]> = thread_rng()
-        .sample_iter(RandomColor)
-        .take(state.plates().len())
-        .collect();
-    commands.insert_resource(TerrainData(state, colors));
-}
-
-fn recolor_plates(mut terr: ResMut<TerrainData>) {
-    terr.1.fill_with(|| thread_rng().sample(RandomColor));
-}
-
-fn update_colors(
-    terr: Res<TerrainData>,
-    mut pixels: ResMut<HealpixPixels>,
-    color_kind: Res<ColorKind>,
-    bord: Res<ShowBorders>,
-    state: Res<State<AppState>>,
-) {
-    if matches!(state.get(), AppState::Init | AppState::Simulate { .. }) {
-        let TerrainData(state, colors) = &*terr;
-        for (n, (cell, color)) in state.cells().iter().zip(&mut pixels.0).enumerate() {
-            if bord.0 && state.boundaries().contains(n as _) {
-                *color = LinearRgba::RED;
-            } else {
-                match *color_kind {
-                    ColorKind::Plates => *color = colors[cell.plate as usize],
-                    ColorKind::Height => {
-                        *color = LinearRgba::gray(
-                            cell.height.cbrt().tanh().mul_add(0.5, 0.5).clamp(0.0, 1.0),
-                        )
-                    }
-                    ColorKind::Feats => {
-                        let base = match cell.feats.kind {
-                            CellFeatureKind::None => LinearRgba::BLACK,
-                            CellFeatureKind::Subduction => LinearRgba::BLUE,
-                            CellFeatureKind::Mountain => LinearRgba::GREEN,
-                            CellFeatureKind::Ridge => LinearRgba::RED,
-                        };
-                        *color =
-                            base.with_luminance((-(cell.feats.dist as f32 * 0.5).powi(2)).exp());
-                    }
-                }
-            }
-        }
-    }
-}
-
-fn update_terrain(mut terr: ResMut<TerrainData>) {
-    step_terrain(&mut terr.0, &mut thread_rng());
-}
-
 fn handle_keypresses(
     mut commands: Commands,
     keys: Res<ButtonInput<KeyCode>>,
@@ -274,11 +179,7 @@ fn handle_keypresses(
     mut next_state: ResMut<NextState<AppState>>,
     mut depth: ResMut<HealpixDepth>,
     mut rotating: ResMut<Rotating>,
-    mut colors: ResMut<ColorKind>,
-    mut centers: ResMut<ShowCenters>,
-    mut borders: ResMut<ShowBorders>,
     mut depth_evt: EventWriter<DepthChanged>,
-    mut recolor_evt: EventWriter<RecolorPlates>,
     mut exit_evt: EventWriter<AppExit>,
 ) {
     if keys.any_pressed([KeyCode::ControlLeft, KeyCode::ControlRight])
@@ -289,18 +190,6 @@ fn handle_keypresses(
     if keys.just_pressed(KeyCode::KeyS) {
         rotating.0 = !rotating.0;
     }
-    if keys.just_pressed(KeyCode::KeyP) {
-        *colors = ColorKind::Plates;
-    }
-    if keys.just_pressed(KeyCode::KeyH) {
-        *colors = ColorKind::Height;
-    }
-    if keys.just_pressed(KeyCode::KeyF) {
-        *colors = ColorKind::Feats;
-    }
-    if keys.just_pressed(KeyCode::KeyB) {
-        borders.0 = !borders.0;
-    }
     if keys.just_pressed(KeyCode::KeyR) {
         commands.remove_resource::<TerrainData>();
         next_state.set(AppState::Healpix);
@@ -309,7 +198,7 @@ fn handle_keypresses(
     match *state.get() {
         AppState::Healpix => {
             if keys.just_pressed(KeyCode::Space) {
-                next_state.set(AppState::Init);
+                next_state.set(AppState::Heights);
             } else {
                 let mut evt = false;
                 if keys.just_pressed(KeyCode::KeyP) {
@@ -329,32 +218,9 @@ fn handle_keypresses(
                 }
             }
         }
-        AppState::Init => {
+        AppState::Heights => {
             if keys.just_pressed(KeyCode::Space) {
-                next_state.set(AppState::Simulate {
-                    iter: 0,
-                    running: true,
-                });
-            }
-            if keys.just_pressed(KeyCode::KeyC) {
-                recolor_evt.send(RecolorPlates);
-            }
-            if keys.just_pressed(KeyCode::KeyX) {
-                centers.0 = !centers.0;
-            }
-        }
-        AppState::Simulate { iter, running } => {
-            if keys.just_pressed(KeyCode::Space) {
-                next_state.set(AppState::Simulate {
-                    iter,
-                    running: !running,
-                });
-            }
-            if keys.just_pressed(KeyCode::KeyC) {
-                recolor_evt.send(RecolorPlates);
-            }
-            if keys.just_pressed(KeyCode::KeyX) {
-                centers.0 = !centers.0;
+                // TODO: next state
             }
         }
     }
@@ -368,7 +234,7 @@ fn update_healpix(mut commands: Commands, depth: Res<HealpixDepth>) {
     let image_map = (0..(WIDTH * HEIGHT))
         .map(|i| {
             use std::f64::consts::*;
-            let x = ((i % WIDTH) as f64).mul_add(TAU / WIDTH as f64, -PI);
+            let x = (i % WIDTH) as f64 * TAU / WIDTH as f64;
             let y = ((i / WIDTH) as f64).mul_add(-PI / HEIGHT as f64, FRAC_PI_2);
             cdshealpix::nested::hash(depth.0, x, y) as usize
         })
@@ -401,12 +267,12 @@ fn update_map_camera(
 fn update_texture(
     map: Res<HealpixMap>,
     data: Res<HealpixPixels>,
+    state: Res<State<AppState>>,
+    noise: Option<Res<NoiseSourceRes>>,
     mut images: ResMut<Assets<Image>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut planet: Query<&mut Handle<StandardMaterial>, With<Planet>>,
     mut minimap: Query<&mut Handle<Image>, With<MiniMap>>,
-    terrain: Option<Res<TerrainData>>,
-    show_centers: Res<ShowCenters>,
 ) {
     let mut img = Image::new(
         Extent3d {
@@ -419,32 +285,20 @@ fn update_texture(
         TextureFormat::Rgba8Unorm,
         RenderAssetUsages::RENDER_WORLD,
     );
-    'pixels: for (n, d) in bytemuck::cast_slice_mut(&mut img.data)
+    for (n, d) in bytemuck::cast_slice_mut(&mut img.data)
         .iter_mut()
         .enumerate()
     {
-        if show_centers.0 {
-            if let Some(r) = &terrain {
-                let TerrainData(state, colors) = &**r;
-                let mut black = false;
-                let cx = ((n % WIDTH) as f32).mul_add(TAU / WIDTH as f32, -PI);
-                let cy = ((n / WIDTH) as f32).mul_add(-PI / HEIGHT as f32, FRAC_PI_2);
-                for (plate, color) in state.plates().iter().zip(colors) {
-                    let sqdist = (cx - plate.center_long).powi(2) + (cy - plate.center_lat).powi(2);
-                    if sqdist < 0.005 {
-                        *d = color.as_u32();
-                        continue 'pixels;
-                    } else if sqdist < 0.015 {
-                        black = true;
-                    }
-                }
-                if black {
-                    *d = LinearRgba::BLACK.as_u32();
-                    continue 'pixels;
-                }
+        match **state {
+            AppState::Healpix => *d = data.0[map.0[n]].as_u32(),
+            AppState::Heights => {
+                use std::f32::consts::*;
+                let x = ((n % WIDTH) as f32) * TAU / WIDTH as f32;
+                let y = ((n / WIDTH) as f32).mul_add(-PI / HEIGHT as f32, FRAC_PI_2);
+                let height = noise.as_ref().unwrap().0.get_height(x, y);
+                *d = LinearRgba::gray(height).as_u32();
             }
         }
-        *d = data.0[map.0[n]].as_u32();
     }
     let image = images.add(img);
     *planet.single_mut() = materials.add(StandardMaterial {
