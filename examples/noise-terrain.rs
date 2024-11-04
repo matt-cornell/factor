@@ -130,10 +130,10 @@ fn main() {
         .insert_resource(Rotating(true))
         .insert_resource(ShowOceans(false))
         .insert_resource(NoiseSourceRes(vec![
-            NoiseSourceBuilder::value(1, 0.0, 0.05),
-            NoiseSourceBuilder::value(1, 0.1, 0.05),
-            NoiseSourceBuilder::value(2, 0.2, 0.394),
-            NoiseSourceBuilder::value(2, 0.3, 0.394),
+            NoiseSourceBuilder::value(1, 0.0, 0.15),
+            NoiseSourceBuilder::value(1, 0.1, 0.15),
+            NoiseSourceBuilder::value(2, 0.2, 0.294),
+            NoiseSourceBuilder::value(2, 0.3, 0.294),
             NoiseSourceBuilder::value(3, 0.5, 0.05),
             NoiseSourceBuilder::value(3, 0.7, 0.05),
             NoiseSourceBuilder::gradient(5, 0.0, 0.01),
@@ -320,7 +320,7 @@ fn update_texture(
         let height = noise.0.get_height(x, y);
         match **state {
             AppState::Heights => {
-                *d = if oceans.0 && height < 0.5 {
+                *d = if oceans.0 && height < 0.6 {
                     LinearRgba::from(Srgba::rgb_u8(0, 51, 102)).with_luminance(height * 0.5)
                 } else {
                     LinearRgba::gray(height)
