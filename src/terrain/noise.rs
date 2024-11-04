@@ -5,6 +5,15 @@ use ordered_float::OrderedFloat;
 use std::f64::consts::{FRAC_PI_2, TAU};
 use std::sync::{Mutex, PoisonError};
 
+fn circle_dist(a: Vec2, b: Vec2) -> Vec2 {
+    use std::f32::consts::*;
+    let mut dist = a - b;
+    if dist.x > PI {
+        dist.x -= TAU;
+    }
+    dist
+}
+
 /// Default interpolator function
 pub fn interpolate(a0: f32, a1: f32, w: f32) -> f32 {
     (a1 - a0) * (3.0 - w * 2.0) * w * w + a0
@@ -15,33 +24,48 @@ pub trait NoiseSource {
     fn get_height(&self, lon: f32, lat: f32) -> f32;
 }
 
-/// A function that takes a longitude and latitude and returns a pseudo-random value
-pub trait ValueHash {
-    fn pos_hash(&self, lon: f32, lat: f32) -> f32;
-}
-impl<F: Fn(f32, f32) -> f32> ValueHash for F {
-    fn pos_hash(&self, lon: f32, lat: f32) -> f32 {
-        self(lon, lat)
+#[derive(Debug, Clone, Copy)]
+pub struct NoiseFn<F>(pub F);
+impl<F: Fn(f32, f32) -> f32> NoiseSource for NoiseFn<F> {
+    fn get_height(&self, lon: f32, lat: f32) -> f32 {
+        self.0(lon, lat)
     }
 }
 
-/// A function that takes a longitude and latitude and returns a pseudo-random vector
-pub trait GradientHash {
-    fn grad_hash(&self, lon: f32, lat: f32) -> Vec2;
+#[derive(Debug, Clone, Copy)]
+pub struct Shifted<N> {
+    pub base: N,
+    pub shift: f32,
 }
-impl<F: Fn(f32, f32) -> Vec2> GradientHash for F {
-    fn grad_hash(&self, lon: f32, lat: f32) -> Vec2 {
+impl<N> Shifted<N> {
+    pub const fn new(base: N, shift: f32) -> Self {
+        Self { base, shift }
+    }
+}
+impl<N: NoiseSource> NoiseSource for Shifted<N> {
+    fn get_height(&self, lon: f32, lat: f32) -> f32 {
+        self.base
+            .get_height((lon + self.shift) % std::f32::consts::TAU, lat)
+    }
+}
+
+/// A function that takes a longitude and latitude and returns a pseudo-random value
+pub trait ValueHash<I, O> {
+    fn hash(&self, input: I) -> O;
+}
+impl<O, F: Fn(f32, f32) -> O> ValueHash<(f32, f32), O> for F {
+    fn hash(&self, (lon, lat): (f32, f32)) -> O {
         self(lon, lat)
     }
 }
 
 /// An oracle is a "hash" function that generates random values and stores them in a lookup table
 #[derive(Debug)]
-pub struct Oracle<F, V> {
+pub struct PosOracle<F, V> {
     rand: F,
     lookup: Mutex<HashMap<[OrderedFloat<f32>; 2], V>>,
 }
-impl<F, V> Oracle<F, V> {
+impl<F, V> PosOracle<F, V> {
     pub fn new(rand: F) -> Self {
         Self {
             rand,
@@ -49,7 +73,7 @@ impl<F, V> Oracle<F, V> {
         }
     }
 }
-impl<F: Fn() -> V, V: Copy> Oracle<F, V> {
+impl<F: Fn() -> V, V: Copy> PosOracle<F, V> {
     pub fn get(&self, lon: f32, lat: f32) -> V {
         let mut lock = self.lookup.lock().unwrap_or_else(PoisonError::into_inner);
         *lock
@@ -60,14 +84,15 @@ impl<F: Fn() -> V, V: Copy> Oracle<F, V> {
             .or_insert_with(&self.rand)
     }
 }
-impl<F: Fn() -> f32> ValueHash for Oracle<F, f32> {
-    fn pos_hash(&self, lon: f32, lat: f32) -> f32 {
+impl<F: Fn() -> O, O: Copy> ValueHash<(f32, f32), O> for PosOracle<F, O> {
+    fn hash(&self, (lon, lat): (f32, f32)) -> O {
         self.get(lon, lat)
     }
 }
-impl<F: Fn() -> Vec2> GradientHash for Oracle<F, Vec2> {
-    fn grad_hash(&self, lon: f32, lat: f32) -> Vec2 {
-        self.get(lon, lat)
+
+impl<O: Copy> ValueHash<usize, O> for Box<[O]> {
+    fn hash(&self, input: usize) -> O {
+        self[input]
     }
 }
 
@@ -81,16 +106,33 @@ impl<F: Fn(f32, f32, f32) -> f32> Interpolator for F {
     }
 }
 
+pub trait Scaler {
+    fn scale(&self, w: f32) -> f32;
+}
+impl<F: Fn(f32) -> f32> Scaler for F {
+    fn scale(&self, w: f32) -> f32 {
+        self(w)
+    }
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+pub struct Identity;
+impl Scaler for Identity {
+    fn scale(&self, w: f32) -> f32 {
+        w
+    }
+}
+
 /// Value noise
 ///
 /// Takes a value hasher and an interpolator, along with the nested healpix depth
 #[derive(Debug, Clone, Copy)]
-pub struct ValueNoise<H, I> {
+pub struct ValueCornerNoise<H, I> {
+    pub depth: u8,
     pub hasher: H,
     pub interp: I,
-    pub depth: u8,
 }
-impl<H, I> ValueNoise<H, I> {
+impl<H, I> ValueCornerNoise<H, I> {
     pub const fn new(depth: u8, hasher: H, interp: I) -> Self {
         Self {
             depth,
@@ -99,7 +141,7 @@ impl<H, I> ValueNoise<H, I> {
         }
     }
 }
-impl<H: ValueHash, I: Interpolator> NoiseSource for ValueNoise<H, I> {
+impl<H: ValueHash<(f32, f32), f32>, I: Interpolator> NoiseSource for ValueCornerNoise<H, I> {
     fn get_height(&self, lon: f32, lat: f32) -> f32 {
         let layer = healpix::nested::get(self.depth);
         let hash = layer.hash(
@@ -108,7 +150,7 @@ impl<H: ValueHash, I: Interpolator> NoiseSource for ValueNoise<H, I> {
         );
         let vec = Vec2::new(lon, lat);
         let verts = layer.vertices(hash).map(|(x, y)| Vec2::new(x as _, y as _));
-        let weights = verts.map(|v| self.hasher.pos_hash(v.x, v.y));
+        let weights = verts.map(|v| self.hasher.hash((v.x, v.y)));
         let d1 = verts[0] - verts[1];
         let w1 = d1.dot(vec - verts[1]).max(0.0) / d1.length();
         let v1 = self.interp.interp(weights[0], weights[1], w1);
@@ -127,12 +169,12 @@ impl<H: ValueHash, I: Interpolator> NoiseSource for ValueNoise<H, I> {
 ///
 /// Takes a value hasher and an interpolator, along with the nested healpix depth
 #[derive(Debug, Clone, Copy)]
-pub struct GradientNoise<H, I> {
+pub struct GradientCornerNoise<H, I> {
+    pub depth: u8,
     pub hasher: H,
     pub interp: I,
-    pub depth: u8,
 }
-impl<H, I> GradientNoise<H, I> {
+impl<H, I> GradientCornerNoise<H, I> {
     pub const fn new(depth: u8, hasher: H, interp: I) -> Self {
         Self {
             depth,
@@ -141,7 +183,7 @@ impl<H, I> GradientNoise<H, I> {
         }
     }
 }
-impl<H: GradientHash, I: Interpolator> NoiseSource for GradientNoise<H, I> {
+impl<H: ValueHash<(f32, f32), Vec2>, I: Interpolator> NoiseSource for GradientCornerNoise<H, I> {
     fn get_height(&self, lon: f32, lat: f32) -> f32 {
         let layer = healpix::nested::get(self.depth);
         let hash = layer.hash(
@@ -152,7 +194,7 @@ impl<H: GradientHash, I: Interpolator> NoiseSource for GradientNoise<H, I> {
         let verts = layer
             .vertices(hash)
             .map(|(x, y)| Vec2::new(x as f32 % std::f32::consts::TAU, y as _));
-        let weights = verts.map(|v| self.hasher.grad_hash(v.x, v.y).dot(vec - v));
+        let weights = verts.map(|v| self.hasher.hash((v.x, v.y)).dot(vec - v));
         let v1 = self.interp.interp(
             weights[0],
             weights[1],
@@ -172,6 +214,101 @@ impl<H: GradientHash, I: Interpolator> NoiseSource for GradientNoise<H, I> {
         )
     }
 }
+
+#[derive(Debug, Clone, Copy)]
+pub struct ValueCellNoise<H, S> {
+    pub depth: u8,
+    pub hasher: H,
+    pub scale: S,
+}
+impl<H> ValueCellNoise<H, Identity> {
+    pub const fn new(depth: u8, hasher: H) -> Self {
+        Self {
+            depth,
+            hasher,
+            scale: Identity,
+        }
+    }
+}
+impl<H, S> ValueCellNoise<H, S> {
+    pub const fn with_scale(depth: u8, hasher: H, scale: S) -> Self {
+        Self {
+            depth,
+            hasher,
+            scale,
+        }
+    }
+}
+impl<H: ValueHash<usize, f32>, S: Scaler> NoiseSource for ValueCellNoise<H, S> {
+    fn get_height(&self, lon: f32, lat: f32) -> f32 {
+        let layer = healpix::nested::get(self.depth);
+        let neighs = layer.bilinear_interpolation(
+            (lon as f64) % TAU,
+            (lat as f64).clamp(-FRAC_PI_2, FRAC_PI_2),
+        );
+        let Vec2 { x: sum, y: scale } = neighs
+            .iter()
+            .map(|&(n, w)| {
+                let s = self.scale.scale(w as f32);
+                Vec2::new(self.hasher.hash(n as _) * s, s)
+            })
+            .sum();
+        sum / scale
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct GradientCellNoise<H, S> {
+    pub depth: u8,
+    pub hasher: H,
+    pub scale: S,
+}
+impl<H> GradientCellNoise<H, Identity> {
+    pub const fn new(depth: u8, hasher: H) -> Self {
+        Self {
+            depth,
+            hasher,
+            scale: Identity,
+        }
+    }
+}
+impl<H, S> GradientCellNoise<H, S> {
+    pub const fn with_scale(depth: u8, hasher: H, scale: S) -> Self {
+        Self {
+            depth,
+            hasher,
+            scale,
+        }
+    }
+}
+impl<H: ValueHash<usize, Vec2>, S: Scaler> NoiseSource for GradientCellNoise<H, S> {
+    fn get_height(&self, lon: f32, lat: f32) -> f32 {
+        let layer = healpix::nested::get(self.depth);
+        let neighs = layer.bilinear_interpolation(
+            (lon as f64) % TAU,
+            (lat as f64).clamp(-FRAC_PI_2, FRAC_PI_2),
+        );
+        let vec = Vec2::new(lon, lat);
+        let Vec2 { x: sum, y: scale } = neighs
+            .iter()
+            .map(|&(n, w)| {
+                let (cx, cy) = layer.center(n as _);
+                let c = Vec2::new(cx as _, cy as _);
+                let s = self.scale.scale(w as f32);
+                Vec2::new(
+                    self.hasher
+                        .hash(n as _)
+                        .dot(circle_dist(vec, c).normalize_or_zero())
+                        .mul_add(0.5, 0.5)
+                        * s,
+                    s,
+                )
+            })
+            .sum();
+        sum / scale
+    }
+}
+
 impl<T: NoiseSource, const N: usize> NoiseSource for [T; N] {
     fn get_height(&self, lon: f32, lat: f32) -> f32 {
         self.iter().map(|n| n.get_height(lon, lat)).sum()
@@ -187,8 +324,39 @@ impl<T: NoiseSource> NoiseSource for &T {
         T::get_height(self, lon, lat)
     }
 }
+impl<T: NoiseSource> NoiseSource for Box<T> {
+    fn get_height(&self, lon: f32, lat: f32) -> f32 {
+        T::get_height(self, lon, lat)
+    }
+}
+impl<T: NoiseSource> NoiseSource for std::sync::Arc<T> {
+    fn get_height(&self, lon: f32, lat: f32) -> f32 {
+        T::get_height(self, lon, lat)
+    }
+}
 impl<T: NoiseSource> NoiseSource for (T, f32) {
     fn get_height(&self, lon: f32, lat: f32) -> f32 {
         self.0.get_height(lon, lat) * self.1
     }
 }
+impl<T: NoiseSource> NoiseSource for (T, [f32; 2]) {
+    fn get_height(&self, lon: f32, lat: f32) -> f32 {
+        self.0.get_height(lon, lat).mul_add(self.1[0], self.1[1])
+    }
+}
+macro_rules! impl_for_tuple {
+    () => {};
+    ($first:ident $(, $rest:ident)*) => {
+        impl<$first: NoiseSource, $($rest: NoiseSource,)*> NoiseSource for ($first, $($rest,)*) {
+            #[allow(non_snake_case, unused_mut)]
+            fn get_height(&self, lon: f32, lat: f32) -> f32 {
+                let ($first, $($rest,)*) = self;
+                let mut out = $first.get_height(lon, lat);
+                $(out += $rest.get_height(lon, lat);)*
+                out
+            }
+        }
+        impl_for_tuple!($($rest),*);
+    };
+}
+impl_for_tuple!(A, B, C, D, E, F, G, H, I, J, K, L);

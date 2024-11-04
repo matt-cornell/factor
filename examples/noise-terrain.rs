@@ -12,31 +12,21 @@ use std::f32::consts::*;
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, States)]
 enum AppState {
     #[default]
-    Healpix,
     Heights,
 }
-
-/// Depth to use
-#[derive(Resource)]
-struct HealpixDepth(u8);
-
-/// Mapping from pixel to corresponding section
-#[derive(Resource)]
-struct HealpixMap(Box<[usize]>);
-
-/// Image data
-#[derive(Resource)]
-struct HealpixPixels(Box<[LinearRgba]>);
 
 /// Currently rotating
 #[derive(Resource, PartialEq)]
 struct Rotating(bool);
 
 #[derive(Resource)]
-struct NoiseSourceRes(Box<dyn NoiseSource + Send + Sync>);
+struct ShowOceans(bool);
 
 #[derive(Resource)]
-struct TerrainData();
+struct NoiseSourceRes(Vec<NoiseSourceBuilder>);
+
+#[derive(Resource)]
+struct NoiseTerrain(Vec<(Shifted<ValueOrGradient>, f32)>);
 
 #[derive(Component)]
 struct Planet;
@@ -45,51 +35,125 @@ struct Planet;
 struct MiniMap;
 
 #[derive(Event)]
-struct DepthChanged;
-
-struct RandomColor;
-impl Distribution<LinearRgba> for RandomColor {
-    fn sample<R: Rng + ?Sized>(&self, rng: &mut R) -> LinearRgba {
-        LinearRgba::rgb(rng.gen(), rng.gen(), rng.gen())
-    }
-}
+struct ReloadTerrain;
 
 const WIDTH: usize = 400;
 const HEIGHT: usize = 200;
 const VIEW_WIDTH: u32 = 400;
 const VIEW_HEIGHT: u32 = 200;
 
+fn smoothstep(w: f32) -> f32 {
+    (3.0 - w * 2.0) * w * w
+}
+
+#[allow(clippy::type_complexity)]
+#[derive(Debug, Clone)]
+enum ValueOrGradient {
+    Value(ValueCellNoise<Box<[f32]>, fn(f32) -> f32>),
+    Gradient(GradientCellNoise<Box<[Vec2]>, fn(f32) -> f32>),
+}
+impl NoiseSource for ValueOrGradient {
+    fn get_height(&self, lon: f32, lat: f32) -> f32 {
+        match self {
+            Self::Value(v) => v.get_height(lon, lat),
+            Self::Gradient(g) => g.get_height(lon, lat),
+        }
+    }
+}
+
+fn cell_noise(gradient: bool, depth: u8, shift: f32) -> Shifted<ValueOrGradient> {
+    let base = if gradient {
+        ValueOrGradient::Gradient(GradientCellNoise {
+            depth,
+            hasher: thread_rng()
+                .sample_iter(rand_distr::UnitCircle)
+                .map(|[x, y]| Vec2::new(x, y))
+                .take(factor::healpix::n_hash(depth) as _)
+                .collect::<Box<[Vec2]>>(),
+            scale: smoothstep,
+        })
+    } else {
+        ValueOrGradient::Value(ValueCellNoise {
+            depth,
+            hasher: thread_rng()
+                .sample_iter(rand_distr::Standard)
+                .take(factor::healpix::n_hash(depth) as _)
+                .collect::<Box<[f32]>>(),
+            scale: smoothstep,
+        })
+    };
+    Shifted::new(base, shift)
+}
+
+#[derive(Debug, Clone, Copy)]
+struct NoiseSourceBuilder {
+    gradient: bool,
+    depth: u8,
+    shift: f32,
+    scale: f32,
+}
+impl NoiseSourceBuilder {
+    pub const fn value(depth: u8, shift: f32, scale: f32) -> Self {
+        Self {
+            gradient: false,
+            depth,
+            shift,
+            scale,
+        }
+    }
+    pub const fn gradient(depth: u8, shift: f32, scale: f32) -> Self {
+        Self {
+            gradient: true,
+            depth,
+            shift,
+            scale,
+        }
+    }
+    pub fn build(self) -> (Shifted<ValueOrGradient>, f32) {
+        (
+            cell_noise(self.gradient, self.depth, self.shift),
+            self.scale,
+        )
+    }
+}
+fn make_noise<I: IntoIterator<Item = NoiseSourceBuilder>>(
+    iter: I,
+) -> Vec<(Shifted<ValueOrGradient>, f32)> {
+    iter.into_iter().map(NoiseSourceBuilder::build).collect()
+}
+
 fn main() {
     App::new()
         .add_plugins(DefaultPlugins)
         .init_state::<AppState>()
-        .insert_resource(HealpixDepth(5))
+        .add_event::<ReloadTerrain>()
         .insert_resource(Rotating(true))
-        .insert_resource(NoiseSourceRes(Box::new(ValueNoise::new(
-            3,
-            // Oracle::new(|| thread_rng().gen()),
-            |lon, lat| (lon + lat) * FRAC_1_PI % 1.0,
-            |a0, a1, w| (a1 - a0) * w + a0,
-        ))))
-        .add_event::<DepthChanged>()
-        .add_systems(Startup, (setup, update_healpix.after(setup)))
-        .add_systems(PreUpdate, update_healpix.run_if(on_event::<DepthChanged>()))
+        .insert_resource(ShowOceans(false))
+        .insert_resource(NoiseSourceRes(vec![
+            NoiseSourceBuilder::value(1, 0.0, 0.05),
+            NoiseSourceBuilder::value(1, 0.1, 0.05),
+            NoiseSourceBuilder::value(2, 0.2, 0.394),
+            NoiseSourceBuilder::value(2, 0.3, 0.394),
+            NoiseSourceBuilder::value(3, 0.5, 0.05),
+            NoiseSourceBuilder::value(3, 0.7, 0.05),
+            NoiseSourceBuilder::gradient(5, 0.0, 0.01),
+        ]))
+        .add_systems(Startup, setup)
         .add_systems(
             Update,
             (
                 update_map_camera,
                 handle_keypresses,
                 rotate_sphere.run_if(resource_equals(Rotating(true))),
+                update_texture.run_if(
+                    resource_changed::<NoiseTerrain>
+                        .or_else(state_changed::<AppState>)
+                        .or_else(resource_changed::<ShowOceans>),
+                ),
+                update_terrain.run_if(on_event::<ReloadTerrain>()),
             ),
         )
-        .add_systems(
-            PostUpdate,
-            update_texture.run_if(
-                resource_changed::<HealpixPixels>
-                    .or_else(resource_exists_and_changed::<NoiseSourceRes>),
-            ),
-        )
-        .add_systems(OnEnter(AppState::Heights), update_texture)
+        .add_systems(OnEnter(AppState::Heights), update_terrain)
         .run();
 }
 
@@ -172,14 +236,14 @@ fn setup(
         MiniMap,
     ));
 }
+
 fn handle_keypresses(
-    mut commands: Commands,
+    // mut commands: Commands,
     keys: Res<ButtonInput<KeyCode>>,
     state: Res<State<AppState>>,
-    mut next_state: ResMut<NextState<AppState>>,
-    mut depth: ResMut<HealpixDepth>,
     mut rotating: ResMut<Rotating>,
-    mut depth_evt: EventWriter<DepthChanged>,
+    mut oceans: ResMut<ShowOceans>,
+    mut reroll_rand: EventWriter<ReloadTerrain>,
     mut exit_evt: EventWriter<AppExit>,
 ) {
     if keys.any_pressed([KeyCode::ControlLeft, KeyCode::ControlRight])
@@ -190,58 +254,16 @@ fn handle_keypresses(
     if keys.just_pressed(KeyCode::KeyS) {
         rotating.0 = !rotating.0;
     }
-    if keys.just_pressed(KeyCode::KeyR) {
-        commands.remove_resource::<TerrainData>();
-        next_state.set(AppState::Healpix);
-        depth_evt.send(DepthChanged);
+    if keys.just_pressed(KeyCode::KeyO) {
+        oceans.0 = !oceans.0;
     }
     match *state.get() {
-        AppState::Healpix => {
-            if keys.just_pressed(KeyCode::Space) {
-                next_state.set(AppState::Heights);
-            } else {
-                let mut evt = false;
-                if keys.just_pressed(KeyCode::KeyP) {
-                    if depth.0 < 20 {
-                        depth.0 += 1;
-                    }
-                    evt = true;
-                }
-                if keys.just_pressed(KeyCode::KeyL) {
-                    if depth.0 > 0 {
-                        depth.0 -= 1;
-                    }
-                    evt = true;
-                }
-                if evt || keys.just_pressed(KeyCode::KeyC) {
-                    depth_evt.send(DepthChanged);
-                }
-            }
-        }
         AppState::Heights => {
-            if keys.just_pressed(KeyCode::Space) {
-                // TODO: next state
+            if keys.just_pressed(KeyCode::KeyR) {
+                reroll_rand.send(ReloadTerrain);
             }
         }
     }
-}
-
-fn update_healpix(mut commands: Commands, depth: Res<HealpixDepth>) {
-    let start_data = thread_rng()
-        .sample_iter(RandomColor)
-        .take(cdshealpix::n_hash(depth.0) as _)
-        .collect::<Box<[_]>>();
-    let image_map = (0..(WIDTH * HEIGHT))
-        .map(|i| {
-            use std::f64::consts::*;
-            let x = (i % WIDTH) as f64 * TAU / WIDTH as f64;
-            let y = ((i / WIDTH) as f64).mul_add(-PI / HEIGHT as f64, FRAC_PI_2);
-            cdshealpix::nested::hash(depth.0, x, y) as usize
-        })
-        .collect();
-
-    commands.insert_resource(HealpixMap(image_map));
-    commands.insert_resource(HealpixPixels(start_data));
 }
 
 fn update_map_camera(
@@ -264,11 +286,14 @@ fn update_map_camera(
     }
 }
 
+fn update_terrain(mut commands: Commands, noise: Res<NoiseSourceRes>) {
+    commands.insert_resource(NoiseTerrain(make_noise(noise.0.iter().copied())));
+}
+
 fn update_texture(
-    map: Res<HealpixMap>,
-    data: Res<HealpixPixels>,
     state: Res<State<AppState>>,
-    noise: Option<Res<NoiseSourceRes>>,
+    noise: Res<NoiseTerrain>,
+    oceans: Res<ShowOceans>,
     mut images: ResMut<Assets<Image>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut planet: Query<&mut Handle<StandardMaterial>, With<Planet>>,
@@ -289,14 +314,18 @@ fn update_texture(
         .iter_mut()
         .enumerate()
     {
+        use std::f32::consts::*;
+        let x = ((n % WIDTH) as f32) * TAU / WIDTH as f32;
+        let y = ((n / WIDTH) as f32).mul_add(-PI / HEIGHT as f32, FRAC_PI_2);
+        let height = noise.0.get_height(x, y);
         match **state {
-            AppState::Healpix => *d = data.0[map.0[n]].as_u32(),
             AppState::Heights => {
-                use std::f32::consts::*;
-                let x = ((n % WIDTH) as f32) * TAU / WIDTH as f32;
-                let y = ((n / WIDTH) as f32).mul_add(-PI / HEIGHT as f32, FRAC_PI_2);
-                let height = noise.as_ref().unwrap().0.get_height(x, y);
-                *d = LinearRgba::gray(height).as_u32();
+                *d = if oceans.0 && height < 0.5 {
+                    LinearRgba::from(Srgba::rgb_u8(0, 51, 102)).with_luminance(height * 0.5)
+                } else {
+                    LinearRgba::gray(height)
+                }
+                .as_u32();
             }
         }
     }
