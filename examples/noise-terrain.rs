@@ -1,10 +1,10 @@
-#![allow(clippy::too_many_arguments)]
+#![allow(clippy::too_many_arguments, clippy::type_complexity)]
 use bevy::prelude::*;
-use bevy::render::camera::Viewport;
+use bevy::render::camera::{RenderTarget, Viewport};
 use bevy::render::render_asset::RenderAssetUsages;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use bevy::render::view::RenderLayers;
-use bevy::window::WindowResized;
+use bevy::window::{PrimaryWindow, WindowResized};
 use bevy_egui::{egui, EguiContexts, EguiPlugin};
 use factor::terrain::noise::*;
 use rand::prelude::*;
@@ -42,8 +42,17 @@ struct Planet;
 #[derive(Component)]
 struct MiniMap;
 
+#[derive(Component)]
+struct Controls;
+
 #[derive(Event)]
 struct ReloadTerrain;
+
+#[derive(Event)]
+struct ToggleMap;
+
+#[derive(Event)]
+struct ToggleControls;
 
 const WIDTH: usize = 400;
 const HEIGHT: usize = 200;
@@ -54,7 +63,6 @@ fn smoothstep(w: f32) -> f32 {
     (3.0 - w * 2.0) * w * w
 }
 
-#[allow(clippy::type_complexity)]
 #[derive(Debug, Clone)]
 enum ValueOrGradient {
     Value(ValueCellNoise<Box<[f32]>, fn(f32) -> f32>),
@@ -145,10 +153,19 @@ fn make_noise<'a, I: IntoIterator<Item = &'a NoiseSourceBuilder>>(
 
 fn main() {
     App::new()
-        .add_plugins(DefaultPlugins)
+        .add_plugins(DefaultPlugins.set(WindowPlugin {
+            primary_window: Some(Window {
+                fit_canvas_to_parent: true,
+                title: "Noise Terrain".into(),
+                ..default()
+            }),
+            ..default()
+        }))
         .add_plugins(EguiPlugin)
         .init_state::<AppState>()
         .add_event::<ReloadTerrain>()
+        .add_event::<ToggleMap>()
+        .add_event::<ToggleControls>()
         .insert_resource(Rotating(true))
         .insert_resource(LayerFilter(None))
         .insert_resource(ShowOceans {
@@ -180,6 +197,10 @@ fn main() {
                 ),
                 update_noise_terrain.run_if(resource_changed::<NoiseSourceRes>),
                 reload_terrain.run_if(on_event::<ReloadTerrain>()),
+                #[cfg(not(target_family = "wasm"))]
+                toggle_map.run_if(on_event::<ToggleMap>()),
+                #[cfg(not(target_family = "wasm"))]
+                toggle_controls.run_if(on_event::<ToggleControls>()),
             ),
         )
         .add_systems(OnEnter(AppState::Heights), reload_terrain)
@@ -269,6 +290,24 @@ fn setup(
             )),
             ..default()
         },
+        map_layer.clone(),
+        MiniMap,
+    ));
+
+    #[cfg(not(target_family = "wasm"))]
+    commands.spawn((
+        ButtonBundle {
+            style: Style {
+                top: Val::Px(0.0),
+                left: Val::Px(0.0),
+                width: Val::Px(20.0),
+                height: Val::Px(20.0),
+                ..default()
+            },
+            z_index: ZIndex::Global(10),
+            background_color: BackgroundColor(Color::srgb_u8(128, 0, 0)),
+            ..default()
+        },
         map_layer,
         MiniMap,
     ));
@@ -276,11 +315,17 @@ fn setup(
 
 fn handle_keypresses(
     // mut commands: Commands,
+    #[cfg(not(target_family = "wasm"))] click: Query<
+        &Interaction,
+        (Changed<Interaction>, With<Button>, With<MiniMap>),
+    >,
     keys: Res<ButtonInput<KeyCode>>,
     state: Res<State<AppState>>,
     mut rotating: ResMut<Rotating>,
     mut oceans: ResMut<ShowOceans>,
     mut reroll_rand: EventWriter<ReloadTerrain>,
+    #[cfg(not(target_family = "wasm"))] mut toggle_map: EventWriter<ToggleMap>,
+    #[cfg(not(target_family = "wasm"))] mut toggle_ctrls: EventWriter<ToggleControls>,
     mut exit_evt: EventWriter<AppExit>,
 ) {
     if keys.any_pressed([KeyCode::ControlLeft, KeyCode::ControlRight])
@@ -293,6 +338,14 @@ fn handle_keypresses(
     }
     if keys.just_pressed(KeyCode::KeyO) {
         oceans.show = !oceans.show;
+    }
+    #[cfg(not(target_family = "wasm"))]
+    if matches!(click.get_single(), Ok(&Interaction::Pressed)) || keys.just_pressed(KeyCode::KeyM) {
+        toggle_map.send(ToggleMap);
+    }
+    #[cfg(not(target_family = "wasm"))]
+    if keys.just_pressed(KeyCode::KeyC) {
+        toggle_ctrls.send(ToggleControls);
     }
     match *state.get() {
         AppState::Heights => {
@@ -312,140 +365,164 @@ fn update_ui(
     mut terrain: ResMut<NoiseTerrain>,
     mut reroll_rand: EventWriter<ReloadTerrain>,
     mut wip_layer: Local<Option<NoiseSourceBuilder>>,
+    popout: Query<Entity, (With<Window>, With<Controls>)>,
+    primary: Query<Entity, With<PrimaryWindow>>,
+    #[cfg(not(target_family = "wasm"))] mut toggle_ctrls: EventWriter<ToggleControls>,
 ) {
-    egui::SidePanel::left("controls")
-        .resizable(true)
-        .show(contexts.ctx_mut(), |ui| {
-            ui.set_min_width(200.0);
+    let callback = |ui: &mut egui::Ui| {
+        ui.set_min_width(200.0);
+        ui.horizontal(|ui| {
             ui.label(egui::RichText::new("Controls").size(20.0));
-            if ui.button("Restart").clicked() {
-                reroll_rand.send(ReloadTerrain);
-            }
-            if ui
-                .checkbox(&mut rotating.bypass_change_detection().0, "Rotating")
-                .changed()
-            {
-                let _ = &mut *rotating;
-            }
-            ui.collapsing(egui::RichText::new("Oceans").size(18.0), |ui| {
-                if ui
-                    .checkbox(&mut oceans.bypass_change_detection().show, "Show Oceans")
-                    .changed()
-                {
-                    let _ = &mut *oceans;
-                }
-                if ui
-                    .add(egui::Slider::new(
-                        &mut oceans.bypass_change_detection().depth,
-                        0.0..=1.0,
-                    ))
-                    .changed()
-                {
-                    let _ = &mut *oceans;
-                }
-            });
-            ui.collapsing(egui::RichText::new("Noise").size(18.0), |ui| {
-                let mut showing = None;
-                let mut changed = false;
-                let mut delete = None;
-                let popup_id = egui::Id::new("new-layer");
-                let new_button = ui.button("New");
-                if new_button.clicked() {
-                    ui.memory_mut(|mem| mem.open_popup(popup_id));
-                }
-                egui::popup_above_or_below_widget(
-                    ui,
-                    popup_id,
-                    &new_button,
-                    egui::AboveOrBelow::Below,
-                    egui::PopupCloseBehavior::CloseOnClickOutside,
-                    |ui| {
-                        ui.set_min_width(100.0);
-                        let layer = wip_layer.get_or_insert_default();
-                        ui.add(egui::Slider::new(&mut layer.depth, 0..=8).text("Layer"));
-                        ui.add(egui::Slider::new(&mut layer.scale, 0.0..=3.0).text("Scale"));
-                        ui.add(egui::Slider::new(&mut layer.shift, -0.5..=0.5).text("Shift"));
-                        ui.checkbox(&mut layer.gradient, "Gradient");
-                        ui.horizontal(|ui| {
-                            if ui.button("Add").clicked() {
-                                noise.0.push(wip_layer.take().unwrap());
-                            }
-                            if ui.button("Cancel").clicked() {
-                                *wip_layer = None;
-                            }
-                        })
-                    },
-                );
-
-                for (n, layer) in noise.bypass_change_detection().0.iter_mut().enumerate() {
-                    let frame = egui::Frame::group(ui.style()).show(ui, |ui| {
-                        ui.set_min_width(125.0);
-                        ui.label(format!(
-                            "Layer: {}\nScale: {}\nShift: {}\nGradient: {}",
-                            layer.depth, layer.scale, layer.shift, layer.gradient
-                        ));
-                    });
-                    frame.response.on_hover_ui(|ui| {
-                        showing = Some(n);
-                        egui::Frame::popup(ui.style()).show(ui, |ui| {
-                            *layer.changed.get_mut() |= ui
-                                .add(egui::Slider::new(&mut layer.depth, 0..=8).text("Layer"))
-                                .changed();
-                            if ui
-                                .add(egui::Slider::new(&mut layer.scale, 0.0..=3.0).text("Scale"))
-                                .changed()
-                            {
-                                changed = true; // don't count this as a change because it's lazy
-                                terrain.0[n].1 = layer.scale;
-                            }
-                            if ui
-                                .add(egui::Slider::new(&mut layer.shift, 0.0..=3.0).text("Scale"))
-                                .changed()
-                            {
-                                changed = true; // don't count this as a change because it's lazy
-                                terrain.0[n].0.shift = layer.shift;
-                            }
-                            *layer.changed.get_mut() |=
-                                ui.checkbox(&mut layer.gradient, "Gradient").changed();
-                            ui.horizontal(|ui| {
-                                if ui.button("Reload").clicked() {
-                                    *layer.changed.get_mut() = true;
-                                }
-                                if ui.button("Delete").clicked() {
-                                    delete = Some(n);
-                                    showing = None;
-                                }
-                            });
-                            changed |= *layer.changed.get_mut();
-                        });
-                    });
-                }
-                if filter.0 != showing {
-                    // avoid an update if we can
-                    filter.0 = showing;
-                }
-                if let Some(idx) = delete {
-                    noise.0.remove(idx);
-                }
-                if changed {
-                    let _ = &mut *noise;
+            #[cfg(not(target_family = "wasm"))]
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let label = if popout.get_single().is_ok() {
+                    "To Main"
+                } else {
+                    "Pop Out"
+                };
+                if ui.button(label).clicked() {
+                    toggle_ctrls.send(ToggleControls);
                 }
             });
         });
+        if ui.button("Restart").clicked() {
+            reroll_rand.send(ReloadTerrain);
+        }
+        if ui
+            .checkbox(&mut rotating.bypass_change_detection().0, "Rotating")
+            .changed()
+        {
+            let _ = &mut *rotating;
+        }
+        ui.collapsing(egui::RichText::new("Oceans").size(18.0), |ui| {
+            if ui
+                .checkbox(&mut oceans.bypass_change_detection().show, "Show Oceans")
+                .changed()
+            {
+                let _ = &mut *oceans;
+            }
+            if ui
+                .add(egui::Slider::new(
+                    &mut oceans.bypass_change_detection().depth,
+                    0.0..=1.0,
+                ))
+                .changed()
+            {
+                let _ = &mut *oceans;
+            }
+        });
+        ui.collapsing(egui::RichText::new("Noise").size(18.0), |ui| {
+            let mut showing = None;
+            let mut changed = false;
+            let mut delete = None;
+            let popup_id = egui::Id::new("new-layer");
+            let new_button = ui.button("New");
+            if new_button.clicked() {
+                ui.memory_mut(|mem| mem.open_popup(popup_id));
+            }
+            egui::popup_above_or_below_widget(
+                ui,
+                popup_id,
+                &new_button,
+                egui::AboveOrBelow::Below,
+                egui::PopupCloseBehavior::CloseOnClickOutside,
+                |ui| {
+                    ui.set_min_width(100.0);
+                    let layer = wip_layer.get_or_insert_default();
+                    ui.add(egui::Slider::new(&mut layer.depth, 0..=8).text("Layer"));
+                    ui.add(egui::Slider::new(&mut layer.scale, 0.0..=3.0).text("Scale"));
+                    ui.add(egui::Slider::new(&mut layer.shift, -0.5..=0.5).text("Shift"));
+                    ui.checkbox(&mut layer.gradient, "Gradient");
+                    ui.horizontal(|ui| {
+                        if ui.button("Add").clicked() {
+                            noise.0.push(wip_layer.take().unwrap());
+                        }
+                        if ui.button("Cancel").clicked() {
+                            *wip_layer = None;
+                        }
+                    })
+                },
+            );
+
+            for (n, layer) in noise.bypass_change_detection().0.iter_mut().enumerate() {
+                let frame = egui::Frame::group(ui.style()).show(ui, |ui| {
+                    ui.set_min_width(125.0);
+                    ui.label(format!(
+                        "Layer: {}\nScale: {}\nShift: {}\nGradient: {}",
+                        layer.depth, layer.scale, layer.shift, layer.gradient
+                    ));
+                });
+                frame.response.on_hover_ui(|ui| {
+                    showing = Some(n);
+                    egui::Frame::popup(ui.style()).show(ui, |ui| {
+                        *layer.changed.get_mut() |= ui
+                            .add(egui::Slider::new(&mut layer.depth, 0..=8).text("Layer"))
+                            .changed();
+                        if ui
+                            .add(egui::Slider::new(&mut layer.scale, 0.0..=3.0).text("Scale"))
+                            .changed()
+                        {
+                            changed = true; // don't count this as a change because it's lazy
+                            terrain.0[n].1 = layer.scale;
+                        }
+                        if ui
+                            .add(egui::Slider::new(&mut layer.shift, 0.0..=3.0).text("Scale"))
+                            .changed()
+                        {
+                            changed = true; // don't count this as a change because it's lazy
+                            terrain.0[n].0.shift = layer.shift;
+                        }
+                        *layer.changed.get_mut() |=
+                            ui.checkbox(&mut layer.gradient, "Gradient").changed();
+                        ui.horizontal(|ui| {
+                            if ui.button("Reload").clicked() {
+                                *layer.changed.get_mut() = true;
+                            }
+                            if ui.button("Delete").clicked() {
+                                delete = Some(n);
+                                showing = None;
+                            }
+                        });
+                        changed |= *layer.changed.get_mut();
+                    });
+                });
+            }
+            if filter.0 != showing {
+                // avoid an update if we can
+                filter.0 = showing;
+            }
+            if let Some(idx) = delete {
+                noise.0.remove(idx);
+            }
+            if changed {
+                let _ = &mut *noise;
+            }
+        });
+    };
+    if let Ok(window) = popout.get_single() {
+        egui::Window::new("controls").show(contexts.ctx_for_entity_mut(window), callback);
+    } else {
+        egui::SidePanel::left("controls")
+            .resizable(true)
+            .show(contexts.ctx_for_entity_mut(primary.single()), callback);
+    }
 }
 
 fn update_map_camera(
     windows: Query<&Window>,
     mut resize_events: EventReader<WindowResized>,
-    mut query: Query<(&mut Camera, Has<MiniMap>), With<Camera2d>>,
+    mut camera: Query<&mut Camera, (With<Camera2d>, With<MiniMap>)>,
+    primary: Query<Entity, With<PrimaryWindow>>,
 ) {
+    let primary = primary.single();
+    let mut camera = camera.single_mut();
     for resize_event in resize_events.read() {
         let window = windows.get(resize_event.window).unwrap();
         let win_size = window.size();
         let size = UVec2::new(VIEW_WIDTH, VIEW_HEIGHT);
 
-        for (mut camera, is_map) in &mut query {
-            if is_map {
+        if let RenderTarget::Window(w) = camera.target {
+            if w.normalize(Some(primary)).unwrap().entity() == resize_event.window {
                 camera.viewport = Some(Viewport {
                     physical_position: win_size.as_uvec2() - size,
                     physical_size: size,
@@ -453,6 +530,62 @@ fn update_map_camera(
                 });
             }
         }
+    }
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn toggle_map(
+    mut commands: Commands,
+    mut camera: Query<&mut Camera, (With<Camera2d>, With<MiniMap>)>,
+    popout: Query<Entity, (With<Window>, With<MiniMap>)>,
+    primary: Query<&Window, With<PrimaryWindow>>,
+) {
+    let mut camera = camera.single_mut();
+    let primary = primary.single();
+    if let Ok(window) = popout.get_single() {
+        camera.target = RenderTarget::Window(bevy::window::WindowRef::Primary);
+        camera.viewport = Some(Viewport {
+            physical_size: UVec2::new(VIEW_WIDTH, VIEW_HEIGHT),
+            physical_position: UVec2::new(
+                primary.width() as u32 - VIEW_WIDTH,
+                primary.height() as u32 - VIEW_HEIGHT,
+            ),
+            ..default()
+        });
+        commands.entity(window).despawn();
+    } else {
+        let window = commands
+            .spawn((
+                Window {
+                    title: "World Map".into(),
+                    mode: bevy::window::WindowMode::Windowed,
+                    resolution: bevy::window::WindowResolution::new(
+                        VIEW_WIDTH as _,
+                        VIEW_HEIGHT as _,
+                    ),
+                    ..default()
+                },
+                MiniMap,
+            ))
+            .id();
+        camera.viewport = None;
+        camera.target = RenderTarget::Window(bevy::window::WindowRef::Entity(window));
+    }
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn toggle_controls(mut commands: Commands, popout: Query<Entity, (With<Window>, With<Controls>)>) {
+    if let Ok(window) = popout.get_single() {
+        commands.entity(window).despawn();
+    } else {
+        commands.spawn((
+            Window {
+                title: "Controls".into(),
+                mode: bevy::window::WindowMode::Windowed,
+                ..default()
+            },
+            Controls,
+        ));
     }
 }
 
