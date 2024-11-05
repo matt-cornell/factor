@@ -8,6 +8,7 @@ use bevy::window::{PrimaryWindow, WindowResized};
 use bevy_egui::{egui, EguiContexts, EguiPlugin};
 use factor::terrain::noise::*;
 use rand::prelude::*;
+use serde::{Deserialize, Serialize};
 use std::f32::consts::*;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -30,8 +31,11 @@ struct ShowOceans {
 #[derive(Resource)]
 struct LayerFilter(Option<usize>);
 
-#[derive(Resource)]
-struct NoiseSourceRes(Vec<NoiseSourceBuilder>);
+#[derive(Resource, Default, Clone, Serialize, Deserialize)]
+struct NoiseSourceRes {
+    #[serde(rename = "layer")]
+    layers: Vec<NoiseSourceBuilder>,
+}
 
 #[derive(Resource)]
 struct NoiseTerrain(Vec<(Shifted<ValueOrGradient>, f32)>);
@@ -101,15 +105,22 @@ fn cell_noise(gradient: bool, depth: u8, shift: f32) -> Shifted<ValueOrGradient>
     Shifted::new(base, shift)
 }
 
-#[derive(Debug, Default)]
+#[inline]
+const fn true_abool() -> AtomicBool {
+    AtomicBool::new(true)
+}
+
+#[derive(Debug, Default, Serialize, Deserialize)]
 struct NoiseSourceBuilder {
     gradient: bool,
     depth: u8,
     shift: f32,
     scale: f32,
+    #[serde(skip, default = "true_abool")]
     changed: AtomicBool,
 }
 impl NoiseSourceBuilder {
+    #[allow(dead_code)]
     pub const fn value(depth: u8, shift: f32, scale: f32) -> Self {
         Self {
             gradient: false,
@@ -119,6 +130,7 @@ impl NoiseSourceBuilder {
             changed: AtomicBool::new(true),
         }
     }
+    #[allow(dead_code)]
     pub const fn gradient(depth: u8, shift: f32, scale: f32) -> Self {
         Self {
             gradient: true,
@@ -168,19 +180,11 @@ fn main() {
         .add_event::<ToggleControls>()
         .insert_resource(Rotating(true))
         .insert_resource(LayerFilter(None))
+        .insert_resource(NoiseSourceRes::default())
         .insert_resource(ShowOceans {
             show: false,
             depth: 0.5,
         })
-        .insert_resource(NoiseSourceRes(vec![
-            NoiseSourceBuilder::value(1, 0.0, 0.15),
-            NoiseSourceBuilder::value(1, 0.1, 0.15),
-            NoiseSourceBuilder::value(2, 0.2, 0.294),
-            NoiseSourceBuilder::value(2, 0.3, 0.294),
-            NoiseSourceBuilder::value(3, 0.5, 0.05),
-            NoiseSourceBuilder::value(3, 0.7, 0.05),
-            NoiseSourceBuilder::gradient(5, 0.0, 0.01),
-        ]))
         .add_systems(Startup, setup)
         .add_systems(
             Update,
@@ -195,7 +199,7 @@ fn main() {
                         .or_else(resource_changed::<ShowOceans>)
                         .or_else(resource_changed::<LayerFilter>),
                 ),
-                update_noise_terrain.run_if(resource_changed::<NoiseSourceRes>),
+                update_noise_terrain.run_if(resource_exists_and_changed::<NoiseSourceRes>),
                 reload_terrain.run_if(on_event::<ReloadTerrain>()),
                 #[cfg(not(target_family = "wasm"))]
                 toggle_map.run_if(on_event::<ToggleMap>()),
@@ -209,11 +213,29 @@ fn main() {
 
 fn setup(
     mut commands: Commands,
+    mut contexts: EguiContexts,
     mut meshes: ResMut<Assets<Mesh>>,
     mut images: ResMut<Assets<Image>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     window: Query<&Window>,
 ) {
+    contexts.ctx_mut().data_mut(|mem| {
+        let data = mem
+            .get_persisted_mut_or_insert_with(egui::Id::new("noise-layers"), || NoiseSourceRes {
+                layers: vec![
+                    NoiseSourceBuilder::value(1, 0.0, 0.15),
+                    NoiseSourceBuilder::value(1, 0.1, 0.15),
+                    NoiseSourceBuilder::value(2, 0.2, 0.294),
+                    NoiseSourceBuilder::value(2, 0.3, 0.294),
+                    NoiseSourceBuilder::value(3, 0.5, 0.05),
+                    NoiseSourceBuilder::value(3, 0.7, 0.05),
+                    NoiseSourceBuilder::gradient(5, 0.0, 0.01),
+                ],
+            })
+            .clone();
+        commands.insert_resource(data);
+    });
+
     let map_layer = RenderLayers::layer(1);
 
     let window = window.single();
@@ -365,6 +387,7 @@ fn update_ui(
     mut terrain: ResMut<NoiseTerrain>,
     mut reroll_rand: EventWriter<ReloadTerrain>,
     mut wip_layer: Local<Option<NoiseSourceBuilder>>,
+    mut code_editing: Local<Option<String>>,
     popout: Query<Entity, (With<Window>, With<Controls>)>,
     primary: Query<Entity, With<PrimaryWindow>>,
     #[cfg(not(target_family = "wasm"))] mut toggle_ctrls: EventWriter<ToggleControls>,
@@ -416,39 +439,95 @@ fn update_ui(
                 let mut showing = None;
                 let mut changed = false;
                 let mut delete = None;
-                let popup_id = egui::Id::new("new-layer");
-                let new_button = ui.button("New");
-                if new_button.clicked() {
-                    ui.memory_mut(|mem| mem.open_popup(popup_id));
-                }
-                egui::popup_above_or_below_widget(
-                    ui,
-                    popup_id,
-                    &new_button,
-                    egui::AboveOrBelow::Below,
-                    egui::PopupCloseBehavior::CloseOnClickOutside,
-                    |ui| {
-                        ui.set_min_width(100.0);
-                        let layer = wip_layer.get_or_insert_default();
-                        ui.add(egui::Slider::new(&mut layer.depth, 0..=8).text("Layer"));
-                        ui.add(egui::Slider::new(&mut layer.scale, 0.0..=3.0).text("Scale"));
-                        ui.add(egui::Slider::new(&mut layer.shift, -0.5..=0.5).text("Shift"));
-                        ui.checkbox(&mut layer.gradient, "Gradient");
-                        ui.horizontal(|ui| {
-                            if ui.button("Add").clicked() {
-                                noise.0.push(wip_layer.take().unwrap());
-                                changed = true;
-                                ui.memory_mut(|mem| mem.close_popup());
-                            }
-                            if ui.button("Cancel").clicked() {
-                                *wip_layer = None;
-                                ui.memory_mut(|mem| mem.close_popup());
-                            }
-                        })
-                    },
-                );
+                ui.horizontal(|ui| {
+                    {
+                        let popup_id = egui::Id::new("new-layer");
+                        let new_button = ui.button("New");
+                        if new_button.clicked() {
+                            ui.memory_mut(|mem| mem.open_popup(popup_id));
+                        }
+                        egui::popup_above_or_below_widget(
+                            ui,
+                            popup_id,
+                            &new_button,
+                            egui::AboveOrBelow::Below,
+                            egui::PopupCloseBehavior::CloseOnClickOutside,
+                            |ui| {
+                                ui.set_min_width(100.0);
+                                let layer = wip_layer.get_or_insert_default();
+                                ui.add(egui::Slider::new(&mut layer.depth, 0..=8).text("Layer"));
+                                ui.add(
+                                    egui::Slider::new(&mut layer.scale, 0.0..=3.0).text("Scale"),
+                                );
+                                ui.add(
+                                    egui::Slider::new(&mut layer.shift, -0.5..=0.5).text("Shift"),
+                                );
+                                ui.checkbox(&mut layer.gradient, "Gradient");
+                                ui.horizontal(|ui| {
+                                    if ui.button("Add").clicked() {
+                                        noise.layers.push(wip_layer.take().unwrap());
+                                        changed = true;
+                                        ui.memory_mut(|mem| mem.close_popup());
+                                    }
+                                    if ui.button("Cancel").clicked() {
+                                        *wip_layer = None;
+                                        ui.memory_mut(|mem| mem.close_popup());
+                                    }
+                                })
+                            },
+                        );
+                    }
+                    {
+                        let popup_id = egui::Id::new("edit-layers");
+                        let load_button = ui.button("Save/Load");
+                        if load_button.clicked() {
+                            ui.memory_mut(|mem| mem.open_popup(popup_id));
+                        }
+                        egui::popup_above_or_below_widget(
+                            ui,
+                            popup_id,
+                            &load_button,
+                            egui::AboveOrBelow::Below,
+                            egui::PopupCloseBehavior::CloseOnClickOutside,
+                            |ui| {
+                                ui.set_min_width(200.0);
+                                egui::Frame::popup(ui.style()).show(ui, |ui| {
+                                    ui.horizontal(|ui| {
+                                        if ui.button("Save").clicked() {
+                                            match toml::from_str(&code_editing.take().unwrap()) {
+                                                Ok(new) => {
+                                                    *noise = new;
+                                                    ui.memory_mut(|mem| mem.close_popup());
+                                                }
+                                                Err(err) => {
+                                                    ui.colored_label(
+                                                        ui.style().visuals.error_fg_color,
+                                                        err.to_string(),
+                                                    );
+                                                }
+                                            }
+                                        }
+                                        if ui.button("Cancel").clicked() {
+                                            ui.memory_mut(|mem| mem.close_popup());
+                                        }
+                                    });
+                                    egui::ScrollArea::both().show(ui, |ui| {
+                                        ui.code_editor(code_editing.get_or_insert_with(|| {
+                                            toml::to_string_pretty(&*noise).unwrap()
+                                        }));
+                                    });
+                                })
+                            },
+                        );
+                    }
+                });
 
-                for (n, layer) in noise.bypass_change_detection().0.iter_mut().enumerate() {
+                for (n, layer) in noise
+                    .bypass_change_detection()
+                    .layers
+                    .iter_mut()
+                    .enumerate()
+                {
                     let frame = egui::Frame::group(ui.style()).show(ui, |ui| {
                         ui.set_min_width(130.0);
                         ui.label(format!(
@@ -496,7 +575,7 @@ fn update_ui(
                     filter.0 = showing;
                 }
                 if let Some(idx) = delete {
-                    noise.0.remove(idx);
+                    noise.layers.remove(idx);
                     terrain.0.remove(idx);
                     changed = true;
                 }
@@ -597,25 +676,36 @@ fn toggle_controls(mut commands: Commands, popout: Query<Entity, (With<Window>, 
 }
 
 fn reload_terrain(mut commands: Commands, noise: Res<NoiseSourceRes>) {
-    commands.insert_resource(NoiseTerrain(make_noise(noise.0.iter())));
+    commands.insert_resource(NoiseTerrain(make_noise(noise.layers.iter())));
 }
 
-fn update_noise_terrain(noise: Res<NoiseSourceRes>, mut terr: ResMut<NoiseTerrain>) {
+fn update_noise_terrain(
+    mut contexts: EguiContexts,
+    noise: Res<NoiseSourceRes>,
+    mut terr: ResMut<NoiseTerrain>,
+) {
     let mut changed = false;
-    for (b, n) in noise.0.iter().zip(&mut terr.bypass_change_detection().0) {
+    for (b, n) in noise
+        .layers
+        .iter()
+        .zip(&mut terr.bypass_change_detection().0)
+    {
         if b.changed.load(Ordering::Relaxed) {
             *n = b.build();
             changed = true;
         }
     }
-    if noise.0.len() > terr.0.len() {
+    if noise.layers.len() > terr.0.len() {
         let start = terr.0.len();
         terr.0
-            .extend(noise.0[start..].iter().map(NoiseSourceBuilder::build));
+            .extend(noise.layers[start..].iter().map(NoiseSourceBuilder::build));
     }
     if changed {
         let _ = &mut *terr;
     }
+    contexts.ctx_mut().data_mut(|mem| {
+        mem.insert_persisted(egui::Id::new("noise-layers"), NoiseSourceRes::clone(&noise));
+    })
 }
 
 fn update_texture(
