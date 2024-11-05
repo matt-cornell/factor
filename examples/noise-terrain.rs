@@ -370,7 +370,7 @@ fn update_ui(
     #[cfg(not(target_family = "wasm"))] mut toggle_ctrls: EventWriter<ToggleControls>,
 ) {
     let callback = |ui: &mut egui::Ui| {
-        ui.set_min_width(200.0);
+        ui.set_min_width(165.0);
         ui.horizontal(|ui| {
             ui.label(egui::RichText::new("Controls").size(20.0));
             #[cfg(not(target_family = "wasm"))]
@@ -412,91 +412,98 @@ fn update_ui(
             }
         });
         ui.collapsing(egui::RichText::new("Noise").size(18.0), |ui| {
-            let mut showing = None;
-            let mut changed = false;
-            let mut delete = None;
-            let popup_id = egui::Id::new("new-layer");
-            let new_button = ui.button("New");
-            if new_button.clicked() {
-                ui.memory_mut(|mem| mem.open_popup(popup_id));
-            }
-            egui::popup_above_or_below_widget(
-                ui,
-                popup_id,
-                &new_button,
-                egui::AboveOrBelow::Below,
-                egui::PopupCloseBehavior::CloseOnClickOutside,
-                |ui| {
-                    ui.set_min_width(100.0);
-                    let layer = wip_layer.get_or_insert_default();
-                    ui.add(egui::Slider::new(&mut layer.depth, 0..=8).text("Layer"));
-                    ui.add(egui::Slider::new(&mut layer.scale, 0.0..=3.0).text("Scale"));
-                    ui.add(egui::Slider::new(&mut layer.shift, -0.5..=0.5).text("Shift"));
-                    ui.checkbox(&mut layer.gradient, "Gradient");
-                    ui.horizontal(|ui| {
-                        if ui.button("Add").clicked() {
-                            noise.0.push(wip_layer.take().unwrap());
-                        }
-                        if ui.button("Cancel").clicked() {
-                            *wip_layer = None;
-                        }
-                    })
-                },
-            );
-
-            for (n, layer) in noise.bypass_change_detection().0.iter_mut().enumerate() {
-                let frame = egui::Frame::group(ui.style()).show(ui, |ui| {
-                    ui.set_min_width(125.0);
-                    ui.label(format!(
-                        "Layer: {}\nScale: {}\nShift: {}\nGradient: {}",
-                        layer.depth, layer.scale, layer.shift, layer.gradient
-                    ));
-                });
-                frame.response.on_hover_ui(|ui| {
-                    showing = Some(n);
-                    egui::Frame::popup(ui.style()).show(ui, |ui| {
-                        *layer.changed.get_mut() |= ui
-                            .add(egui::Slider::new(&mut layer.depth, 0..=8).text("Layer"))
-                            .changed();
-                        if ui
-                            .add(egui::Slider::new(&mut layer.scale, 0.0..=3.0).text("Scale"))
-                            .changed()
-                        {
-                            changed = true; // don't count this as a change because it's lazy
-                            terrain.0[n].1 = layer.scale;
-                        }
-                        if ui
-                            .add(egui::Slider::new(&mut layer.shift, 0.0..=3.0).text("Scale"))
-                            .changed()
-                        {
-                            changed = true; // don't count this as a change because it's lazy
-                            terrain.0[n].0.shift = layer.shift;
-                        }
-                        *layer.changed.get_mut() |=
-                            ui.checkbox(&mut layer.gradient, "Gradient").changed();
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                let mut showing = None;
+                let mut changed = false;
+                let mut delete = None;
+                let popup_id = egui::Id::new("new-layer");
+                let new_button = ui.button("New");
+                if new_button.clicked() {
+                    ui.memory_mut(|mem| mem.open_popup(popup_id));
+                }
+                egui::popup_above_or_below_widget(
+                    ui,
+                    popup_id,
+                    &new_button,
+                    egui::AboveOrBelow::Below,
+                    egui::PopupCloseBehavior::CloseOnClickOutside,
+                    |ui| {
+                        ui.set_min_width(100.0);
+                        let layer = wip_layer.get_or_insert_default();
+                        ui.add(egui::Slider::new(&mut layer.depth, 0..=8).text("Layer"));
+                        ui.add(egui::Slider::new(&mut layer.scale, 0.0..=3.0).text("Scale"));
+                        ui.add(egui::Slider::new(&mut layer.shift, -0.5..=0.5).text("Shift"));
+                        ui.checkbox(&mut layer.gradient, "Gradient");
                         ui.horizontal(|ui| {
-                            if ui.button("Reload").clicked() {
-                                *layer.changed.get_mut() = true;
+                            if ui.button("Add").clicked() {
+                                noise.0.push(wip_layer.take().unwrap());
+                                changed = true;
+                                ui.memory_mut(|mem| mem.close_popup());
                             }
-                            if ui.button("Delete").clicked() {
-                                delete = Some(n);
-                                showing = None;
+                            if ui.button("Cancel").clicked() {
+                                *wip_layer = None;
+                                ui.memory_mut(|mem| mem.close_popup());
                             }
-                        });
-                        changed |= *layer.changed.get_mut();
+                        })
+                    },
+                );
+
+                for (n, layer) in noise.bypass_change_detection().0.iter_mut().enumerate() {
+                    let frame = egui::Frame::group(ui.style()).show(ui, |ui| {
+                        ui.set_min_width(130.0);
+                        ui.label(format!(
+                            "Layer: {}\nScale: {}\nShift: {}\nGradient: {}",
+                            layer.depth, layer.scale, layer.shift, layer.gradient
+                        ));
                     });
-                });
-            }
-            if filter.0 != showing {
-                // avoid an update if we can
-                filter.0 = showing;
-            }
-            if let Some(idx) = delete {
-                noise.0.remove(idx);
-            }
-            if changed {
-                let _ = &mut *noise;
-            }
+                    frame.response.on_hover_ui(|ui| {
+                        showing = Some(n);
+                        egui::Frame::popup(ui.style()).show(ui, |ui| {
+                            *layer.changed.get_mut() |= ui
+                                .add(egui::Slider::new(&mut layer.depth, 0..=8).text("Layer"))
+                                .changed();
+                            if ui
+                                .add(egui::Slider::new(&mut layer.scale, 0.0..=3.0).text("Scale"))
+                                .changed()
+                            {
+                                changed = true; // don't count this as a change because it's lazy
+                                terrain.0[n].1 = layer.scale;
+                            }
+                            if ui
+                                .add(egui::Slider::new(&mut layer.shift, 0.0..=3.0).text("Scale"))
+                                .changed()
+                            {
+                                changed = true; // don't count this as a change because it's lazy
+                                terrain.0[n].0.shift = layer.shift;
+                            }
+                            *layer.changed.get_mut() |=
+                                ui.checkbox(&mut layer.gradient, "Gradient").changed();
+                            ui.horizontal(|ui| {
+                                if ui.button("Reload").clicked() {
+                                    *layer.changed.get_mut() = true;
+                                }
+                                if ui.button("Delete").clicked() {
+                                    delete = Some(n);
+                                    showing = None;
+                                }
+                            });
+                            changed |= *layer.changed.get_mut();
+                        });
+                    });
+                }
+                if filter.0 != showing {
+                    // avoid an update if we can
+                    filter.0 = showing;
+                }
+                if let Some(idx) = delete {
+                    noise.0.remove(idx);
+                    terrain.0.remove(idx);
+                    changed = true;
+                }
+                if changed {
+                    let _ = &mut *noise;
+                }
+            });
         });
     };
     if let Ok(window) = popout.get_single() {
@@ -600,6 +607,11 @@ fn update_noise_terrain(noise: Res<NoiseSourceRes>, mut terr: ResMut<NoiseTerrai
             *n = b.build();
             changed = true;
         }
+    }
+    if noise.0.len() > terr.0.len() {
+        let start = terr.0.len();
+        terr.0
+            .extend(noise.0[start..].iter().map(NoiseSourceBuilder::build));
     }
     if changed {
         let _ = &mut *terr;
