@@ -439,6 +439,7 @@ fn update_ui(
                 let mut showing = None;
                 let mut changed = false;
                 let mut delete = None;
+                let mut normalize = None;
                 ui.horizontal(|ui| {
                     {
                         let popup_id = egui::Id::new("new-layer");
@@ -479,7 +480,7 @@ fn update_ui(
                     }
                     {
                         let popup_id = egui::Id::new("edit-layers");
-                        let load_button = ui.button("Save/Load");
+                        let load_button = ui.button("Edit");
                         if load_button.clicked() {
                             ui.memory_mut(|mem| mem.open_popup(popup_id));
                         }
@@ -520,6 +521,17 @@ fn update_ui(
                             },
                         );
                     }
+                    if ui.button("Normalize").clicked() {
+                        let sum = noise.layers.iter().map(|l| l.scale).sum::<f32>();
+                        if sum != 0.0 {
+                            let scale = sum.recip();
+                            for (l, t) in noise.layers.iter_mut().zip(&mut terrain.0) {
+                                let val = (l.scale * scale * 1000.0).round() * 0.001;
+                                l.scale = val;
+                                t.1 = val;
+                            }
+                        }
+                    }
                 });
 
                 for (n, layer) in noise
@@ -531,7 +543,7 @@ fn update_ui(
                     let frame = egui::Frame::group(ui.style()).show(ui, |ui| {
                         ui.set_min_width(130.0);
                         ui.label(format!(
-                            "Layer: {}\nScale: {}\nShift: {}\nGradient: {}",
+                            "Layer: {}\nScale: {:.3}\nShift: {:.3}\nGradient: {}",
                             layer.depth, layer.scale, layer.shift, layer.gradient
                         ));
                     });
@@ -549,7 +561,7 @@ fn update_ui(
                                 terrain.0[n].1 = layer.scale;
                             }
                             if ui
-                                .add(egui::Slider::new(&mut layer.shift, 0.0..=3.0).text("Scale"))
+                                .add(egui::Slider::new(&mut layer.shift, 0.0..=3.0).text("Shift"))
                                 .changed()
                             {
                                 changed = true; // don't count this as a change because it's lazy
@@ -557,6 +569,9 @@ fn update_ui(
                             }
                             *layer.changed.get_mut() |=
                                 ui.checkbox(&mut layer.gradient, "Gradient").changed();
+                            if ui.button("Normalize Others").clicked() {
+                                normalize = Some(n);
+                            }
                             ui.horizontal(|ui| {
                                 if ui.button("Reload").clicked() {
                                     *layer.changed.get_mut() = true;
@@ -578,6 +593,26 @@ fn update_ui(
                     noise.layers.remove(idx);
                     terrain.0.remove(idx);
                     changed = true;
+                } else if let Some(idx) = normalize {
+                    let d0 = 1.0 - noise.layers[idx].scale;
+                    let mut sum = 0.0;
+                    for (n, l) in noise.layers.iter().enumerate() {
+                        if n == idx {
+                            continue;
+                        }
+                        sum += l.scale;
+                    }
+                    if sum != 0.0 {
+                        let scale = d0 / sum;
+                        for (n, (l, t)) in noise.layers.iter_mut().zip(&mut terrain.0).enumerate() {
+                            if n == idx {
+                                continue;
+                            }
+                            let val = (l.scale * scale * 1000.0).round() * 0.001;
+                            l.scale = val;
+                            t.1 = val;
+                        }
+                    }
                 }
                 if changed {
                     let _ = &mut *noise;
