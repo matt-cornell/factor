@@ -465,7 +465,7 @@ fn update_ui(
                     .enumerate()
                 {
                     let frame = egui::Frame::group(ui.style()).show(ui, |ui| {
-                        ui.set_min_width(130.0);
+                        ui.set_min_width(ui.max_rect().width());
                         ui.label(format!(
                             "Layer: {}\nScale: {:.3}\nShift: {:.3}\nGradient: {}",
                             layer.depth, layer.scale, layer.shift, layer.gradient
