@@ -3,7 +3,7 @@ use bevy::math::Vec2;
 use rand::distributions::Standard;
 use rand::prelude::*;
 use rand_distr::{Normal, StandardNormal};
-use tinyset::SetU64;
+use tinyset::{SetU64, SetUsize};
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum CellFeatureKind {
@@ -64,7 +64,7 @@ impl Distribution<TectonicPlate> for Standard {
     fn sample<R: Rng + ?Sized>(&self, rng: &mut R) -> TectonicPlate {
         use std::f32::consts::PI;
         let density = rng.gen_range(1000..=2000);
-        let height = rng.gen_range(-0.25..=0.25) - (density - 1000) as f32 * 0.00001;
+        let height = rng.gen_range(-0.05..=0.05) - (density - 1000) as f32 * 0.00005;
         TectonicPlate {
             center_lat: rng.gen_range(-1.0f32..1.0).asin(),
             center_long: rng.gen_range(-PI..=PI),
@@ -84,6 +84,7 @@ pub struct TectonicState {
     cells: Box<[TectonicCell]>,
     plates: Box<[TectonicPlate]>,
     boundaries: SetU64,
+    neighbors: Box<[SetUsize]>,
 }
 impl TectonicState {
     pub fn cells(&self) -> &[TectonicCell] {
@@ -110,7 +111,7 @@ fn init_terrain_impl<R: Rng + ?Sized>(depth: u8, rng: &mut R) -> TectonicState {
     let noise = Normal::new(0.0, 0.5).unwrap();
     let layer = healpix::nested::get(depth);
     let len = layer.n_hash() as _;
-    let nplates = rng.gen_range(10..=12);
+    let nplates = rng.gen_range(12..=14);
     let mut changes = rng
         .sample_iter(noise)
         .array_chunks()
@@ -189,6 +190,7 @@ fn init_terrain_impl<R: Rng + ?Sized>(depth: u8, rng: &mut R) -> TectonicState {
         })
         .collect();
     let mut boundaries = SetU64::new();
+    let mut neighbors = vec![SetUsize::new(); plates.len()].into_boxed_slice();
     for i in 0..len {
         let plate = cells[i].plate;
         let neighs = healpix::neighbors(depth, i as _);
@@ -209,6 +211,8 @@ fn init_terrain_impl<R: Rng + ?Sized>(depth: u8, rng: &mut R) -> TectonicState {
                         break;
                     }
                 }
+                neighbors[plate as usize].insert(p as _);
+                neighbors[p as usize].insert(plate as _);
             }
         }
         if !seen_same {
@@ -224,6 +228,7 @@ fn init_terrain_impl<R: Rng + ?Sized>(depth: u8, rng: &mut R) -> TectonicState {
         cell.density += plate.density;
     }
     TectonicState {
+        neighbors,
         depth,
         cells,
         plates,
@@ -283,7 +288,7 @@ fn step_terrain_impl<R: Rng + ?Sized>(
                 cell.height = cell.height.mul_add(0.6, 0.2);
             } else {
                 // convergent
-                if cell.density < other.density {
+                if plate.height > plate2.height {
                     continue;
                 }
                 metrics.converge += 1;
@@ -291,15 +296,19 @@ fn step_terrain_impl<R: Rng + ?Sized>(
                 let cell = &mut state.cells[i as usize];
                 cell.feats = CellFeature::SUBDUCT;
                 cell.height -= 0.2;
-                state.plates[cell.plate as usize].height -= 0.005;
+                cell.height = cell.height.max(-5.0);
+                state.plates[cell.plate as usize].height -= 0.0025;
                 let (lon2, lat2) = layer.center(c2);
                 let pos1 = Vec2::new(lon1 as _, lat1 as _);
                 let delta = (Vec2::new(lon2 as _, lat2 as _) - pos1).normalize_or_zero();
                 let diff = plate.motion.normalize_or_zero() * 0.25 + delta * 0.25;
-                state.cells[c2 as usize].height += 0.1;
+                {
+                    let h = &mut state.cells[c2 as usize].height;
+                    *h = (*h + 0.1).max(5.0);
+                }
                 state.plates[other.plate as usize].height += 0.005;
                 for n in 0..3 {
-                    let Vec2 { x, y } = pos1 + diff * (n as f32).mul_add(0.5, 1.0);
+                    let Vec2 { x, y } = pos1 + diff * (n as f32).mul_add(0.25, 0.5);
                     let new = layer.hash(
                         ((x as f64 + PI) % TAU) - PI,
                         (y as f64).clamp(-FRAC_PI_2, FRAC_PI_2),
@@ -320,7 +329,7 @@ fn step_terrain_impl<R: Rng + ?Sized>(
                         kind: CellFeatureKind::Mountain,
                         dist: n / 2,
                     };
-                    cell.height += 0.7f32.powi(n as _) * rng.sample(mountain_height);
+                    cell.height += 0.5f32.powi(n as _) * rng.sample(mountain_height);
                 }
             }
         }
@@ -358,44 +367,49 @@ fn step_terrain_impl<R: Rng + ?Sized>(
             }
         }
     }
-    for s in 0..3 {
-        let scale = ((s as f32).powi(4) * -2.0).exp();
-        for i in 0..state.cells.len() {
-            let mut dens_sum = 0.0;
-            let mut height_sum = 0.0;
-            let mut neigh_count = 0.0;
-            let p = state.cells[i].plate;
-            let h = state.plates[p as usize].height * 0.05;
-            for &n in healpix::neighbors(state.depth, i as _) {
-                let c2 = state.cells[n as usize];
-                let mut mul = 1.0;
-                if p != c2.plate {
-                    if c2.feats.kind == CellFeatureKind::Ridge {
-                        mul = 0.3;
-                    } else if c2.feats.kind == CellFeatureKind::Subduction {
-                        continue;
-                    } else {
-                        mul = 0.5;
-                    }
+    let scale = 0.001;
+    for i in 0..state.cells.len() {
+        let mut dens_sum = 0.0;
+        let mut height_sum = 0.0;
+        let mut neigh_count = 0.0;
+        let p = state.cells[i].plate;
+        let h = state.plates[p as usize].height * 0.05;
+        for &n in healpix::neighbors(state.depth, i as _) {
+            let c2 = state.cells[n as usize];
+            let mut mul = 1.0;
+            if p != c2.plate {
+                if c2.feats.kind == CellFeatureKind::Ridge {
+                    mul = 0.3;
+                } else if c2.feats.kind == CellFeatureKind::Subduction {
+                    continue;
+                } else {
+                    mul = 0.7;
                 }
-                dens_sum += c2.density as f32 * mul;
-                height_sum += c2.height * mul;
-                neigh_count += mul;
             }
-            if neigh_count > 0.0 {
-                let cell = &mut state.cells[i];
-                cell.density =
-                    (cell.density as f32 * (1.0 - scale) + dens_sum / neigh_count * scale) as _;
-                cell.height = (cell.height * (1.0 - scale)
-                    + height_sum.mul_add(neigh_count.recip(), rng.gen_range(-0.1..=0.1)) * scale)
-                    .mul_add(0.95, h);
-            }
+            dens_sum += c2.density as f32 * mul;
+            height_sum += c2.height * mul;
+            neigh_count += mul;
+        }
+        if neigh_count > 0.0 {
+            let cell = &mut state.cells[i];
+            cell.density =
+                (cell.density as f32 * (1.0 - scale) + dens_sum / neigh_count * scale) as _;
+            cell.height = (cell.height * (1.0 - scale)
+                + height_sum.mul_add(neigh_count.recip(), rng.gen_range(-0.1..=0.1)) * scale)
+                .mul_add(0.95, h);
         }
     }
-    for plate in &mut state.plates {
+    for (plate, neighbors) in state.neighbors.iter().enumerate() {
+        let neigh_height = neighbors
+            .iter()
+            .map(|i| state.plates[i].height)
+            .sum::<f32>()
+            / neighbors.len() as f32;
+        let plate = &mut state.plates[plate];
         plate.height = plate
-            .base_height
+            .height
             .mul_add(0.6, plate.base_height * 0.4)
+            .mul_add(0.8, neigh_height * 0.2)
             .clamp(-0.5, 0.5);
     }
 }
@@ -406,10 +420,15 @@ pub fn init_terrain<R: Rng + ?Sized>(depth: u8, rng: &mut R) -> TectonicState {
         let mut state = init_terrain_impl(depth, rng);
         let mut metrics = QualityMetrics::default();
         step_terrain_impl(&mut state, rng, &mut metrics);
-        if metrics.converge / scale > 5
-            && metrics.diverge / scale > 5
-            && (metrics.converge + metrics.diverge) / scale > 12
-            && metrics.bits.count_ones() > 5
+        bevy::log::debug!(
+            converge = metrics.converge / scale,
+            diverge = metrics.diverge / scale,
+            "sampling terrain"
+        );
+        if metrics.converge / scale > 20
+            && metrics.diverge / scale > 15
+            && (metrics.converge + metrics.diverge) / scale > 40
+            && metrics.bits.count_ones() > 6
         {
             return state;
         }

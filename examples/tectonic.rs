@@ -84,7 +84,14 @@ const VIEW_HEIGHT: u32 = 200;
 
 fn main() {
     App::new()
-        .add_plugins(DefaultPlugins)
+        .add_plugins(DefaultPlugins.set(WindowPlugin {
+            primary_window: Some(Window {
+                fit_canvas_to_parent: true,
+                title: "Noise Terrain".into(),
+                ..default()
+            }),
+            ..default()
+        }))
         .init_state::<AppState>()
         .add_sub_state::<Simulating>()
         .insert_resource(HealpixDepth(5))
@@ -243,9 +250,10 @@ fn update_colors(
                 match *color_kind {
                     ColorKind::Plates => *color = colors[cell.plate as usize],
                     ColorKind::Height => {
-                        *color = LinearRgba::gray(
-                            cell.height.cbrt().tanh().mul_add(0.5, 0.5).clamp(0.0, 1.0),
-                        )
+                        // *color = LinearRgba::gray(
+                        //     cell.height.cbrt().tanh().mul_add(0.5, 0.5).clamp(0.0, 1.0),
+                        // )
+                        *color = LinearRgba::gray(cell.height.mul_add(0.1, 0.2))
                     }
                     ColorKind::Feats => {
                         let base = match cell.feats.kind {
