@@ -1,10 +1,8 @@
 #![allow(clippy::too_many_arguments, clippy::type_complexity)]
 use bevy::prelude::*;
-use bevy::render::camera::{RenderTarget, Viewport};
 use bevy::render::render_asset::RenderAssetUsages;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
-use bevy::render::view::RenderLayers;
-use bevy::window::{PrimaryWindow, WindowResized};
+use bevy::window::PrimaryWindow;
 use bevy_egui::{egui, EguiContexts, EguiPlugin};
 use factor::terrain::noise::*;
 use rand::prelude::*;
@@ -42,6 +40,9 @@ struct NoiseTerrain(Vec<(Shifted<ValueOrGradient>, f32)>);
 
 #[derive(Resource)]
 struct DockedControls(bool);
+
+#[derive(Resource)]
+struct DockedMap(bool);
 
 #[derive(Component)]
 struct Planet;
@@ -172,6 +173,7 @@ fn main() {
         .add_event::<ReloadTerrain>()
         .insert_resource(Rotating(true))
         .insert_resource(DockedControls(true))
+        .insert_resource(DockedMap(true))
         .insert_resource(LayerFilter(None))
         .insert_resource(NoiseSourceRes::default())
         .insert_resource(ShowOceans {
@@ -182,9 +184,8 @@ fn main() {
         .add_systems(
             Update,
             (
-                update_map_camera,
                 handle_keypresses,
-                update_ui,
+                update_ui.after(setup),
                 rotate_sphere.run_if(resource_equals(Rotating(true))),
                 update_texture.run_if(
                     state_changed::<AppState>
@@ -206,7 +207,6 @@ fn setup(
     mut meshes: ResMut<Assets<Mesh>>,
     mut images: ResMut<Assets<Image>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
-    window: Query<&Window>,
 ) {
     contexts.ctx_mut().data_mut(|mem| {
         let data = mem
@@ -225,34 +225,11 @@ fn setup(
         commands.insert_resource(data);
     });
 
-    let map_layer = RenderLayers::layer(1);
-
-    let window = window.single();
-
     commands.spawn(Camera3dBundle {
         transform: Transform::from_xyz(0.0, 8.0, 16.0)
             .looking_at(Vec3::new(0.0, 0.0, 0.0), Vec3::Y),
         ..default()
     });
-    commands.spawn((
-        Camera2dBundle {
-            camera: Camera {
-                viewport: Some(Viewport {
-                    physical_size: UVec2::new(VIEW_WIDTH, VIEW_HEIGHT),
-                    physical_position: UVec2::new(
-                        window.width() as u32 - VIEW_WIDTH,
-                        window.height() as u32 - VIEW_HEIGHT,
-                    ),
-                    ..default()
-                }),
-                order: 1,
-                ..default()
-            },
-            ..default()
-        },
-        map_layer.clone(),
-        MiniMap,
-    ));
 
     let image = images.add(Image::new(
         Extent3d {
@@ -291,23 +268,10 @@ fn setup(
         ..default()
     });
 
-    commands.spawn((
-        SpriteBundle {
-            texture: image.clone(),
-            transform: Transform::from_scale(Vec3::new(
-                VIEW_WIDTH as f32 / WIDTH as f32,
-                VIEW_HEIGHT as f32 / HEIGHT as f32,
-                1.0,
-            )),
-            ..default()
-        },
-        map_layer.clone(),
-        MiniMap,
-    ));
+    commands.spawn((image, MiniMap));
 }
 
 fn handle_keypresses(
-    // mut commands: Commands,
     keys: Res<ButtonInput<KeyCode>>,
     state: Res<State<AppState>>,
     mut rotating: ResMut<Rotating>,
@@ -342,7 +306,8 @@ fn handle_keypresses(
 fn update_ui(
     mut contexts: EguiContexts,
     mut rotating: ResMut<Rotating>,
-    mut docked: ResMut<DockedControls>,
+    mut docked_controls: ResMut<DockedControls>,
+    mut docked_map: ResMut<DockedMap>,
     mut oceans: ResMut<ShowOceans>,
     mut filter: ResMut<LayerFilter>,
     mut noise: ResMut<NoiseSourceRes>,
@@ -351,16 +316,19 @@ fn update_ui(
     mut wip_layer: Local<Option<NoiseSourceBuilder>>,
     mut code_editing: Local<Option<String>>,
     primary: Query<Entity, With<PrimaryWindow>>,
+    minimap: Query<&Handle<Image>, With<MiniMap>>,
 ) {
-    let is_docked = docked.0;
-    let callback = |ui: &mut egui::Ui| {
+    let ctrl_docked = docked_controls.0;
+    let map_docked = docked_map.0;
+    let image = contexts.add_image(minimap.single().clone());
+    let render_controls = |ui: &mut egui::Ui| {
         ui.set_min_width(165.0);
         ui.horizontal(|ui| {
             ui.label(egui::RichText::new("Controls").size(20.0));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let label = if docked.0 { "Undock" } else { "Dock" };
+                let label = if docked_controls.0 { "Undock" } else { "Dock" };
                 if ui.button(label).clicked() {
-                    docked.0 = !docked.0;
+                    docked_controls.0 = !docked_controls.0;
                 }
             });
         });
@@ -576,81 +544,35 @@ fn update_ui(
             });
         });
     };
+    let render_map = |ui: &mut egui::Ui| {
+        let label = if map_docked { "Undock" } else { "Dock" };
+        if ui.button(label).clicked() {
+            docked_map.0 = !docked_map.0;
+        }
+        ui.image(egui::load::SizedTexture::new(
+            image,
+            (VIEW_WIDTH as f32, VIEW_HEIGHT as f32),
+        ));
+    };
     let context = contexts.ctx_for_entity_mut(primary.single());
-    if is_docked {
+    if ctrl_docked {
         egui::SidePanel::left("Controls")
             .resizable(true)
-            .show(context, callback);
+            .show(context, render_controls);
     } else {
         egui::Window::new("Controls")
             .max_width(165.0)
-            .show(context, callback);
+            .show(context, render_controls);
     }
-}
-
-fn update_map_camera(
-    windows: Query<&Window>,
-    mut resize_events: EventReader<WindowResized>,
-    mut camera: Query<&mut Camera, (With<Camera2d>, With<MiniMap>)>,
-    primary: Query<Entity, With<PrimaryWindow>>,
-) {
-    let primary = primary.single();
-    let mut camera = camera.single_mut();
-    for resize_event in resize_events.read() {
-        let window = windows.get(resize_event.window).unwrap();
-        let win_size = window.size();
-        let size = UVec2::new(VIEW_WIDTH, VIEW_HEIGHT);
-
-        if let RenderTarget::Window(w) = camera.target {
-            if w.normalize(Some(primary)).unwrap().entity() == resize_event.window {
-                camera.viewport = Some(Viewport {
-                    physical_position: win_size.as_uvec2() - size,
-                    physical_size: size,
-                    ..default()
-                });
-            }
-        }
+    let mut window = egui::Window::new("World Map")
+        .resizable(false)
+        .default_pos(context.screen_rect().max - egui::vec2(VIEW_WIDTH as _, VIEW_HEIGHT as _));
+    if map_docked {
+        window = window
+            .collapsible(false)
+            .anchor(egui::Align2::RIGHT_BOTTOM, egui::Vec2::ZERO);
     }
-}
-
-#[allow(dead_code)]
-fn toggle_map(
-    mut commands: Commands,
-    mut camera: Query<&mut Camera, (With<Camera2d>, With<MiniMap>)>,
-    popout: Query<Entity, (With<Window>, With<MiniMap>)>,
-    primary: Query<&Window, With<PrimaryWindow>>,
-) {
-    let mut camera = camera.single_mut();
-    let primary = primary.single();
-    if let Ok(window) = popout.get_single() {
-        camera.target = RenderTarget::Window(bevy::window::WindowRef::Primary);
-        camera.viewport = Some(Viewport {
-            physical_size: UVec2::new(VIEW_WIDTH, VIEW_HEIGHT),
-            physical_position: UVec2::new(
-                primary.width() as u32 - VIEW_WIDTH,
-                primary.height() as u32 - VIEW_HEIGHT,
-            ),
-            ..default()
-        });
-        commands.entity(window).despawn();
-    } else {
-        let window = commands
-            .spawn((
-                Window {
-                    title: "World Map".into(),
-                    mode: bevy::window::WindowMode::Windowed,
-                    resolution: bevy::window::WindowResolution::new(
-                        VIEW_WIDTH as _,
-                        VIEW_HEIGHT as _,
-                    ),
-                    ..default()
-                },
-                MiniMap,
-            ))
-            .id();
-        camera.viewport = None;
-        camera.target = RenderTarget::Window(bevy::window::WindowRef::Entity(window));
-    }
+    window.show(context, render_map);
 }
 
 fn reload_terrain(mut commands: Commands, noise: Res<NoiseSourceRes>) {
