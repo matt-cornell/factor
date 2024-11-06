@@ -246,6 +246,7 @@ fn step_terrain_impl<R: Rng + ?Sized>(
     let mountain_spread = Normal::new(0.0, 2.0f32.powi(state.depth as _) * 0.00001).unwrap();
     let mountain_height = Normal::new(0.1, 0.02).unwrap();
     let layer = healpix::nested::get(state.depth);
+    let plate_scale = 0.25f32.powi(state.depth as i32);
     debug_assert_eq!(layer.n_hash(), state.cells.len() as u64);
     for i in state.boundaries.iter() {
         let cell = state.cells[i as usize];
@@ -297,7 +298,7 @@ fn step_terrain_impl<R: Rng + ?Sized>(
                 cell.feats = CellFeature::SUBDUCT;
                 cell.height -= 0.2;
                 cell.height = cell.height.max(-5.0);
-                state.plates[cell.plate as usize].height -= 0.0025;
+                state.plates[cell.plate as usize].height -= plate_scale * 2.0;
                 let (lon2, lat2) = layer.center(c2);
                 let pos1 = Vec2::new(lon1 as _, lat1 as _);
                 let delta = (Vec2::new(lon2 as _, lat2 as _) - pos1).normalize_or_zero();
@@ -306,7 +307,7 @@ fn step_terrain_impl<R: Rng + ?Sized>(
                     let h = &mut state.cells[c2 as usize].height;
                     *h = (*h + 0.1).max(5.0);
                 }
-                state.plates[other.plate as usize].height += 0.005;
+                state.plates[other.plate as usize].height += plate_scale * 5.0;
                 for n in 0..3 {
                     let Vec2 { x, y } = pos1 + diff * (n as f32).mul_add(0.25, 0.5);
                     let new = layer.hash(
@@ -367,7 +368,7 @@ fn step_terrain_impl<R: Rng + ?Sized>(
             }
         }
     }
-    let scale = 0.001;
+    let scale = 0.1;
     for i in 0..state.cells.len() {
         let mut dens_sum = 0.0;
         let mut height_sum = 0.0;
