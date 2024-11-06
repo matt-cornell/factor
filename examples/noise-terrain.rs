@@ -40,23 +40,17 @@ struct NoiseSourceRes {
 #[derive(Resource)]
 struct NoiseTerrain(Vec<(Shifted<ValueOrGradient>, f32)>);
 
+#[derive(Resource)]
+struct DockedControls(bool);
+
 #[derive(Component)]
 struct Planet;
 
 #[derive(Component)]
 struct MiniMap;
 
-#[derive(Component)]
-struct Controls;
-
 #[derive(Event)]
 struct ReloadTerrain;
-
-#[derive(Event)]
-struct ToggleMap;
-
-#[derive(Event)]
-struct ToggleControls;
 
 const WIDTH: usize = 400;
 const HEIGHT: usize = 200;
@@ -176,9 +170,8 @@ fn main() {
         .add_plugins(EguiPlugin)
         .init_state::<AppState>()
         .add_event::<ReloadTerrain>()
-        .add_event::<ToggleMap>()
-        .add_event::<ToggleControls>()
         .insert_resource(Rotating(true))
+        .insert_resource(DockedControls(true))
         .insert_resource(LayerFilter(None))
         .insert_resource(NoiseSourceRes::default())
         .insert_resource(ShowOceans {
@@ -201,10 +194,6 @@ fn main() {
                 ),
                 update_noise_terrain.run_if(resource_exists_and_changed::<NoiseSourceRes>),
                 reload_terrain.run_if(on_event::<ReloadTerrain>()),
-                #[cfg(not(target_family = "wasm"))]
-                toggle_map.run_if(on_event::<ToggleMap>()),
-                #[cfg(not(target_family = "wasm"))]
-                toggle_controls.run_if(on_event::<ToggleControls>()),
             ),
         )
         .add_systems(OnEnter(AppState::Heights), reload_terrain)
@@ -315,39 +304,16 @@ fn setup(
         map_layer.clone(),
         MiniMap,
     ));
-
-    #[cfg(not(target_family = "wasm"))]
-    commands.spawn((
-        ButtonBundle {
-            style: Style {
-                top: Val::Px(0.0),
-                left: Val::Px(0.0),
-                width: Val::Px(20.0),
-                height: Val::Px(20.0),
-                ..default()
-            },
-            z_index: ZIndex::Global(10),
-            background_color: BackgroundColor(Color::srgb_u8(128, 0, 0)),
-            ..default()
-        },
-        map_layer,
-        MiniMap,
-    ));
 }
 
 fn handle_keypresses(
     // mut commands: Commands,
-    #[cfg(not(target_family = "wasm"))] click: Query<
-        &Interaction,
-        (Changed<Interaction>, With<Button>, With<MiniMap>),
-    >,
     keys: Res<ButtonInput<KeyCode>>,
     state: Res<State<AppState>>,
     mut rotating: ResMut<Rotating>,
+    mut docked: ResMut<DockedControls>,
     mut oceans: ResMut<ShowOceans>,
     mut reroll_rand: EventWriter<ReloadTerrain>,
-    #[cfg(not(target_family = "wasm"))] mut toggle_map: EventWriter<ToggleMap>,
-    #[cfg(not(target_family = "wasm"))] mut toggle_ctrls: EventWriter<ToggleControls>,
     mut exit_evt: EventWriter<AppExit>,
 ) {
     if keys.any_pressed([KeyCode::ControlLeft, KeyCode::ControlRight])
@@ -358,16 +324,11 @@ fn handle_keypresses(
     if keys.just_pressed(KeyCode::KeyS) {
         rotating.0 = !rotating.0;
     }
+    if keys.just_pressed(KeyCode::KeyC) {
+        docked.0 = !docked.0;
+    }
     if keys.just_pressed(KeyCode::KeyO) {
         oceans.show = !oceans.show;
-    }
-    #[cfg(not(target_family = "wasm"))]
-    if matches!(click.get_single(), Ok(&Interaction::Pressed)) || keys.just_pressed(KeyCode::KeyM) {
-        toggle_map.send(ToggleMap);
-    }
-    #[cfg(not(target_family = "wasm"))]
-    if keys.just_pressed(KeyCode::KeyC) {
-        toggle_ctrls.send(ToggleControls);
     }
     match *state.get() {
         AppState::Heights => {
@@ -381,6 +342,7 @@ fn handle_keypresses(
 fn update_ui(
     mut contexts: EguiContexts,
     mut rotating: ResMut<Rotating>,
+    mut docked: ResMut<DockedControls>,
     mut oceans: ResMut<ShowOceans>,
     mut filter: ResMut<LayerFilter>,
     mut noise: ResMut<NoiseSourceRes>,
@@ -388,23 +350,17 @@ fn update_ui(
     mut reroll_rand: EventWriter<ReloadTerrain>,
     mut wip_layer: Local<Option<NoiseSourceBuilder>>,
     mut code_editing: Local<Option<String>>,
-    popout: Query<Entity, (With<Window>, With<Controls>)>,
     primary: Query<Entity, With<PrimaryWindow>>,
-    #[cfg(not(target_family = "wasm"))] mut toggle_ctrls: EventWriter<ToggleControls>,
 ) {
+    let is_docked = docked.0;
     let callback = |ui: &mut egui::Ui| {
         ui.set_min_width(165.0);
         ui.horizontal(|ui| {
             ui.label(egui::RichText::new("Controls").size(20.0));
-            #[cfg(not(target_family = "wasm"))]
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let label = if popout.get_single().is_ok() {
-                    "To Main"
-                } else {
-                    "Pop Out"
-                };
+                let label = if docked.0 { "Undock" } else { "Dock" };
                 if ui.button(label).clicked() {
-                    toggle_ctrls.send(ToggleControls);
+                    docked.0 = !docked.0;
                 }
             });
         });
@@ -620,12 +576,15 @@ fn update_ui(
             });
         });
     };
-    if let Ok(window) = popout.get_single() {
-        egui::Window::new("controls").show(contexts.ctx_for_entity_mut(window), callback);
-    } else {
-        egui::SidePanel::left("controls")
+    let context = contexts.ctx_for_entity_mut(primary.single());
+    if is_docked {
+        egui::SidePanel::left("Controls")
             .resizable(true)
-            .show(contexts.ctx_for_entity_mut(primary.single()), callback);
+            .show(context, callback);
+    } else {
+        egui::Window::new("Controls")
+            .max_width(165.0)
+            .show(context, callback);
     }
 }
 
@@ -654,7 +613,7 @@ fn update_map_camera(
     }
 }
 
-#[cfg(not(target_family = "wasm"))]
+#[allow(dead_code)]
 fn toggle_map(
     mut commands: Commands,
     mut camera: Query<&mut Camera, (With<Camera2d>, With<MiniMap>)>,
@@ -691,22 +650,6 @@ fn toggle_map(
             .id();
         camera.viewport = None;
         camera.target = RenderTarget::Window(bevy::window::WindowRef::Entity(window));
-    }
-}
-
-#[cfg(not(target_family = "wasm"))]
-fn toggle_controls(mut commands: Commands, popout: Query<Entity, (With<Window>, With<Controls>)>) {
-    if let Ok(window) = popout.get_single() {
-        commands.entity(window).despawn();
-    } else {
-        commands.spawn((
-            Window {
-                title: "Controls".into(),
-                mode: bevy::window::WindowMode::Windowed,
-                ..default()
-            },
-            Controls,
-        ));
     }
 }
 
