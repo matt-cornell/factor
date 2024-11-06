@@ -10,6 +10,8 @@ fn circle_dist(a: Vec2, b: Vec2) -> Vec2 {
     let mut dist = a - b;
     if dist.x > PI {
         dist.x -= TAU;
+    } else if dist.x < -PI {
+        dist.x += TAU;
     }
     dist
 }
