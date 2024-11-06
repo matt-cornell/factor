@@ -58,8 +58,8 @@ const HEIGHT: usize = 200;
 const VIEW_WIDTH: u32 = 400;
 const VIEW_HEIGHT: u32 = 200;
 
-fn smoothstep(w: f32) -> f32 {
-    (3.0 - w * 2.0) * w * w
+fn linear(w: f32) -> f32 {
+    w
 }
 
 #[derive(Debug, Clone)]
@@ -85,7 +85,7 @@ fn cell_noise(gradient: bool, depth: u8, shift: f32) -> Shifted<ValueOrGradient>
                 .map(|[x, y]| Vec2::new(x, y))
                 .take(factor::healpix::n_hash(depth) as _)
                 .collect::<Box<[Vec2]>>(),
-            scale: smoothstep,
+            scale: linear,
         })
     } else {
         ValueOrGradient::Value(ValueCellNoise {
@@ -94,7 +94,7 @@ fn cell_noise(gradient: bool, depth: u8, shift: f32) -> Shifted<ValueOrGradient>
                 .sample_iter(rand_distr::Standard)
                 .take(factor::healpix::n_hash(depth) as _)
                 .collect::<Box<[f32]>>(),
-            scale: smoothstep,
+            scale: linear,
         })
     };
     Shifted::new(base, shift)
