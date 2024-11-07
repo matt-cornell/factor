@@ -13,7 +13,6 @@ use std::f32::consts::*;
 enum AppState {
     #[default]
     Healpix,
-    Init,
     Simulate {
         iter: u16,
         running: bool,
@@ -138,7 +137,13 @@ fn main() {
             update_texture
                 .run_if(resource_changed::<HealpixPixels>.or_else(resource_changed::<ShowCenters>)),
         )
-        .add_systems(OnEnter(AppState::Init), setup_terrain)
+        .add_systems(
+            OnEnter(AppState::Simulate {
+                iter: 0,
+                running: false,
+            }),
+            setup_terrain,
+        )
         .run();
 }
 
@@ -242,7 +247,7 @@ fn update_colors(
     bord: Res<ShowBorders>,
     state: Res<State<AppState>>,
 ) {
-    if matches!(state.get(), AppState::Init | AppState::Simulate { .. }) {
+    if matches!(state.get(), AppState::Simulate { .. }) {
         let TerrainData(state, colors) = &*terr;
         for (n, (cell, color)) in state.cells().iter().zip(&mut pixels.0).enumerate() {
             if bord.0 && state.boundaries().contains(n as _) {
@@ -254,8 +259,7 @@ fn update_colors(
                         *color = LinearRgba::gray(cell.height.mul_add(0.1, 0.2));
                     }
                     ColorKind::Density => {
-                        let dens = (state.plates()[cell.plate as usize].density as f32)
-                            .mul_add(0.0025, -0.05);
+                        let dens = (cell.density as f32).mul_add(0.0025, -0.05);
                         let dens = dens.mul_add(0.2, -0.1);
                         let base = LinearRgba::rgb(0.5 - dens, 0.5, 0.5 + dens);
                         *color = base.with_luminance(cell.height.mul_add(0.1, 0.2));
@@ -276,8 +280,12 @@ fn update_colors(
     }
 }
 
-fn update_terrain(mut terr: ResMut<TerrainData>) {
+fn update_terrain(mut terr: ResMut<TerrainData>, state: Res<State<AppState>>, mut next_state: ResMut<NextState<AppState>>) {
     step_terrain(&mut terr.0, &mut thread_rng());
+    let AppState::Simulate { running, iter } = **state else {
+        panic!("Invalid state for terrain update")
+    };
+    next_state.set(AppState::Simulate { running, iter: iter + 1 });
 }
 
 fn handle_keypresses(
@@ -325,7 +333,10 @@ fn handle_keypresses(
     match *state.get() {
         AppState::Healpix => {
             if keys.just_pressed(KeyCode::Space) {
-                next_state.set(AppState::Init);
+                next_state.set(AppState::Simulate {
+                    iter: 0,
+                    running: false,
+                });
             } else {
                 let mut evt = false;
                 if keys.just_pressed(KeyCode::BracketRight) {
@@ -343,20 +354,6 @@ fn handle_keypresses(
                 if evt || keys.just_pressed(KeyCode::KeyC) {
                     depth_evt.send(DepthChanged);
                 }
-            }
-        }
-        AppState::Init => {
-            if keys.just_pressed(KeyCode::Space) {
-                next_state.set(AppState::Simulate {
-                    iter: 0,
-                    running: true,
-                });
-            }
-            if keys.just_pressed(KeyCode::KeyC) {
-                recolor_evt.send(RecolorPlates);
-            }
-            if keys.just_pressed(KeyCode::KeyX) {
-                centers.0 = !centers.0;
             }
         }
         AppState::Simulate { iter, running } => {
