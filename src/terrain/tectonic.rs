@@ -63,8 +63,8 @@ pub struct TectonicPlate {
 impl Distribution<TectonicPlate> for Standard {
     fn sample<R: Rng + ?Sized>(&self, rng: &mut R) -> TectonicPlate {
         use std::f32::consts::PI;
-        let density = rng.gen_range(1000..=2000);
-        let height = rng.gen_range(-0.05..=0.05) - (density - 1000) as f32 * 0.00005;
+        let density = rng.gen_range(100..=200) + u32::from(rng.gen_bool(0.6)) * 125;
+        let height = rng.gen_range(-0.05..=0.05) - (density - 100) as f32 * 0.00005;
         TectonicPlate {
             center_lat: rng.gen_range(-1.0f32..1.0).asin(),
             center_long: rng.gen_range(-PI..=PI),
@@ -289,48 +289,92 @@ fn step_terrain_impl<R: Rng + ?Sized>(
                 cell.height = cell.height.mul_add(0.6, 0.2);
             } else {
                 // convergent
-                if plate.height > plate2.height {
-                    continue;
-                }
-                metrics.converge += 1;
-                metrics.bits |= 1 << (lon1 % TAU / FRAC_PI_4) as u8;
-                let cell = &mut state.cells[i as usize];
-                cell.feats = CellFeature::SUBDUCT;
-                cell.height -= 0.2;
-                cell.height = cell.height.max(-5.0);
-                state.plates[cell.plate as usize].height -= plate_scale * 2.0;
-                let (lon2, lat2) = layer.center(c2);
-                let pos1 = Vec2::new(lon1 as _, lat1 as _);
-                let delta = (Vec2::new(lon2 as _, lat2 as _) - pos1).normalize_or_zero();
-                let diff = plate.motion.normalize_or_zero() * 0.25 + delta * 0.25;
-                {
-                    let h = &mut state.cells[c2 as usize].height;
-                    *h = (*h + 0.1).max(5.0);
-                }
-                state.plates[other.plate as usize].height += plate_scale * 5.0;
-                for n in 0..3 {
-                    let Vec2 { x, y } = pos1 + diff * (n as f32).mul_add(0.25, 0.5);
-                    let new = layer.hash(
-                        ((x as f64 + PI) % TAU) - PI,
-                        (y as f64).clamp(-FRAC_PI_2, FRAC_PI_2),
-                    );
-                    if new == i {
+                if plate.density < 175 && plate2.density < 175 {
+                    metrics.converge += 1;
+                    metrics.bits |= 1 << (lon1 % TAU / FRAC_PI_4) as u8;
+                    let cell = &mut state.cells[i as usize];
+                    cell.feats = CellFeature::MOUNTAIN;
+                    cell.height += 0.1;
+                    cell.height = cell.height.max(-5.0);
+                    state.plates[cell.plate as usize].height -= plate_scale * 2.0;
+                    let (lon2, lat2) = layer.center(c2);
+                    let pos1 = Vec2::new(lon1 as _, lat1 as _);
+                    let delta = (Vec2::new(lon2 as _, lat2 as _) - pos1).normalize_or_zero();
+                    let diff = plate.motion.normalize_or_zero() * 0.25 + delta * 0.25;
+                    {
+                        let h = &mut state.cells[c2 as usize].height;
+                        *h = (*h + 0.01).max(5.0);
+                    }
+                    state.plates[other.plate as usize].height += plate_scale * 5.0;
+                    for n in 0..3 {
+                        let Vec2 { x, y } = pos1 + diff * (n as f32 + 1.0) * 0.25;
+                        let new = layer.hash(
+                            ((x as f64 + PI) % TAU) - PI,
+                            (y as f64).clamp(-FRAC_PI_2, FRAC_PI_2),
+                        );
+                        if new == i {
+                            continue;
+                        }
+                        if healpix::far_neighbors(state.depth, new).iter().any(|&h| {
+                            !matches!(
+                                state.cells[h as usize].feats.kind,
+                                CellFeatureKind::None | CellFeatureKind::Mountain
+                            )
+                        }) {
+                            continue;
+                        }
+                        let cell = &mut state.cells[new as usize];
+                        cell.feats = CellFeature {
+                            kind: CellFeatureKind::Mountain,
+                            dist: n / 2,
+                        };
+                        cell.height += 0.5f32.powi(n as _) * rng.sample(mountain_height);
+                    }
+                } else {
+                    // subduction
+                    if plate.density < plate2.density {
                         continue;
                     }
-                    if healpix::far_neighbors(state.depth, new).iter().any(|&h| {
-                        !matches!(
-                            state.cells[h as usize].feats.kind,
-                            CellFeatureKind::None | CellFeatureKind::Mountain
-                        )
-                    }) {
-                        continue;
+                    metrics.converge += 1;
+                    metrics.bits |= 1 << (lon1 % TAU / FRAC_PI_4) as u8;
+                    let cell = &mut state.cells[i as usize];
+                    cell.feats = CellFeature::SUBDUCT;
+                    cell.height -= 0.2;
+                    cell.height = cell.height.max(-5.0);
+                    state.plates[cell.plate as usize].height -= plate_scale * 2.0;
+                    let (lon2, lat2) = layer.center(c2);
+                    let pos1 = Vec2::new(lon1 as _, lat1 as _);
+                    let delta = (Vec2::new(lon2 as _, lat2 as _) - pos1).normalize_or_zero();
+                    let diff = plate.motion.normalize_or_zero() * 0.25 + delta * 0.25;
+                    {
+                        let h = &mut state.cells[c2 as usize].height;
+                        *h = (*h + 0.01).max(5.0);
                     }
-                    let cell = &mut state.cells[new as usize];
-                    cell.feats = CellFeature {
-                        kind: CellFeatureKind::Mountain,
-                        dist: n / 2,
-                    };
-                    cell.height += 0.5f32.powi(n as _) * rng.sample(mountain_height);
+                    state.plates[other.plate as usize].height += plate_scale * 5.0;
+                    for n in 0..3 {
+                        let Vec2 { x, y } = pos1 + diff * (n as f32).mul_add(0.25, 0.5);
+                        let new = layer.hash(
+                            ((x as f64 + PI) % TAU) - PI,
+                            (y as f64).clamp(-FRAC_PI_2, FRAC_PI_2),
+                        );
+                        if new == i {
+                            continue;
+                        }
+                        if healpix::far_neighbors(state.depth, new).iter().any(|&h| {
+                            !matches!(
+                                state.cells[h as usize].feats.kind,
+                                CellFeatureKind::None | CellFeatureKind::Mountain
+                            )
+                        }) {
+                            continue;
+                        }
+                        let cell = &mut state.cells[new as usize];
+                        cell.feats = CellFeature {
+                            kind: CellFeatureKind::Mountain,
+                            dist: n / 2,
+                        };
+                        cell.height += 0.5f32.powi(n as _) * rng.sample(mountain_height);
+                    }
                 }
             }
         }

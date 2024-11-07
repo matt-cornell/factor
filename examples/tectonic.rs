@@ -44,6 +44,7 @@ struct Rotating(bool);
 enum ColorKind {
     Plates,
     Height,
+    Density,
     Feats,
 }
 
@@ -87,7 +88,7 @@ fn main() {
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
                 fit_canvas_to_parent: true,
-                title: "Noise Terrain".into(),
+                title: "Tectonic Terrain".into(),
                 ..default()
             }),
             ..default()
@@ -250,10 +251,14 @@ fn update_colors(
                 match *color_kind {
                     ColorKind::Plates => *color = colors[cell.plate as usize],
                     ColorKind::Height => {
-                        // *color = LinearRgba::gray(
-                        //     cell.height.cbrt().tanh().mul_add(0.5, 0.5).clamp(0.0, 1.0),
-                        // )
-                        *color = LinearRgba::gray(cell.height.mul_add(0.1, 0.2))
+                        *color = LinearRgba::gray(cell.height.mul_add(0.1, 0.2));
+                    }
+                    ColorKind::Density => {
+                        let dens = (state.plates()[cell.plate as usize].density as f32)
+                            .mul_add(0.0025, -0.05);
+                        let dens = dens.mul_add(0.2, -0.1);
+                        let base = LinearRgba::rgb(0.5 - dens, 0.5, 0.5 + dens);
+                        *color = base.with_luminance(cell.height.mul_add(0.1, 0.2));
                     }
                     ColorKind::Feats => {
                         let base = match cell.feats.kind {
@@ -303,6 +308,9 @@ fn handle_keypresses(
     if keys.just_pressed(KeyCode::KeyH) {
         *colors = ColorKind::Height;
     }
+    if keys.just_pressed(KeyCode::KeyD) {
+        *colors = ColorKind::Density;
+    }
     if keys.just_pressed(KeyCode::KeyF) {
         *colors = ColorKind::Feats;
     }
@@ -320,13 +328,13 @@ fn handle_keypresses(
                 next_state.set(AppState::Init);
             } else {
                 let mut evt = false;
-                if keys.just_pressed(KeyCode::KeyP) {
+                if keys.just_pressed(KeyCode::BracketRight) {
                     if depth.0 < 20 {
                         depth.0 += 1;
                     }
                     evt = true;
                 }
-                if keys.just_pressed(KeyCode::KeyL) {
+                if keys.just_pressed(KeyCode::BracketLeft) {
                     if depth.0 > 0 {
                         depth.0 -= 1;
                     }
