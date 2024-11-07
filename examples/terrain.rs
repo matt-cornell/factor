@@ -1,4 +1,5 @@
 #![allow(clippy::too_many_arguments, clippy::type_complexity)]
+#![feature(unsafe_cell_from_mut)]
 use bevy::prelude::*;
 use bevy::render::render_asset::RenderAssetUsages;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
@@ -8,17 +9,21 @@ use factor::terrain::noise::*;
 use factor::terrain::tectonic::*;
 use rand::prelude::*;
 use serde::{Deserialize, Serialize};
+use std::cell::UnsafeCell;
 use std::f32::consts::*;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, States)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, States)]
 enum AppState {
-    #[default]
-    Healpix,
-    Simulate {
-        iter: u16,
-        running: bool,
-    },
+    Simulate { iter: u16, running: bool },
+}
+impl Default for AppState {
+    fn default() -> Self {
+        Self::Simulate {
+            iter: 0,
+            running: false,
+        }
+    }
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, SubStates)]
@@ -43,8 +48,9 @@ struct HealpixDepth(u8);
 #[derive(Resource)]
 struct HealpixMap(Box<[usize]>);
 
-#[derive(Clone, Copy, Resource, PartialEq)]
+#[derive(Default, Clone, Copy, Resource, PartialEq)]
 enum LayerFilter {
+    #[default]
     All,
     Tectonics,
     AllNoise,
@@ -59,13 +65,14 @@ struct ShowCenters(bool);
 #[derive(Resource)]
 struct ShowBorders(bool);
 
-#[derive(Debug, Clone, Copy, Resource, PartialEq)]
+#[derive(Debug, Default, Clone, Copy, Resource, PartialEq)]
 enum ColorKind {
-    Pixels,
+    #[default]
+    Healpix,
     Plates,
     Height,
     Density,
-    Feats,
+    Features,
 }
 
 #[derive(Resource)]
@@ -84,7 +91,12 @@ struct NoiseSourceRes {
 struct NoiseTerrain(Vec<(Shifted<ValueOrGradient>, f32)>);
 
 #[derive(Resource)]
-struct DockedControls(bool);
+struct DockedControls {
+    display: bool,
+    oceans: bool,
+    noise: bool,
+    tectonics: bool,
+}
 
 #[derive(Resource)]
 struct DockedMap(bool);
@@ -99,13 +111,10 @@ struct MiniMap;
 struct ReloadTerrain;
 
 #[derive(Event)]
-struct DepthChanged;
-
-#[derive(Event)]
 struct RecolorPlates;
 
-const WIDTH: usize = 400;
-const HEIGHT: usize = 200;
+const WIDTH: usize = 800;
+const HEIGHT: usize = 400;
 const VIEW_WIDTH: u32 = 400;
 const VIEW_HEIGHT: u32 = 200;
 
@@ -230,27 +239,32 @@ fn main() {
         .init_state::<AppState>()
         .add_sub_state::<Simulating>()
         .add_event::<ReloadTerrain>()
-        .add_event::<DepthChanged>()
         .add_event::<RecolorPlates>()
         .insert_resource(HealpixDepth(5))
         .insert_resource(TectonicScale(1.0))
         .insert_resource(ShowBorders(false))
         .insert_resource(ShowCenters(false))
         .insert_resource(Rotating(true))
-        .insert_resource(DockedControls(true))
+        .insert_resource(DockedControls {
+            display: true,
+            oceans: true,
+            noise: true,
+            tectonics: true,
+        })
         .insert_resource(DockedMap(true))
         .insert_resource(LayerFilter::All)
         .insert_resource(NoiseSourceRes::default())
-        .insert_resource(ColorKind::Pixels)
+        .insert_resource(ColorKind::Height)
         .insert_resource(ShowOceans {
             show: false,
             depth: 0.5,
         })
+        .insert_resource(Time::<Fixed>::from_hz(5.0))
         .add_systems(Startup, setup)
         .add_systems(PostStartup, (reload_terrain, setup_terrain))
         .add_systems(
             PreUpdate,
-            update_healpix.run_if(resource_changed::<HealpixDepth>),
+            setup_terrain.run_if(resource_changed::<HealpixDepth>),
         )
         .add_systems(
             Update,
@@ -262,7 +276,8 @@ fn main() {
                     state_changed::<AppState>
                         .or_else(resource_changed::<NoiseTerrain>)
                         .or_else(resource_changed::<ShowOceans>)
-                        .or_else(resource_changed::<LayerFilter>),
+                        .or_else(resource_changed::<LayerFilter>)
+                        .or_else(resource_changed::<ColorKind>),
                 ),
                 update_noise_terrain.run_if(resource_exists_and_changed::<NoiseSourceRes>),
                 reload_terrain.run_if(on_event::<ReloadTerrain>()),
@@ -353,12 +368,9 @@ fn handle_keypresses(
     keys: Res<ButtonInput<KeyCode>>,
     state: Res<State<AppState>>,
     mut next_state: ResMut<NextState<AppState>>,
-    mut depth: ResMut<HealpixDepth>,
     mut rotating: ResMut<Rotating>,
-    mut docked: ResMut<DockedControls>,
     mut oceans: ResMut<ShowOceans>,
     mut centers: ResMut<ShowCenters>,
-    mut depth_evt: EventWriter<DepthChanged>,
     mut recolor_evt: EventWriter<RecolorPlates>,
     mut exit_evt: EventWriter<AppExit>,
 ) {
@@ -370,38 +382,10 @@ fn handle_keypresses(
     if keys.just_pressed(KeyCode::KeyS) {
         rotating.0 = !rotating.0;
     }
-    if keys.just_pressed(KeyCode::KeyC) {
-        docked.0 = !docked.0;
-    }
     if keys.just_pressed(KeyCode::KeyO) {
         oceans.show = !oceans.show;
     }
     match *state.get() {
-        AppState::Healpix => {
-            if keys.just_pressed(KeyCode::Space) {
-                next_state.set(AppState::Simulate {
-                    iter: 0,
-                    running: false,
-                });
-            } else {
-                let mut evt = false;
-                if keys.just_pressed(KeyCode::BracketRight) {
-                    if depth.0 < 20 {
-                        depth.0 += 1;
-                    }
-                    evt = true;
-                }
-                if keys.just_pressed(KeyCode::BracketLeft) {
-                    if depth.0 > 0 {
-                        depth.0 -= 1;
-                    }
-                    evt = true;
-                }
-                if evt || keys.just_pressed(KeyCode::KeyC) {
-                    depth_evt.send(DepthChanged);
-                }
-            }
-        }
         AppState::Simulate { iter, running } => {
             if keys.just_pressed(KeyCode::Space) {
                 next_state.set(AppState::Simulate {
@@ -422,42 +406,102 @@ fn handle_keypresses(
 fn update_ui(
     mut contexts: EguiContexts,
     mut rotating: ResMut<Rotating>,
+    mut coloring: ResMut<ColorKind>,
     mut docked_controls: ResMut<DockedControls>,
     mut docked_map: ResMut<DockedMap>,
-    mut oceans: ResMut<ShowOceans>,
     mut filter: ResMut<LayerFilter>,
     mut noise: ResMut<NoiseSourceRes>,
     mut terrain: ResMut<NoiseTerrain>,
-    mut reroll_rand: EventWriter<ReloadTerrain>,
-    mut wip_layer: Local<Option<NoiseSourceBuilder>>,
-    mut code_editing: Local<Option<String>>,
-    primary: Query<Entity, With<PrimaryWindow>>,
-    minimap: Query<&Handle<Image>, With<MiniMap>>,
+    mut depth: ResMut<HealpixDepth>,
+    mut terr_scale: ResMut<TectonicScale>,
+    (mut borders, mut centers, mut oceans): (
+        ResMut<ShowBorders>,
+        ResMut<ShowCenters>,
+        ResMut<ShowOceans>,
+    ),
+    (state, mut next_state): (Res<State<AppState>>, ResMut<NextState<AppState>>),
+    (mut reroll_rand, mut recolor_plates): (EventWriter<ReloadTerrain>, EventWriter<RecolorPlates>),
+    (mut wip_layer, mut code_editing, mut old_filter): (
+        Local<Option<NoiseSourceBuilder>>,
+        Local<Option<String>>,
+        Local<LayerFilter>,
+    ),
+    (primary, minimap): (
+        Query<Entity, With<PrimaryWindow>>,
+        Query<&Handle<Image>, With<MiniMap>>,
+    ),
 ) {
-    let ctrl_docked = docked_controls.0;
+    let filter = UnsafeCell::from_mut(&mut filter);
+    let old_filter = UnsafeCell::from_mut(&mut old_filter);
+    let DockedControls {
+        display: dock_display,
+        oceans: dock_oceans,
+        noise: dock_noise,
+        tectonics: dock_tectonics,
+        ..
+    } = &mut *docked_controls;
     let map_docked = docked_map.0;
     let image = contexts.add_image(minimap.single().clone());
-    let render_controls = |ui: &mut egui::Ui| {
-        ui.set_min_width(165.0);
-        ui.horizontal(|ui| {
-            ui.label(egui::RichText::new("Controls").size(20.0));
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let label = if docked_controls.0 { "Undock" } else { "Dock" };
-                if ui.button(label).clicked() {
-                    docked_controls.0 = !docked_controls.0;
-                }
-            });
-        });
-        if ui.button("Restart").clicked() {
-            reroll_rand.send(ReloadTerrain);
+    let context = contexts.ctx_for_entity_mut(primary.single());
+    let render_display = {
+        let docked = *dock_display;
+        let render = |ui: &mut egui::Ui| {
+            let label = if *dock_display { "Undock" } else { "Dock" };
+            if ui.button(label).clicked() {
+                *dock_display = !*dock_display;
+            }
+            if ui
+                .checkbox(&mut rotating.bypass_change_detection().0, "Rotating")
+                .changed()
+            {
+                let _ = &mut *rotating;
+            }
+            if ui
+                .checkbox(&mut borders.bypass_change_detection().0, "Plate Boundaries")
+                .changed()
+            {
+                let _ = &mut *borders;
+            }
+            if ui
+                .checkbox(&mut centers.bypass_change_detection().0, "Plate Centers")
+                .changed()
+            {
+                let _ = &mut *centers;
+            }
+            let old = *coloring;
+            egui::ComboBox::new("color-kind", "Coloring")
+                .selected_text(format!("{old:?}"))
+                .show_ui(ui, |ui| {
+                    let r = coloring.bypass_change_detection();
+                    ui.selectable_value(r, ColorKind::Healpix, "Healpix");
+                    ui.selectable_value(r, ColorKind::Plates, "Plates");
+                    ui.selectable_value(r, ColorKind::Features, "Features");
+                    ui.selectable_value(r, ColorKind::Height, "Height");
+                    ui.selectable_value(r, ColorKind::Density, "Density");
+                });
+            if *coloring != old {
+                let _ = &mut *coloring;
+            }
+            if ui.button("Recolor Plates").clicked() {
+                recolor_plates.send(RecolorPlates);
+            }
+        };
+        if docked {
+            Some(|ui: &mut egui::Ui| {
+                ui.collapsing(egui::RichText::new("Display").size(18.0), render);
+            })
+        } else {
+            egui::Window::new("Display").show(context, render);
+            None
         }
-        if ui
-            .checkbox(&mut rotating.bypass_change_detection().0, "Rotating")
-            .changed()
-        {
-            let _ = &mut *rotating;
-        }
-        ui.collapsing(egui::RichText::new("Oceans").size(18.0), |ui| {
+    };
+    let render_oceans = {
+        let docked = *dock_oceans;
+        let render = |ui: &mut egui::Ui| {
+            let label = if *dock_oceans { "Undock" } else { "Dock" };
+            if ui.button(label).clicked() {
+                *dock_oceans = !*dock_oceans;
+            }
             if ui
                 .checkbox(&mut oceans.bypass_change_detection().show, "Show Oceans")
                 .changed()
@@ -473,10 +517,30 @@ fn update_ui(
             {
                 let _ = &mut *oceans;
             }
-        });
-        ui.collapsing(egui::RichText::new("Noise").size(18.0), |ui| {
+        };
+        if docked {
+            Some(|ui: &mut egui::Ui| {
+                ui.collapsing(egui::RichText::new("Oceans").size(18.0), render);
+            })
+        } else {
+            egui::Window::new("Oceans").show(context, render);
+            None
+        }
+    };
+    let render_noise = {
+        // safety: this doesn't escape, and only one of these functions runs at once
+        let (filter, old_filter) = unsafe { (&mut *filter.get(), &mut *old_filter.get()) };
+        let docked = *dock_noise;
+        let render = |ui: &mut egui::Ui| {
+            let label = if *dock_noise { "Undock" } else { "Dock" };
+            if ui.button(label).clicked() {
+                *dock_noise = !*dock_noise;
+            }
+            if ui.button("Reload All").clicked() {
+                reroll_rand.send(ReloadTerrain);
+            }
+            let mut showing = None;
             egui::ScrollArea::vertical().show(ui, |ui| {
-                let mut showing = None;
                 let mut changed = false;
                 let mut delete = None;
                 let mut normalize = None;
@@ -531,7 +595,7 @@ fn update_ui(
                             egui::AboveOrBelow::Below,
                             egui::PopupCloseBehavior::CloseOnClickOutside,
                             |ui| {
-                                ui.set_min_width(200.0);
+                                // ui.set_min_width(200.0);
                                 egui::Frame::popup(ui.style()).show(ui, |ui| {
                                     ui.horizontal(|ui| {
                                         if ui.button("Save").clicked() {
@@ -561,18 +625,21 @@ fn update_ui(
                             },
                         );
                     }
-                    if ui.button("Normalize").clicked() {
-                        let sum = noise.layers.iter().map(|l| l.scale).sum::<f32>();
-                        if sum != 0.0 {
-                            let scale = sum.recip();
-                            for (l, t) in noise.layers.iter_mut().zip(&mut terrain.0) {
-                                let val = (l.scale * scale * 1000.0).round() * 0.001;
-                                l.scale = val;
-                                t.1 = val;
-                            }
-                        }
-                    }
                 });
+                let sum = noise.layers.iter().map(|l| l.scale).sum::<f32>();
+                let mut new_sum = sum;
+                ui.add_enabled(
+                    sum != 0.0,
+                    egui::Slider::new(&mut new_sum, 0.0..=2.0).text("Scale"),
+                );
+                if sum != new_sum {
+                    let scale = new_sum / sum;
+                    for (l, t) in noise.layers.iter_mut().zip(&mut terrain.0) {
+                        let val = (l.scale * scale * 1000.0).round() * 0.001;
+                        l.scale = val;
+                        t.1 = val;
+                    }
+                }
 
                 for (n, layer) in noise
                     .bypass_change_detection()
@@ -625,11 +692,11 @@ fn update_ui(
                         });
                     });
                 }
-                match (*filter, showing) {
+                match (**filter, showing) {
                     (LayerFilter::All | LayerFilter::AllNoise, None) => {}
                     (LayerFilter::NoiseLayer(a), Some(b)) if a == b => {}
-                    (_, None) => *filter = LayerFilter::All,
-                    (_, Some(n)) => *filter = LayerFilter::NoiseLayer(n),
+                    (_, None) => **filter = LayerFilter::All,
+                    (_, Some(n)) => **filter = LayerFilter::NoiseLayer(n),
                 }
                 if let Some(idx) = delete {
                     noise.layers.remove(idx);
@@ -660,8 +727,118 @@ fn update_ui(
                     let _ = &mut *noise;
                 }
             });
-        });
+            if showing.is_none() {
+                if ui.ui_contains_pointer() {
+                    if !matches!(**filter, LayerFilter::AllNoise | LayerFilter::NoiseLayer(_)) {
+                        **old_filter = **filter;
+                        **filter = LayerFilter::AllNoise;
+                    }
+                } else if **filter == LayerFilter::AllNoise {
+                    **filter = **old_filter;
+                }
+            }
+        };
+        if docked {
+            Some(|ui: &mut egui::Ui| {
+                ui.collapsing(egui::RichText::new("Noise").size(18.0), render);
+            })
+        } else {
+            egui::Window::new("Noise")
+                .default_width(200.0)
+                .show(context, render);
+            None
+        }
     };
+    let render_tectonics = {
+        let docked = *dock_tectonics;
+        let render = |ui: &mut egui::Ui| {
+            // safety: this doesn't escape, and only one of these functions runs at once
+            let (filter, old_filter) = unsafe { (&mut *filter.get(), &mut *old_filter.get()) };
+            let label = if *dock_tectonics { "Undock" } else { "Dock" };
+            if ui.button(label).clicked() {
+                *dock_tectonics = !*dock_tectonics;
+            }
+            match **state {
+                AppState::Simulate { iter, mut running } => {
+                    ui.label(format!("Simulating\nStep: {iter}"));
+                    ui.horizontal(|ui| {
+                        if ui.checkbox(&mut running, "Running").changed() {
+                            next_state.set(AppState::Simulate { iter, running });
+                        }
+                        if ui.button("Reset").clicked() {
+                            let _ = &mut *depth;
+                        }
+                    });
+                }
+            }
+
+            if ui
+                .add(egui::Slider::new(&mut depth.bypass_change_detection().0, 3..=9).text("Depth"))
+                .changed()
+            {
+                let _ = &mut *depth;
+            }
+
+            if ui
+                .add(
+                    egui::Slider::new(&mut terr_scale.bypass_change_detection().0, 0.0..=3.0)
+                        .text("Scale"),
+                )
+                .changed()
+            {
+                let _ = &mut *terr_scale;
+            }
+            if ui.ui_contains_pointer() {
+                if **filter != LayerFilter::Tectonics {
+                    **old_filter = **filter;
+                    **filter = LayerFilter::Tectonics;
+                }
+            } else if **filter == LayerFilter::Tectonics {
+                **filter = **old_filter;
+            }
+        };
+        if docked {
+            Some(|ui: &mut egui::Ui| {
+                ui.collapsing(egui::RichText::new("Tectonics").size(18.0), render);
+            })
+        } else {
+            egui::Window::new("Tectonics").show(context, render);
+            None
+        }
+    };
+    if render_display.is_some()
+        || render_oceans.is_some()
+        || render_noise.is_some()
+        || render_tectonics.is_some()
+    {
+        let undock = egui::SidePanel::left("Controls")
+            .min_width(165.0)
+            .show(context, |ui| {
+                let undock = ui.button("Undock All").clicked();
+                if let Some(render) = render_display {
+                    render(ui);
+                }
+                if let Some(render) = render_oceans {
+                    render(ui);
+                }
+                if let Some(render) = render_noise {
+                    render(ui);
+                }
+                if let Some(render) = render_tectonics {
+                    render(ui);
+                }
+                undock
+            })
+            .inner;
+        if undock {
+            *docked_controls = DockedControls {
+                display: false,
+                oceans: false,
+                noise: false,
+                tectonics: false,
+            };
+        }
+    }
     let render_map = |ui: &mut egui::Ui| {
         let label = if map_docked { "Undock" } else { "Dock" };
         if ui.button(label).clicked() {
@@ -672,28 +849,20 @@ fn update_ui(
             (VIEW_WIDTH as f32, VIEW_HEIGHT as f32),
         ));
     };
-    let context = contexts.ctx_for_entity_mut(primary.single());
-    if ctrl_docked {
-        egui::SidePanel::left("Controls")
-            .resizable(true)
-            .show(context, render_controls);
-    } else {
-        egui::Window::new("Controls")
-            .max_width(165.0)
-            .show(context, render_controls);
-    }
     let mut window = egui::Window::new("World Map")
         .resizable(false)
         .default_pos(context.screen_rect().max - egui::vec2(VIEW_WIDTH as _, VIEW_HEIGHT as _));
     if map_docked {
-        window = window
-            .collapsible(false)
-            .anchor(egui::Align2::RIGHT_BOTTOM, egui::Vec2::ZERO);
+        window = window.anchor(egui::Align2::RIGHT_BOTTOM, egui::Vec2::ZERO);
     }
     window.show(context, render_map);
 }
 
-fn update_healpix(mut commands: Commands, depth: Res<HealpixDepth>) {
+fn setup_terrain(
+    mut commands: Commands,
+    mut next_state: ResMut<NextState<AppState>>,
+    depth: Res<HealpixDepth>,
+) {
     let image_map = (0..(WIDTH * HEIGHT))
         .map(|i| {
             use std::f64::consts::*;
@@ -702,17 +871,17 @@ fn update_healpix(mut commands: Commands, depth: Res<HealpixDepth>) {
             cdshealpix::nested::hash(depth.0, x, y) as usize
         })
         .collect();
-
-    commands.insert_resource(HealpixMap(image_map));
-}
-
-fn setup_terrain(mut commands: Commands, depth: Res<HealpixDepth>) {
     let state = init_terrain(depth.0, &mut thread_rng());
     let colors: Box<[LinearRgba]> = thread_rng()
         .sample_iter(RandomColor)
         .take(state.plates().len())
         .collect();
     commands.insert_resource(TerrainData(state, colors));
+    commands.insert_resource(HealpixMap(image_map));
+    next_state.set(AppState::Simulate {
+        iter: 0,
+        running: false,
+    });
 }
 
 fn update_terrain(
@@ -721,9 +890,7 @@ fn update_terrain(
     mut next_state: ResMut<NextState<AppState>>,
 ) {
     step_terrain(&mut terr.0, &mut thread_rng());
-    let AppState::Simulate { running, iter } = **state else {
-        panic!("Invalid state for terrain update")
-    };
+    let AppState::Simulate { running, iter } = **state;
     next_state.set(AppState::Simulate {
         running,
         iter: iter + 1,
@@ -765,7 +932,6 @@ fn update_noise_terrain(
 
 fn update_texture(
     map: Res<HealpixMap>,
-    state: Res<State<AppState>>,
     colors: Res<ColorKind>,
     noise: Res<NoiseTerrain>,
     oceans: Res<ShowOceans>,
@@ -818,7 +984,7 @@ fn update_texture(
         }
         use std::f32::consts::*;
         let cell_idx = map.0[n];
-        if *colors == ColorKind::Pixels {
+        if *colors == ColorKind::Healpix {
             *d = LinearRgba::gray((cell_idx % 4) as f32 * 0.25).as_u32();
             continue;
         }
@@ -830,15 +996,18 @@ fn update_texture(
         let x = ((n % WIDTH) as f32) * TAU / WIDTH as f32;
         let y = ((n / WIDTH) as f32).mul_add(-PI / HEIGHT as f32, FRAC_PI_2);
         let height = match *filter {
-            LayerFilter::All => noise.0.get_height(x, y) + cell.height * terr_scale.0,
-            LayerFilter::Tectonics => cell.height,
+            LayerFilter::All => {
+                noise.0.get_height(x, y)
+                    + cell.height.mul_add(0.1, 0.2).clamp(0.0, 1.0) * terr_scale.0
+            }
+            LayerFilter::Tectonics => cell.height.mul_add(0.1, 0.2).clamp(0.0, 1.0),
             LayerFilter::AllNoise => noise.0.get_height(x, y),
             LayerFilter::NoiseLayer(idx) => noise.0[idx].get_height(x, y),
         };
         *d = match *colors {
-            ColorKind::Pixels => unreachable!(),
+            ColorKind::Healpix => unreachable!(),
             ColorKind::Plates => terr.1[cell.plate as usize],
-            ColorKind::Feats => {
+            ColorKind::Features => {
                 let base = match cell.feats.kind {
                     CellFeatureKind::None => {
                         if terr.0.boundaries().contains(cell_idx as _) {
