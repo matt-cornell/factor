@@ -280,12 +280,19 @@ fn update_colors(
     }
 }
 
-fn update_terrain(mut terr: ResMut<TerrainData>, state: Res<State<AppState>>, mut next_state: ResMut<NextState<AppState>>) {
+fn update_terrain(
+    mut terr: ResMut<TerrainData>,
+    state: Res<State<AppState>>,
+    mut next_state: ResMut<NextState<AppState>>,
+) {
     step_terrain(&mut terr.0, &mut thread_rng());
     let AppState::Simulate { running, iter } = **state else {
         panic!("Invalid state for terrain update")
     };
-    next_state.set(AppState::Simulate { running, iter: iter + 1 });
+    next_state.set(AppState::Simulate {
+        running,
+        iter: iter + 1,
+    });
 }
 
 fn handle_keypresses(
