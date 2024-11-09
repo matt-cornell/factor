@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use std::cell::UnsafeCell;
 use std::f32::consts::*;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, OnceLock};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, States)]
 enum AppState {
@@ -96,10 +97,14 @@ struct DockedControls {
     oceans: bool,
     noise: bool,
     tectonics: bool,
+    editor: bool,
 }
 
 #[derive(Resource)]
 struct DockedMap(bool);
+
+#[derive(Resource)]
+struct TerrainSteps(u16);
 
 #[derive(Component)]
 struct Planet;
@@ -212,6 +217,31 @@ impl Clone for NoiseSourceBuilder {
     }
 }
 
+#[derive(Serialize, Deserialize)]
+struct OceanConfig {
+    depth: f32,
+    show: bool,
+}
+
+#[derive(Serialize, Deserialize)]
+struct TectonicConfig {
+    scale: f32,
+    depth: u8,
+    steps: u16,
+}
+
+#[derive(Serialize)]
+struct ConfigSerShim<'a> {
+    oceans: OceanConfig,
+    tectonic: TectonicConfig,
+    noise: &'a NoiseSourceRes,
+}
+#[derive(Deserialize)]
+struct ConfigDeShim {
+    oceans: OceanConfig,
+    tectonic: TectonicConfig,
+    noise: NoiseSourceRes,
+}
 struct RandomColor;
 impl Distribution<LinearRgba> for RandomColor {
     fn sample<R: Rng + ?Sized>(&self, rng: &mut R) -> LinearRgba {
@@ -250,8 +280,10 @@ fn main() {
             oceans: true,
             noise: true,
             tectonics: true,
+            editor: true,
         })
         .insert_resource(DockedMap(true))
+        .insert_resource(TerrainSteps(0))
         .insert_resource(LayerFilter::All)
         .insert_resource(NoiseSourceRes::default())
         .insert_resource(ColorKind::Height)
@@ -271,6 +303,7 @@ fn main() {
             (
                 handle_keypresses,
                 update_ui.after(setup),
+                update_terrain_min,
                 rotate_sphere.run_if(resource_equals(Rotating(true))),
                 update_texture.run_if(
                     resource_changed::<NoiseTerrain>
@@ -416,11 +449,11 @@ fn update_ui(
     mut coloring: ResMut<ColorKind>,
     mut docked_controls: ResMut<DockedControls>,
     mut docked_map: ResMut<DockedMap>,
-    mut filter: ResMut<LayerFilter>,
+    filter: ResMut<LayerFilter>,
     mut noise: ResMut<NoiseSourceRes>,
     mut terrain: ResMut<NoiseTerrain>,
     mut depth: ResMut<HealpixDepth>,
-    mut terr_scale: ResMut<TectonicScale>,
+    (mut terr_scale, mut tect_steps): (ResMut<TectonicScale>, ResMut<TerrainSteps>),
     (mut borders, mut centers, mut oceans): (
         ResMut<ShowBorders>,
         ResMut<ShowCenters>,
@@ -428,24 +461,59 @@ fn update_ui(
     ),
     (state, mut next_state): (Res<State<AppState>>, ResMut<NextState<AppState>>),
     (mut reroll_rand, mut recolor_plates): (EventWriter<ReloadTerrain>, EventWriter<RecolorPlates>),
-    (mut wip_layer, mut code_editing, mut old_filter): (
+    (mut wip_layer, mut code_editing, old_filter, mut file_load): (
         Local<Option<NoiseSourceBuilder>>,
         Local<Option<String>>,
         Local<LayerFilter>,
+        Local<Arc<OnceLock<String>>>,
     ),
     (primary, minimap): (
         Query<Entity, With<PrimaryWindow>>,
         Query<&Handle<Image>, With<MiniMap>>,
     ),
 ) {
-    let filter = UnsafeCell::from_mut(&mut filter);
-    let old_filter = UnsafeCell::from_mut(&mut old_filter);
+    if let Some(input) = file_load.get() {
+        match toml::from_str(input) {
+            Ok(ConfigDeShim {
+                oceans:
+                    OceanConfig {
+                        depth: ocean_depth,
+                        show,
+                    },
+                tectonic:
+                    TectonicConfig {
+                        scale,
+                        depth: tect_depth,
+                        steps,
+                    },
+                noise: new_noise,
+            }) => {
+                oceans.depth = ocean_depth;
+                oceans.show = show;
+                terr_scale.0 = scale;
+                *noise = new_noise;
+                depth.0 = tect_depth;
+                tect_steps.0 = steps;
+            }
+            Err(_err) => {
+                // TODO: handle this
+            }
+        }
+        *file_load = Arc::default();
+    }
+    let filter = UnsafeCell::new(filter);
+    let old_filter = UnsafeCell::new(old_filter);
+    let noise = UnsafeCell::new(noise);
+    let oceans = UnsafeCell::new(oceans);
+    let terr_scale = UnsafeCell::new(terr_scale);
+    let depth = UnsafeCell::new(depth);
+    let tect_steps = UnsafeCell::new(tect_steps);
     let DockedControls {
         display: dock_display,
         oceans: dock_oceans,
         noise: dock_noise,
         tectonics: dock_tectonics,
-        ..
+        editor: dock_editor,
     } = &mut *docked_controls;
     let map_docked = docked_map.0;
     let image = contexts.add_image(minimap.single().clone());
@@ -505,6 +573,7 @@ fn update_ui(
     let render_oceans = {
         let docked = *dock_oceans;
         let render = |ui: &mut egui::Ui| {
+            let oceans = unsafe { &mut *oceans.get() };
             let label = if *dock_oceans { "Undock" } else { "Dock" };
             if ui.button(label).clicked() {
                 *dock_oceans = !*dock_oceans;
@@ -513,7 +582,7 @@ fn update_ui(
                 .checkbox(&mut oceans.bypass_change_detection().show, "Show Oceans")
                 .changed()
             {
-                let _ = &mut *oceans;
+                let _ = &mut **oceans;
             }
             if ui
                 .add(egui::Slider::new(
@@ -522,7 +591,7 @@ fn update_ui(
                 ))
                 .changed()
             {
-                let _ = &mut *oceans;
+                let _ = &mut **oceans;
             }
         };
         if docked {
@@ -536,7 +605,13 @@ fn update_ui(
     };
     let render_noise = {
         // safety: this doesn't escape, and only one of these functions runs at once
-        let (filter, old_filter) = unsafe { (&mut *filter.get(), &mut *old_filter.get()) };
+        let (filter, old_filter, noise) = unsafe {
+            (
+                &mut *filter.get(),
+                &mut *old_filter.get(),
+                &mut *noise.get(),
+            )
+        };
         let docked = *dock_noise;
         let render = |ui: &mut egui::Ui| {
             let label = if *dock_noise { "Undock" } else { "Dock" };
@@ -551,88 +626,39 @@ fn update_ui(
                 let mut changed = false;
                 let mut delete = None;
                 let mut normalize = None;
-                ui.horizontal(|ui| {
-                    {
-                        let popup_id = egui::Id::new("new-layer");
-                        let new_button = ui.button("New");
-                        if new_button.clicked() {
-                            ui.memory_mut(|mem| mem.open_popup(popup_id));
-                        }
-                        egui::popup_above_or_below_widget(
-                            ui,
-                            popup_id,
-                            &new_button,
-                            egui::AboveOrBelow::Below,
-                            egui::PopupCloseBehavior::CloseOnClickOutside,
-                            |ui| {
-                                ui.set_min_width(100.0);
-                                let layer = wip_layer.get_or_insert_default();
-                                ui.add(egui::Slider::new(&mut layer.depth, 0..=8).text("Layer"));
-                                ui.add(
-                                    egui::Slider::new(&mut layer.scale, 0.0..=3.0).text("Scale"),
-                                );
-                                ui.add(
-                                    egui::Slider::new(&mut layer.shift, -0.5..=0.5).text("Shift"),
-                                );
-                                ui.checkbox(&mut layer.gradient, "Gradient");
-                                ui.horizontal(|ui| {
-                                    if ui.button("Add").clicked() {
-                                        noise.layers.push(wip_layer.take().unwrap());
-                                        changed = true;
-                                        ui.memory_mut(|mem| mem.close_popup());
-                                    }
-                                    if ui.button("Cancel").clicked() {
-                                        *wip_layer = None;
-                                        ui.memory_mut(|mem| mem.close_popup());
-                                    }
-                                })
-                            },
-                        );
+                {
+                    let popup_id = egui::Id::new("new-layer");
+                    let new_button = ui.button("New");
+                    if new_button.clicked() {
+                        ui.memory_mut(|mem| mem.open_popup(popup_id));
                     }
-                    {
-                        let popup_id = egui::Id::new("edit-layers");
-                        let load_button = ui.button("Edit");
-                        if load_button.clicked() {
-                            ui.memory_mut(|mem| mem.open_popup(popup_id));
-                        }
-                        egui::popup_above_or_below_widget(
-                            ui,
-                            popup_id,
-                            &load_button,
-                            egui::AboveOrBelow::Below,
-                            egui::PopupCloseBehavior::CloseOnClickOutside,
-                            |ui| {
-                                // ui.set_min_width(200.0);
-                                egui::Frame::popup(ui.style()).show(ui, |ui| {
-                                    ui.horizontal(|ui| {
-                                        if ui.button("Save").clicked() {
-                                            match toml::from_str(&code_editing.take().unwrap()) {
-                                                Ok(new) => {
-                                                    *noise = new;
-                                                    ui.memory_mut(|mem| mem.close_popup());
-                                                }
-                                                Err(err) => {
-                                                    ui.colored_label(
-                                                        ui.style().visuals.error_fg_color,
-                                                        err.to_string(),
-                                                    );
-                                                }
-                                            }
-                                        }
-                                        if ui.button("Cancel").clicked() {
-                                            ui.memory_mut(|mem| mem.close_popup());
-                                        }
-                                    });
-                                    egui::ScrollArea::both().show(ui, |ui| {
-                                        ui.code_editor(code_editing.get_or_insert_with(|| {
-                                            toml::to_string_pretty(&*noise).unwrap()
-                                        }));
-                                    });
-                                })
-                            },
-                        );
-                    }
-                });
+                    egui::popup_above_or_below_widget(
+                        ui,
+                        popup_id,
+                        &new_button,
+                        egui::AboveOrBelow::Below,
+                        egui::PopupCloseBehavior::CloseOnClickOutside,
+                        |ui| {
+                            ui.set_min_width(100.0);
+                            let layer = wip_layer.get_or_insert_default();
+                            ui.add(egui::Slider::new(&mut layer.depth, 0..=8).text("Layer"));
+                            ui.add(egui::Slider::new(&mut layer.scale, 0.0..=3.0).text("Scale"));
+                            ui.add(egui::Slider::new(&mut layer.shift, -0.5..=0.5).text("Shift"));
+                            ui.checkbox(&mut layer.gradient, "Gradient");
+                            ui.horizontal(|ui| {
+                                if ui.button("Add").clicked() {
+                                    noise.layers.push(wip_layer.take().unwrap());
+                                    changed = true;
+                                    ui.memory_mut(|mem| mem.close_popup());
+                                }
+                                if ui.button("Cancel").clicked() {
+                                    *wip_layer = None;
+                                    ui.memory_mut(|mem| mem.close_popup());
+                                }
+                            })
+                        },
+                    );
+                }
                 let sum = noise.layers.iter().map(|l| l.scale).sum::<f32>();
                 let mut new_sum = sum;
                 ui.add_enabled(
@@ -731,7 +757,7 @@ fn update_ui(
                     }
                 }
                 if changed {
-                    let _ = &mut *noise;
+                    let _ = &mut **noise;
                 }
             });
             if showing.is_none() {
@@ -760,7 +786,15 @@ fn update_ui(
         let docked = *dock_tectonics;
         let render = |ui: &mut egui::Ui| {
             // safety: this doesn't escape, and only one of these functions runs at once
-            let (filter, old_filter) = unsafe { (&mut *filter.get(), &mut *old_filter.get()) };
+            let (filter, old_filter, terr_scale, depth, tect_steps) = unsafe {
+                (
+                    &mut *filter.get(),
+                    &mut *old_filter.get(),
+                    &mut *terr_scale.get(),
+                    &mut *depth.get(),
+                    &mut *tect_steps.get(),
+                )
+            };
             let label = if *dock_tectonics { "Undock" } else { "Dock" };
             if ui.button(label).clicked() {
                 *dock_tectonics = !*dock_tectonics;
@@ -773,17 +807,27 @@ fn update_ui(
                             next_state.set(AppState::Simulate { iter, running });
                         }
                         if ui.button("Reset").clicked() {
-                            let _ = &mut *depth;
+                            let _ = &mut **depth;
                         }
                     });
                 }
             }
 
             if ui
+                .add(
+                    egui::Slider::new(&mut tect_steps.bypass_change_detection().0, 0..=100)
+                        .text("Min. Steps"),
+                )
+                .changed()
+            {
+                let _ = &mut **depth;
+            }
+
+            if ui
                 .add(egui::Slider::new(&mut depth.bypass_change_detection().0, 3..=7).text("Depth"))
                 .changed()
             {
-                let _ = &mut *depth;
+                let _ = &mut **depth;
             }
 
             if ui
@@ -793,7 +837,7 @@ fn update_ui(
                 )
                 .changed()
             {
-                let _ = &mut *terr_scale;
+                let _ = &mut **terr_scale;
             }
             if ui.ui_contains_pointer() {
                 if **filter != LayerFilter::Tectonics {
@@ -813,10 +857,124 @@ fn update_ui(
             None
         }
     };
+    let render_editor = {
+        let docked = *dock_editor;
+        let render = |ui: &mut egui::Ui| {
+            let (noise, oceans, terr_scale, depth, tect_steps) = unsafe {
+                (
+                    &mut *noise.get(),
+                    &mut *oceans.get(),
+                    &mut *terr_scale.get(),
+                    &mut *depth.get(),
+                    &mut *tect_steps.get(),
+                )
+            };
+
+            ui.horizontal(|ui| {
+                if ui.button("Apply").clicked() {
+                    match toml::from_str(&code_editing.take().unwrap()) {
+                        Ok(ConfigDeShim {
+                            oceans:
+                                OceanConfig {
+                                    depth: ocean_depth,
+                                    show,
+                                },
+                            tectonic:
+                                TectonicConfig {
+                                    scale,
+                                    depth: tect_depth,
+                                    steps,
+                                },
+                            noise: new_noise,
+                        }) => {
+                            oceans.depth = ocean_depth;
+                            oceans.show = show;
+                            terr_scale.0 = scale;
+                            depth.0 = tect_depth;
+                            tect_steps.0 = steps;
+                            **noise = new_noise;
+                        }
+                        Err(err) => {
+                            ui.colored_label(ui.style().visuals.error_fg_color, err.to_string());
+                        }
+                    }
+                }
+                if ui.button("Reset").clicked() {
+                    *code_editing = None;
+                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+                    let label = if *dock_editor { "Undock" } else { "Dock" };
+                    if ui.button(label).clicked() {
+                        *dock_editor = !*dock_editor;
+                    }
+                })
+            });
+            ui.horizontal(|ui| {
+                if ui.button("Save").clicked() {
+                    let save_code = code_editing.clone().unwrap_or_default();
+                    bevy::tasks::IoTaskPool::get()
+                        .spawn(async move {
+                            let file = rfd::AsyncFileDialog::new()
+                                .add_filter("TOML", &["toml"])
+                                .save_file()
+                                .await;
+                            if let Some(f) = file {
+                                let _ = f.write(save_code.as_bytes()).await;
+                            }
+                        })
+                        .detach();
+                }
+                if ui.button("Load").clicked() {
+                    let handle = Arc::clone(&file_load);
+                    bevy::tasks::IoTaskPool::get()
+                        .spawn(async move {
+                            let file = rfd::AsyncFileDialog::new()
+                                .add_filter("TOML", &["toml"])
+                                .pick_file()
+                                .await;
+                            if let Some(f) = file {
+                                let data = f.read().await;
+                                let input = String::from_utf8(data).unwrap_or_default(); // TODO: handle non-UTF8 input
+                                let _ = handle.set(input);
+                            }
+                        })
+                        .detach();
+                }
+            });
+            egui::ScrollArea::both().show(ui, |ui| {
+                ui.code_editor(code_editing.get_or_insert_with(|| {
+                    toml::to_string_pretty(&ConfigSerShim {
+                        oceans: OceanConfig {
+                            depth: oceans.depth,
+                            show: oceans.show,
+                        },
+                        tectonic: TectonicConfig {
+                            scale: terr_scale.0,
+                            depth: depth.0,
+                            steps: tect_steps.0,
+                        },
+                        noise,
+                    })
+                    .unwrap()
+                }));
+            });
+        };
+        if docked {
+            Some(|ui: &mut egui::Ui| {
+                ui.collapsing(egui::RichText::new("Editor").size(18.0), render);
+            })
+        } else {
+            egui::Window::new("Editor")
+                .default_width(200.0)
+                .show(context, render);
+            None
+        }
+    };
     if render_display.is_some()
         || render_oceans.is_some()
         || render_noise.is_some()
         || render_tectonics.is_some()
+        || render_editor.is_some()
     {
         let undock = egui::SidePanel::left("Controls")
             .min_width(165.0)
@@ -834,6 +992,9 @@ fn update_ui(
                 if let Some(render) = render_tectonics {
                     render(ui);
                 }
+                if let Some(render) = render_editor {
+                    render(ui);
+                }
                 undock
             })
             .inner;
@@ -843,6 +1004,7 @@ fn update_ui(
                 oceans: false,
                 noise: false,
                 tectonics: false,
+                editor: false,
             };
         }
     }
@@ -902,6 +1064,24 @@ fn update_terrain(
         running,
         iter: iter + 1,
     });
+}
+
+fn update_terrain_min(
+    steps: Res<TerrainSteps>,
+    mut terr: ResMut<TerrainData>,
+    state: Res<State<AppState>>,
+    mut next_state: ResMut<NextState<AppState>>,
+) {
+    let AppState::Simulate { running, iter } = **state;
+    if iter < steps.0 {
+        for _ in iter..steps.0 {
+            step_terrain(&mut terr.0, &mut thread_rng());
+        }
+        next_state.set(AppState::Simulate {
+            iter: steps.0,
+            running,
+        });
+    }
 }
 
 fn reload_terrain(mut commands: Commands, noise: Res<NoiseSourceRes>) {
