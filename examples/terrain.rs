@@ -113,8 +113,8 @@ struct ReloadTerrain;
 #[derive(Event)]
 struct RecolorPlates;
 
-const WIDTH: usize = 800;
-const HEIGHT: usize = 400;
+const WIDTH: usize = 600;
+const HEIGHT: usize = 300;
 const VIEW_WIDTH: u32 = 400;
 const VIEW_HEIGHT: u32 = 200;
 
@@ -230,7 +230,7 @@ fn main() {
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
                 fit_canvas_to_parent: true,
-                title: "Noise Terrain".into(),
+                title: "Terrain".into(),
                 ..default()
             }),
             ..default()
@@ -259,7 +259,7 @@ fn main() {
             show: false,
             depth: 0.5,
         })
-        .insert_resource(Time::<Fixed>::from_hz(5.0))
+        .insert_resource(Time::<Fixed>::from_hz(2.0))
         .add_systems(Startup, setup)
         .add_systems(PostStartup, (reload_terrain, setup_terrain))
         .add_systems(
@@ -273,11 +273,13 @@ fn main() {
                 update_ui.after(setup),
                 rotate_sphere.run_if(resource_equals(Rotating(true))),
                 update_texture.run_if(
-                    state_changed::<AppState>
-                        .or_else(resource_changed::<NoiseTerrain>)
+                    resource_changed::<NoiseTerrain>
+                        .or_else(resource_changed::<TerrainData>)
                         .or_else(resource_changed::<ShowOceans>)
                         .or_else(resource_changed::<LayerFilter>)
-                        .or_else(resource_changed::<ColorKind>),
+                        .or_else(resource_changed::<ColorKind>)
+                        .or_else(resource_changed::<ShowBorders>)
+                        .or_else(resource_changed::<ShowCenters>),
                 ),
                 update_noise_terrain.run_if(resource_exists_and_changed::<NoiseSourceRes>),
                 reload_terrain.run_if(on_event::<ReloadTerrain>()),
@@ -300,23 +302,28 @@ fn setup(
     mut meshes: ResMut<Assets<Mesh>>,
     mut images: ResMut<Assets<Image>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    window: Query<Entity, With<PrimaryWindow>>,
 ) {
-    contexts.ctx_mut().data_mut(|mem| {
-        let data = mem
-            .get_persisted_mut_or_insert_with(egui::Id::new("noise-layers"), || NoiseSourceRes {
-                layers: vec![
-                    NoiseSourceBuilder::value(1, 0.0, 0.15),
-                    NoiseSourceBuilder::value(1, 0.1, 0.15),
-                    NoiseSourceBuilder::value(2, 0.2, 0.294),
-                    NoiseSourceBuilder::value(2, 0.3, 0.294),
-                    NoiseSourceBuilder::value(3, 0.5, 0.05),
-                    NoiseSourceBuilder::value(3, 0.7, 0.05),
-                    NoiseSourceBuilder::gradient(5, 0.0, 0.01),
-                ],
-            })
-            .clone();
-        commands.insert_resource(data);
-    });
+    contexts
+        .ctx_for_entity_mut(window.single())
+        .data_mut(|mem| {
+            let data = mem
+                .get_persisted_mut_or_insert_with(egui::Id::new("noise-layers"), || {
+                    NoiseSourceRes {
+                        layers: vec![
+                            NoiseSourceBuilder::value(1, 0.0, 0.15),
+                            NoiseSourceBuilder::value(1, 0.1, 0.15),
+                            NoiseSourceBuilder::value(2, 0.2, 0.294),
+                            NoiseSourceBuilder::value(2, 0.3, 0.294),
+                            NoiseSourceBuilder::value(3, 0.5, 0.05),
+                            NoiseSourceBuilder::value(3, 0.7, 0.05),
+                            NoiseSourceBuilder::gradient(5, 0.0, 0.01),
+                        ],
+                    }
+                })
+                .clone();
+            commands.insert_resource(data);
+        });
 
     commands.spawn(Camera3dBundle {
         transform: Transform::from_xyz(0.0, 8.0, 16.0)
@@ -773,7 +780,7 @@ fn update_ui(
             }
 
             if ui
-                .add(egui::Slider::new(&mut depth.bypass_change_detection().0, 3..=9).text("Depth"))
+                .add(egui::Slider::new(&mut depth.bypass_change_detection().0, 3..=7).text("Depth"))
                 .changed()
             {
                 let _ = &mut *depth;

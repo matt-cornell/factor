@@ -287,7 +287,7 @@ fn step_terrain_impl<R: Rng + ?Sized>(
                 cell.feats = CellFeature::RIDGE;
                 cell.density /= 20;
                 cell.density += 10;
-                cell.height = cell.height.mul_add(0.6, 0.4);
+                cell.height = cell.height.mul_add(0.6, 0.08);
             } else {
                 // convergent
                 if plate.density < 175 && plate2.density < 175 {
@@ -350,7 +350,7 @@ fn step_terrain_impl<R: Rng + ?Sized>(
                     let diff = plate.motion.normalize_or_zero() * 0.25 + delta * 0.25;
                     {
                         let h = &mut state.cells[c2 as usize].height;
-                        *h = (*h + 0.2 * dot).min(5.0);
+                        *h = (*h + 0.1 * dot).min(5.0);
                     }
                     state.plates[other.plate as usize].height += plate_scale;
                     for n in 0..3 {
@@ -475,9 +475,9 @@ pub fn init_terrain<R: Rng + ?Sized>(depth: u8, rng: &mut R) -> TectonicState {
             diverge = metrics.diverge / scale,
             "sampling terrain"
         );
-        if metrics.converge / scale > 20
+        if metrics.converge / scale > 35
             && metrics.diverge / scale > 15
-            && (metrics.converge + metrics.diverge) / scale > 40
+            && (metrics.converge + metrics.diverge) / scale > 60
             && metrics.bits.count_ones() > 6
         {
             return state;
