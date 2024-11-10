@@ -13,14 +13,18 @@ use std::cell::UnsafeCell;
 use std::f32::consts::*;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::{Duration, Instant};
+#[cfg(target_arch = "wasm32")]
+use web_time::{Duration, Instant};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, States)]
 enum AppState {
-    Simulate { iter: u16, running: bool },
+    Tectonics { iter: u16, running: bool },
 }
 impl Default for AppState {
     fn default() -> Self {
-        Self::Simulate {
+        Self::Tectonics {
             iter: 0,
             running: false,
         }
@@ -28,7 +32,7 @@ impl Default for AppState {
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, SubStates)]
-#[source(AppState = AppState::Simulate { running: true, .. })]
+#[source(AppState = AppState::Tectonics { running: true, .. })]
 struct Simulating;
 
 /// Currently rotating
@@ -320,7 +324,7 @@ fn main() {
         )
         .add_systems(FixedUpdate, update_terrain.run_if(in_state(Simulating)))
         .add_systems(
-            OnEnter(AppState::Simulate {
+            OnEnter(AppState::Tectonics {
                 iter: 0,
                 running: false,
             }),
@@ -405,6 +409,7 @@ fn setup(
 }
 
 fn handle_keypresses(
+    mut contexts: EguiContexts,
     keys: Res<ButtonInput<KeyCode>>,
     state: Res<State<AppState>>,
     mut next_state: ResMut<NextState<AppState>>,
@@ -414,30 +419,35 @@ fn handle_keypresses(
     mut recolor_evt: EventWriter<RecolorPlates>,
     mut exit_evt: EventWriter<AppExit>,
 ) {
+    let has_focus = contexts.ctx_mut().memory(|mem| mem.focused().is_some());
     if keys.any_pressed([KeyCode::ControlLeft, KeyCode::ControlRight])
         && keys.just_pressed(KeyCode::KeyW)
     {
         exit_evt.send(AppExit::Success);
     }
-    if keys.just_pressed(KeyCode::KeyS) {
-        rotating.0 = !rotating.0;
-    }
-    if keys.just_pressed(KeyCode::KeyO) {
-        oceans.show = !oceans.show;
+    if !has_focus {
+        if keys.just_pressed(KeyCode::KeyS) {
+            rotating.0 = !rotating.0;
+        }
+        if keys.just_pressed(KeyCode::KeyO) {
+            oceans.show = !oceans.show;
+        }
     }
     match *state.get() {
-        AppState::Simulate { iter, running } => {
+        AppState::Tectonics { iter, running } => {
             if keys.just_pressed(KeyCode::Space) {
-                next_state.set(AppState::Simulate {
+                next_state.set(AppState::Tectonics {
                     iter,
                     running: !running,
                 });
             }
-            if keys.just_pressed(KeyCode::KeyC) {
-                recolor_evt.send(RecolorPlates);
-            }
-            if keys.just_pressed(KeyCode::KeyX) {
-                centers.0 = !centers.0;
+            if !has_focus {
+                if keys.just_pressed(KeyCode::KeyC) {
+                    recolor_evt.send(RecolorPlates);
+                }
+                if keys.just_pressed(KeyCode::KeyX) {
+                    centers.0 = !centers.0;
+                }
             }
         }
     }
@@ -473,6 +483,7 @@ fn update_ui(
     ),
 ) {
     if let Some(input) = file_load.get() {
+        *code_editing = None;
         match toml::from_str(input) {
             Ok(ConfigDeShim {
                 oceans:
@@ -800,11 +811,11 @@ fn update_ui(
                 *dock_tectonics = !*dock_tectonics;
             }
             match **state {
-                AppState::Simulate { iter, mut running } => {
+                AppState::Tectonics { iter, mut running } => {
                     ui.label(format!("Simulating\nStep: {iter}"));
                     ui.horizontal(|ui| {
                         if ui.checkbox(&mut running, "Running").changed() {
-                            next_state.set(AppState::Simulate { iter, running });
+                            next_state.set(AppState::Tectonics { iter, running });
                         }
                         if ui.button("Reset").clicked() {
                             let _ = &mut **depth;
@@ -824,7 +835,7 @@ fn update_ui(
             }
 
             if ui
-                .add(egui::Slider::new(&mut depth.bypass_change_detection().0, 3..=7).text("Depth"))
+                .add(egui::Slider::new(&mut depth.bypass_change_detection().0, 3..=6).text("Depth"))
                 .changed()
             {
                 let _ = &mut **depth;
@@ -977,7 +988,7 @@ fn update_ui(
         || render_editor.is_some()
     {
         let undock = egui::SidePanel::left("Controls")
-            .min_width(165.0)
+            .min_width(180.0)
             .show(context, |ui| {
                 let undock = ui.button("Undock All").clicked();
                 if let Some(render) = render_display {
@@ -1047,7 +1058,7 @@ fn setup_terrain(
         .collect();
     commands.insert_resource(TerrainData(state, colors));
     commands.insert_resource(HealpixMap(image_map));
-    next_state.set(AppState::Simulate {
+    next_state.set(AppState::Tectonics {
         iter: 0,
         running: false,
     });
@@ -1059,8 +1070,8 @@ fn update_terrain(
     mut next_state: ResMut<NextState<AppState>>,
 ) {
     step_terrain(&mut terr.0, &mut thread_rng());
-    let AppState::Simulate { running, iter } = **state;
-    next_state.set(AppState::Simulate {
+    let AppState::Tectonics { running, iter } = **state;
+    next_state.set(AppState::Tectonics {
         running,
         iter: iter + 1,
     });
@@ -1072,15 +1083,17 @@ fn update_terrain_min(
     state: Res<State<AppState>>,
     mut next_state: ResMut<NextState<AppState>>,
 ) {
-    let AppState::Simulate { running, iter } = **state;
+    let AppState::Tectonics { running, mut iter } = **state;
     if iter < steps.0 {
-        for _ in iter..steps.0 {
+        let start = Instant::now();
+        while iter < steps.0 {
             step_terrain(&mut terr.0, &mut thread_rng());
+            iter += 1;
+            if start.elapsed() > Duration::from_millis(100) {
+                break;
+            }
         }
-        next_state.set(AppState::Simulate {
-            iter: steps.0,
-            running,
-        });
+        next_state.set(AppState::Tectonics { iter, running });
     }
 }
 
