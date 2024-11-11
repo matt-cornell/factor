@@ -45,13 +45,24 @@ struct ShowOceans {
     depth: f32,
 }
 
-/// Depth to use
+/// Depth to use for tectonics
 #[derive(Resource)]
-struct HealpixDepth(u8);
+struct TectonicDepth(u8);
 
 /// Mapping from pixel to corresponding section
 #[derive(Resource)]
-struct HealpixMap(Box<[usize]>);
+struct TectonicMap(Box<[usize]>);
+
+#[derive(Resource)]
+struct NoiseMap(Box<[usize]>);
+
+/// Heights to use for noise sampling
+#[derive(Resource)]
+struct NoiseHeights(Box<[f32]>);
+
+/// Total computed heights
+#[derive(Resource)]
+struct TotalHeights(Box<[f32]>);
 
 #[derive(Default, Clone, Copy, Resource, PartialEq)]
 enum LayerFilter {
@@ -72,9 +83,8 @@ struct ShowBorders(bool);
 
 #[derive(Debug, Default, Clone, Copy, Resource, PartialEq)]
 enum ColorKind {
-    #[default]
-    Healpix,
     Plates,
+    #[default]
     Height,
     Density,
     Features,
@@ -88,6 +98,7 @@ struct TectonicScale(f32);
 
 #[derive(Resource, Default, Clone, Serialize, Deserialize)]
 struct NoiseSourceRes {
+    depth: u8,
     #[serde(rename = "layer")]
     layers: Vec<NoiseSourceBuilder>,
 }
@@ -274,7 +285,7 @@ fn main() {
         .add_sub_state::<Simulating>()
         .add_event::<ReloadTerrain>()
         .add_event::<RecolorPlates>()
-        .insert_resource(HealpixDepth(5))
+        .insert_resource(TectonicDepth(5))
         .insert_resource(TectonicScale(1.0))
         .insert_resource(ShowBorders(false))
         .insert_resource(ShowCenters(false))
@@ -297,10 +308,10 @@ fn main() {
         })
         .insert_resource(Time::<Fixed>::from_hz(2.0))
         .add_systems(Startup, setup)
-        .add_systems(PostStartup, (reload_terrain, setup_terrain))
+        .add_systems(PostStartup, (reload_noise, setup_tectonics))
         .add_systems(
             PreUpdate,
-            setup_terrain.run_if(resource_changed::<HealpixDepth>),
+            setup_tectonics.run_if(resource_changed::<TectonicDepth>),
         )
         .add_systems(
             Update,
@@ -318,8 +329,10 @@ fn main() {
                         .or_else(resource_changed::<ShowBorders>)
                         .or_else(resource_changed::<ShowCenters>),
                 ),
-                update_noise_terrain.run_if(resource_exists_and_changed::<NoiseSourceRes>),
-                reload_terrain.run_if(on_event::<ReloadTerrain>()),
+                update_noise_terrain
+                    .after(reload_noise)
+                    .run_if(resource_exists_and_changed::<NoiseSourceRes>),
+                reload_noise.run_if(on_event::<ReloadTerrain>()),
             ),
         )
         .add_systems(FixedUpdate, update_terrain.run_if(in_state(Simulating)))
@@ -328,7 +341,7 @@ fn main() {
                 iter: 0,
                 running: false,
             }),
-            setup_terrain,
+            setup_tectonics,
         )
         .run();
 }
@@ -347,6 +360,7 @@ fn setup(
             let data = mem
                 .get_persisted_mut_or_insert_with(egui::Id::new("noise-layers"), || {
                     NoiseSourceRes {
+                        depth: 6,
                         layers: vec![
                             NoiseSourceBuilder::value(1, 0.0, 0.15),
                             NoiseSourceBuilder::value(1, 0.1, 0.15),
@@ -462,7 +476,7 @@ fn update_ui(
     filter: ResMut<LayerFilter>,
     mut noise: ResMut<NoiseSourceRes>,
     mut terrain: ResMut<NoiseTerrain>,
-    mut depth: ResMut<HealpixDepth>,
+    mut tect_depth: ResMut<TectonicDepth>,
     (mut terr_scale, mut tect_steps): (ResMut<TectonicScale>, ResMut<TerrainSteps>),
     (mut borders, mut centers, mut oceans): (
         ResMut<ShowBorders>,
@@ -494,7 +508,7 @@ fn update_ui(
                 tectonic:
                     TectonicConfig {
                         scale,
-                        depth: tect_depth,
+                        depth: tdepth,
                         steps,
                     },
                 noise: new_noise,
@@ -503,7 +517,7 @@ fn update_ui(
                 oceans.show = show;
                 terr_scale.0 = scale;
                 *noise = new_noise;
-                depth.0 = tect_depth;
+                tect_depth.0 = tdepth;
                 tect_steps.0 = steps;
             }
             Err(_err) => {
@@ -517,7 +531,7 @@ fn update_ui(
     let noise = UnsafeCell::new(noise);
     let oceans = UnsafeCell::new(oceans);
     let terr_scale = UnsafeCell::new(terr_scale);
-    let depth = UnsafeCell::new(depth);
+    let depth = UnsafeCell::new(tect_depth);
     let tect_steps = UnsafeCell::new(tect_steps);
     let DockedControls {
         display: dock_display,
@@ -559,7 +573,6 @@ fn update_ui(
                 .selected_text(format!("{old:?}"))
                 .show_ui(ui, |ui| {
                     let r = coloring.bypass_change_detection();
-                    ui.selectable_value(r, ColorKind::Healpix, "Healpix");
                     ui.selectable_value(r, ColorKind::Plates, "Plates");
                     ui.selectable_value(r, ColorKind::Features, "Features");
                     ui.selectable_value(r, ColorKind::Height, "Height");
@@ -631,6 +644,15 @@ fn update_ui(
             }
             if ui.button("Reload All").clicked() {
                 reroll_rand.send(ReloadTerrain);
+            }
+            if ui
+                .add(
+                    egui::Slider::new(&mut noise.bypass_change_detection().depth, 2..=7)
+                        .text("Sample Depth"),
+                )
+                .changed()
+            {
+                let _ = &mut **noise;
             }
             let mut showing = None;
             egui::ScrollArea::vertical().show(ui, |ui| {
@@ -831,7 +853,7 @@ fn update_ui(
                 )
                 .changed()
             {
-                let _ = &mut **depth;
+                let _ = &mut **tect_steps;
             }
 
             if ui
@@ -952,6 +974,14 @@ fn update_ui(
                         .detach();
                 }
             });
+            if noise.is_changed()
+                || oceans.is_changed()
+                || terr_scale.is_changed()
+                || depth.is_changed()
+                || tect_steps.is_changed()
+            {
+                *code_editing = None;
+            }
             egui::ScrollArea::both().show(ui, |ui| {
                 ui.code_editor(code_editing.get_or_insert_with(|| {
                     toml::to_string_pretty(&ConfigSerShim {
@@ -1038,10 +1068,10 @@ fn update_ui(
     window.show(context, render_map);
 }
 
-fn setup_terrain(
+fn setup_tectonics(
     mut commands: Commands,
     mut next_state: ResMut<NextState<AppState>>,
-    depth: Res<HealpixDepth>,
+    depth: Res<TectonicDepth>,
 ) {
     let image_map = (0..(WIDTH * HEIGHT))
         .map(|i| {
@@ -1057,7 +1087,7 @@ fn setup_terrain(
         .take(state.plates().len())
         .collect();
     commands.insert_resource(TerrainData(state, colors));
-    commands.insert_resource(HealpixMap(image_map));
+    commands.insert_resource(TectonicMap(image_map));
     next_state.set(AppState::Tectonics {
         iter: 0,
         running: false,
@@ -1097,16 +1127,31 @@ fn update_terrain_min(
     }
 }
 
-fn reload_terrain(mut commands: Commands, noise: Res<NoiseSourceRes>) {
+fn reload_noise(mut commands: Commands, noise: Res<NoiseSourceRes>) {
     commands.insert_resource(NoiseTerrain(make_noise(noise.layers.iter())));
+    commands.insert_resource(NoiseHeights(
+        vec![0.0; 12 * (1 << (2 * noise.depth))].into_boxed_slice(),
+    ));
+    let image_map = (0..(WIDTH * HEIGHT))
+        .map(|i| {
+            use std::f64::consts::*;
+            let x = ((i % WIDTH) as f64).mul_add(TAU / WIDTH as f64, -PI);
+            let y = ((i / WIDTH) as f64).mul_add(-PI / HEIGHT as f64, FRAC_PI_2);
+            cdshealpix::nested::hash(noise.depth, x, y) as usize
+        })
+        .collect();
+    commands.insert_resource(NoiseMap(image_map));
 }
 
 fn update_noise_terrain(
+    mut commands: Commands,
     mut contexts: EguiContexts,
     noise: Res<NoiseSourceRes>,
     mut terr: ResMut<NoiseTerrain>,
+    mut samples: ResMut<NoiseHeights>,
+    mut last_depth: Local<u8>,
 ) {
-    let mut changed = false;
+    // let mut changed = false;
     for (b, n) in noise
         .layers
         .iter()
@@ -1114,7 +1159,7 @@ fn update_noise_terrain(
     {
         if b.changed.load(Ordering::Relaxed) {
             *n = b.build();
-            changed = true;
+            // changed = true;
         }
     }
     if noise.layers.len() > terr.0.len() {
@@ -1122,8 +1167,24 @@ fn update_noise_terrain(
         terr.0
             .extend(noise.layers[start..].iter().map(NoiseSourceBuilder::build));
     }
-    if changed {
-        let _ = &mut *terr;
+    let layer = factor::healpix::nested::get(noise.depth);
+    for i in 0..layer.n_hash() {
+        let (lon, lat) = layer.center(i);
+        let height = terr.0.get_height(lon as _, lat as _);
+        samples.0[i as usize] = height;
+    }
+    let _ = &mut *terr;
+    if noise.depth != *last_depth {
+        *last_depth = noise.depth;
+        let image_map = (0..(WIDTH * HEIGHT))
+            .map(|i| {
+                use std::f64::consts::*;
+                let x = ((i % WIDTH) as f64).mul_add(TAU / WIDTH as f64, -PI);
+                let y = ((i / WIDTH) as f64).mul_add(-PI / HEIGHT as f64, FRAC_PI_2);
+                layer.hash(x, y) as usize
+            })
+            .collect();
+        commands.insert_resource(NoiseMap(image_map));
     }
     contexts.ctx_mut().data_mut(|mem| {
         mem.insert_persisted(egui::Id::new("noise-layers"), NoiseSourceRes::clone(&noise));
@@ -1131,14 +1192,12 @@ fn update_noise_terrain(
 }
 
 fn update_texture(
-    map: Res<HealpixMap>,
     colors: Res<ColorKind>,
-    noise: Res<NoiseTerrain>,
+    noise: (Res<NoiseHeights>, Res<NoiseMap>, Res<NoiseTerrain>),
+    tect: (Res<TerrainData>, Res<TectonicMap>, Res<TectonicScale>),
     oceans: Res<ShowOceans>,
     filter: Res<LayerFilter>,
     borders: Res<ShowBorders>,
-    terr: Res<TerrainData>,
-    terr_scale: Res<TectonicScale>,
     mut images: ResMut<Assets<Image>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut planet: Query<&mut Handle<StandardMaterial>, With<Planet>>,
@@ -1183,13 +1242,9 @@ fn update_texture(
             }
         }
         use std::f32::consts::*;
-        let cell_idx = map.0[n];
-        if *colors == ColorKind::Healpix {
-            *d = LinearRgba::gray((cell_idx % 4) as f32 * 0.25).as_u32();
-            continue;
-        }
-        let cell = terr.0.cells()[cell_idx];
-        if borders.0 && terr.0.boundaries().contains(cell_idx as _) {
+        let cell_idx = tect.1 .0[n];
+        let cell = tect.0 .0.cells()[cell_idx];
+        if borders.0 && tect.0 .0.boundaries().contains(cell_idx as _) {
             *d = LinearRgba::rgb(1.0, 0.0, 1.0).as_u32();
             continue;
         }
@@ -1197,20 +1252,19 @@ fn update_texture(
         let y = ((n / WIDTH) as f32).mul_add(-PI / HEIGHT as f32, FRAC_PI_2);
         let height = match *filter {
             LayerFilter::All => {
-                noise.0.get_height(x, y)
-                    + cell.height.mul_add(0.1, 0.2).clamp(0.0, 1.0) * terr_scale.0
+                noise.0 .0[noise.1 .0[n]]
+                    + cell.height.mul_add(0.1, 0.2).clamp(0.0, 1.0) * tect.2 .0
             }
             LayerFilter::Tectonics => cell.height.mul_add(0.1, 0.2).clamp(0.0, 1.0),
-            LayerFilter::AllNoise => noise.0.get_height(x, y),
-            LayerFilter::NoiseLayer(idx) => noise.0[idx].get_height(x, y),
+            LayerFilter::AllNoise => noise.0 .0[noise.1 .0[n]],
+            LayerFilter::NoiseLayer(idx) => noise.2 .0[idx].get_height(x, y),
         };
         *d = match *colors {
-            ColorKind::Healpix => unreachable!(),
-            ColorKind::Plates => terr.1[cell.plate as usize],
+            ColorKind::Plates => tect.0 .1[cell.plate as usize],
             ColorKind::Features => {
                 let base = match cell.feats.kind {
                     CellFeatureKind::None => {
-                        if terr.0.boundaries().contains(cell_idx as _) {
+                        if tect.0 .0.boundaries().contains(cell_idx as _) {
                             LinearRgba::rgb(1.0, 1.0, 0.0)
                         } else {
                             LinearRgba::BLACK
