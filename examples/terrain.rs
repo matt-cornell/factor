@@ -125,6 +125,7 @@ struct TimeScale(f32);
 enum CameraFocus {
     #[default]
     Planet,
+    Geosync,
     Star,
 }
 
@@ -492,7 +493,9 @@ fn handle_keypresses(
 ) {
     let has_focus = {
         let ctx = contexts.ctx_mut();
-        ctx.is_pointer_over_area() || ctx.is_using_pointer() || ctx.memory(|mem| mem.focused().is_some())
+        ctx.is_pointer_over_area()
+            || ctx.is_using_pointer()
+            || ctx.memory(|mem| mem.focused().is_some())
     };
     if keys.any_pressed([KeyCode::ControlLeft, KeyCode::ControlRight])
         && keys.just_pressed(KeyCode::KeyW)
@@ -661,6 +664,7 @@ fn update_ui(
                 .show_ui(ui, |ui| {
                     let r = focus.bypass_change_detection();
                     ui.selectable_value(r, CameraFocus::Planet, "Planet");
+                    ui.selectable_value(r, CameraFocus::Geosync, "Geosync");
                     ui.selectable_value(r, CameraFocus::Star, "Star");
                 });
             if *focus != old {
@@ -1498,12 +1502,14 @@ fn update_positions(
 fn reparent_camera(
     mut commands: Commands,
     camera: Query<Entity, With<Camera3d>>,
-    planet: Query<Entity, With<PlanetCenter>>,
+    center: Query<Entity, With<PlanetCenter>>,
+    planet: Query<Entity, (With<Planet>, Without<PlanetCenter>)>,
     star: Query<Entity, With<PointLight>>,
     focus: Res<CameraFocus>,
 ) {
     let parent = match *focus {
-        CameraFocus::Planet => planet.single(),
+        CameraFocus::Planet => center.single(),
+        CameraFocus::Geosync => planet.single(),
         CameraFocus::Star => star.single(),
     };
     commands.entity(camera.single()).set_parent(parent);
