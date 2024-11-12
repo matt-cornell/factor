@@ -446,7 +446,7 @@ fn setup(
             });
         });
 
-    let radius = 50.0;
+    let radius = 20.0;
     commands
         .spawn(PbrBundle {
             mesh: meshes.add(Sphere::new(radius).mesh().ico(10).unwrap()),
@@ -492,7 +492,7 @@ fn handle_keypresses(
 ) {
     let has_focus = {
         let ctx = contexts.ctx_mut();
-        ctx.is_pointer_over_area() || ctx.memory(|mem| mem.focused().is_some())
+        ctx.is_pointer_over_area() || ctx.is_using_pointer() || ctx.memory(|mem| mem.focused().is_some())
     };
     if keys.any_pressed([KeyCode::ControlLeft, KeyCode::ControlRight])
         && keys.just_pressed(KeyCode::KeyW)
@@ -552,11 +552,12 @@ fn update_ui(
     mut tect_depth: ResMut<TectonicDepth>,
     mut orbit_params: ResMut<OrbitParams>,
     (mut terr_scale, mut tect_steps): (ResMut<TectonicScale>, ResMut<TerrainSteps>),
-    (mut borders, mut centers, mut oceans, mut focus): (
+    (mut borders, mut centers, mut oceans, mut focus, mut time_scale): (
         ResMut<ShowBorders>,
         ResMut<ShowCenters>,
         ResMut<ShowOceans>,
         ResMut<CameraFocus>,
+        ResMut<TimeScale>,
     ),
     (state, mut next_state): (Res<State<AppState>>, ResMut<NextState<AppState>>),
     (mut reroll_rand, mut recolor_plates): (EventWriter<ReloadTerrain>, EventWriter<RecolorPlates>),
@@ -668,6 +669,12 @@ fn update_ui(
             if ui.button("Recolor Plates").clicked() {
                 recolor_plates.send(RecolorPlates);
             }
+            ui.add(
+                egui::Slider::new(&mut time_scale.0, 0.0..=1000.0)
+                    .logarithmic(true)
+                    .smallest_positive(0.001)
+                    .text("Time"),
+            );
         };
         if docked {
             Some(|ui: &mut egui::Ui| {
