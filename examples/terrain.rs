@@ -1,5 +1,5 @@
 #![allow(clippy::too_many_arguments, clippy::type_complexity)]
-#![feature(unsafe_cell_from_mut)]
+use bevy::input::mouse::*;
 use bevy::prelude::*;
 use bevy::render::render_asset::RenderAssetUsages;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
@@ -34,10 +34,6 @@ impl Default for AppState {
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, SubStates)]
 #[source(AppState = AppState::Tectonics { running: true, .. })]
 struct Simulating;
-
-/// Currently rotating
-#[derive(Resource, PartialEq)]
-struct Rotating(bool);
 
 #[derive(Resource)]
 struct ShowOceans {
@@ -121,11 +117,32 @@ struct DockedMap(bool);
 #[derive(Resource)]
 struct TerrainSteps(u16);
 
+#[derive(Resource)]
+struct TimeScale(f32);
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Resource)]
+enum CameraFocus {
+    #[default]
+    Planet,
+    Star,
+}
+
+#[derive(Clone, Copy, Resource, Serialize, Deserialize)]
+struct OrbitParams {
+    distance: f32,
+    year_length: f32,
+    day_length: f32,
+    axial_tilt: f32,
+}
+
 #[derive(Component)]
 struct Planet;
 
 #[derive(Component)]
 struct MiniMap;
+
+#[derive(Component)]
+struct PlanetCenter;
 
 #[derive(Event)]
 struct ReloadTerrain;
@@ -249,12 +266,14 @@ struct TectonicConfig {
 struct ConfigSerShim<'a> {
     oceans: OceanConfig,
     tectonic: TectonicConfig,
+    orbit: OrbitParams,
     noise: &'a NoiseSourceRes,
 }
 #[derive(Deserialize)]
 struct ConfigDeShim {
     oceans: OceanConfig,
     tectonic: TectonicConfig,
+    orbit: OrbitParams,
     noise: NoiseSourceRes,
 }
 struct RandomColor;
@@ -285,11 +304,11 @@ fn main() {
         .add_sub_state::<Simulating>()
         .add_event::<ReloadTerrain>()
         .add_event::<RecolorPlates>()
+        .insert_resource(TimeScale(1.0))
         .insert_resource(TectonicDepth(5))
         .insert_resource(TectonicScale(1.0))
         .insert_resource(ShowBorders(false))
         .insert_resource(ShowCenters(false))
-        .insert_resource(Rotating(true))
         .insert_resource(DockedControls {
             display: true,
             oceans: true,
@@ -302,9 +321,16 @@ fn main() {
         .insert_resource(LayerFilter::All)
         .insert_resource(NoiseSourceRes::default())
         .insert_resource(ColorKind::Height)
+        .insert_resource(CameraFocus::Planet)
         .insert_resource(ShowOceans {
             show: false,
             depth: 0.5,
+        })
+        .insert_resource(OrbitParams {
+            distance: 200.0,
+            year_length: 120.0,
+            day_length: 2.0,
+            axial_tilt: 0.0,
         })
         .insert_resource(Time::<Fixed>::from_hz(2.0))
         .add_systems(Startup, setup)
@@ -319,7 +345,7 @@ fn main() {
                 handle_keypresses,
                 update_ui.after(setup),
                 update_terrain_min,
-                rotate_sphere.run_if(resource_equals(Rotating(true))),
+                update_positions,
                 update_texture.run_if(
                     resource_changed::<NoiseTerrain>
                         .or_else(resource_changed::<TerrainData>)
@@ -333,6 +359,7 @@ fn main() {
                     .after(reload_noise)
                     .run_if(resource_exists_and_changed::<NoiseSourceRes>),
                 reload_noise.run_if(on_event::<ReloadTerrain>()),
+                reparent_camera.run_if(resource_changed::<CameraFocus>),
             ),
         )
         .add_systems(FixedUpdate, update_terrain.run_if(in_state(Simulating)))
@@ -353,6 +380,7 @@ fn setup(
     mut images: ResMut<Assets<Image>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     window: Query<Entity, With<PrimaryWindow>>,
+    params: Res<OrbitParams>,
 ) {
     contexts
         .ctx_for_entity_mut(window.single())
@@ -376,12 +404,6 @@ fn setup(
             commands.insert_resource(data);
         });
 
-    commands.spawn(Camera3dBundle {
-        transform: Transform::from_xyz(0.0, 8.0, 16.0)
-            .looking_at(Vec3::new(0.0, 0.0, 0.0), Vec3::Y),
-        ..default()
-    });
-
     let image = images.add(Image::new(
         Extent3d {
             width: WIDTH as _,
@@ -394,30 +416,61 @@ fn setup(
         RenderAssetUsages::RENDER_WORLD,
     ));
 
-    commands.spawn((
-        PbrBundle {
-            mesh: meshes.add(Sphere::new(5.0).mesh().uv(32, 18)),
+    commands
+        .spawn((
+            TransformBundle {
+                local: Transform::from_xyz(params.distance, 0.0, 0.0),
+                ..default()
+            },
+            PlanetCenter,
+        ))
+        .with_children(|commands| {
+            commands.spawn((
+                PbrBundle {
+                    mesh: meshes.add(Sphere::new(5.0).mesh().uv(32, 18)),
+                    material: materials.add(StandardMaterial {
+                        base_color_texture: Some(image.clone()),
+                        ..default()
+                    }),
+                    transform: Transform::from_xyz(0.0, 0.0, 0.0),
+                    // .with_rotation(Quat::from_rotation_x(-FRAC_PI_2)),
+                    ..default()
+                },
+                Planet,
+            ));
+            commands.spawn(Camera3dBundle {
+                transform: Transform::from_xyz(50.0, 20.0, 10.0)
+                    .looking_at(Vec3::new(0.0, 0.0, 0.0), Vec3::Z),
+                ..default()
+            });
+        });
+
+    let radius = 50.0;
+    commands
+        .spawn(PbrBundle {
+            mesh: meshes.add(Sphere::new(radius).mesh().ico(10).unwrap()),
             material: materials.add(StandardMaterial {
-                base_color_texture: Some(image.clone()),
+                unlit: true,
                 ..default()
             }),
             transform: Transform::from_xyz(0.0, 0.0, 0.0)
                 .with_rotation(Quat::from_rotation_x(-FRAC_PI_2)),
             ..default()
-        },
-        Planet,
-    ));
-    commands.spawn(PointLightBundle {
-        point_light: PointLight {
-            shadows_enabled: true,
-            intensity: 10_000_000.,
-            range: 100.0,
-            shadow_depth_bias: 0.2,
-            ..default()
-        },
-        transform: Transform::from_xyz(8.0, 16.0, 8.0),
-        ..default()
-    });
+        })
+        .with_children(|commands| {
+            commands.spawn(PointLightBundle {
+                point_light: PointLight {
+                    shadows_enabled: true,
+                    intensity: 500000000.,
+                    range: 1000.0,
+                    shadow_depth_bias: 0.2,
+                    radius,
+                    ..default()
+                },
+                transform: Transform::from_xyz(0.0, 0.0, 0.0),
+                ..default()
+            });
+        });
 
     commands.spawn((image, MiniMap));
 }
@@ -425,26 +478,44 @@ fn setup(
 fn handle_keypresses(
     mut contexts: EguiContexts,
     keys: Res<ButtonInput<KeyCode>>,
+    clicks: Res<ButtonInput<MouseButton>>,
+    mut drags: EventReader<MouseMotion>,
+    mut scroll: EventReader<MouseWheel>,
+    mut camera_transform: Query<&mut Transform, With<Camera3d>>,
     state: Res<State<AppState>>,
     mut next_state: ResMut<NextState<AppState>>,
-    mut rotating: ResMut<Rotating>,
     mut oceans: ResMut<ShowOceans>,
     mut centers: ResMut<ShowCenters>,
     mut recolor_evt: EventWriter<RecolorPlates>,
     mut exit_evt: EventWriter<AppExit>,
 ) {
-    let has_focus = contexts.ctx_mut().memory(|mem| mem.focused().is_some());
+    let has_focus = {
+        let ctx = contexts.ctx_mut();
+        ctx.is_pointer_over_area() || ctx.memory(|mem| mem.focused().is_some())
+    };
     if keys.any_pressed([KeyCode::ControlLeft, KeyCode::ControlRight])
         && keys.just_pressed(KeyCode::KeyW)
     {
         exit_evt.send(AppExit::Success);
     }
     if !has_focus {
-        if keys.just_pressed(KeyCode::KeyS) {
-            rotating.0 = !rotating.0;
-        }
         if keys.just_pressed(KeyCode::KeyO) {
             oceans.show = !oceans.show;
+        }
+        let mut camera = camera_transform.single_mut();
+        if clicks.pressed(MouseButton::Left) {
+            for &MouseMotion {
+                delta: Vec2 { x, y },
+            } in drags.read()
+            {
+                let rot = Quat::from_euler(EulerRot::YXZ, x * -0.1, y * -0.1, 0.0);
+                camera.rotation *= rot;
+                camera.translation = rot.mul_vec3(camera.translation);
+            }
+            *camera = camera.looking_at(Vec3::ZERO, Vec3::Y);
+        }
+        for &MouseWheel { y, .. } in scroll.read() {
+            camera.translation *= 0.99f32.powf(y);
         }
     }
     match *state.get() {
@@ -469,7 +540,6 @@ fn handle_keypresses(
 
 fn update_ui(
     mut contexts: EguiContexts,
-    mut rotating: ResMut<Rotating>,
     mut coloring: ResMut<ColorKind>,
     mut docked_controls: ResMut<DockedControls>,
     mut docked_map: ResMut<DockedMap>,
@@ -477,11 +547,13 @@ fn update_ui(
     mut noise: ResMut<NoiseSourceRes>,
     mut terrain: ResMut<NoiseTerrain>,
     mut tect_depth: ResMut<TectonicDepth>,
+    mut orbit_params: ResMut<OrbitParams>,
     (mut terr_scale, mut tect_steps): (ResMut<TectonicScale>, ResMut<TerrainSteps>),
-    (mut borders, mut centers, mut oceans): (
+    (mut borders, mut centers, mut oceans, mut focus): (
         ResMut<ShowBorders>,
         ResMut<ShowCenters>,
         ResMut<ShowOceans>,
+        ResMut<CameraFocus>,
     ),
     (state, mut next_state): (Res<State<AppState>>, ResMut<NextState<AppState>>),
     (mut reroll_rand, mut recolor_plates): (EventWriter<ReloadTerrain>, EventWriter<RecolorPlates>),
@@ -511,6 +583,7 @@ fn update_ui(
                         depth: tdepth,
                         steps,
                     },
+                orbit,
                 noise: new_noise,
             }) => {
                 oceans.depth = ocean_depth;
@@ -519,6 +592,7 @@ fn update_ui(
                 *noise = new_noise;
                 tect_depth.0 = tdepth;
                 tect_steps.0 = steps;
+                *orbit_params = orbit;
             }
             Err(_err) => {
                 // TODO: handle this
@@ -533,6 +607,7 @@ fn update_ui(
     let terr_scale = UnsafeCell::new(terr_scale);
     let depth = UnsafeCell::new(tect_depth);
     let tect_steps = UnsafeCell::new(tect_steps);
+    let orbit_params = UnsafeCell::new(orbit_params);
     let DockedControls {
         display: dock_display,
         oceans: dock_oceans,
@@ -549,12 +624,6 @@ fn update_ui(
             let label = if *dock_display { "Undock" } else { "Dock" };
             if ui.button(label).clicked() {
                 *dock_display = !*dock_display;
-            }
-            if ui
-                .checkbox(&mut rotating.bypass_change_detection().0, "Rotating")
-                .changed()
-            {
-                let _ = &mut *rotating;
             }
             if ui
                 .checkbox(&mut borders.bypass_change_detection().0, "Plate Boundaries")
@@ -580,6 +649,17 @@ fn update_ui(
                 });
             if *coloring != old {
                 let _ = &mut *coloring;
+            }
+            let old = *focus;
+            egui::ComboBox::new("camera-focus", "Camera Focus")
+                .selected_text(format!("{old:?}"))
+                .show_ui(ui, |ui| {
+                    let r = focus.bypass_change_detection();
+                    ui.selectable_value(r, CameraFocus::Planet, "Planet");
+                    ui.selectable_value(r, CameraFocus::Star, "Star");
+                });
+            if *focus != old {
+                let _ = &mut *focus;
             }
             if ui.button("Recolor Plates").clicked() {
                 recolor_plates.send(RecolorPlates);
@@ -893,13 +973,14 @@ fn update_ui(
     let render_editor = {
         let docked = *dock_editor;
         let render = |ui: &mut egui::Ui| {
-            let (noise, oceans, terr_scale, depth, tect_steps) = unsafe {
+            let (noise, oceans, terr_scale, depth, tect_steps, orbit_params) = unsafe {
                 (
                     &mut *noise.get(),
                     &mut *oceans.get(),
                     &mut *terr_scale.get(),
                     &mut *depth.get(),
                     &mut *tect_steps.get(),
+                    &mut *orbit_params.get(),
                 )
             };
 
@@ -918,6 +999,7 @@ fn update_ui(
                                     depth: tect_depth,
                                     steps,
                                 },
+                            orbit,
                             noise: new_noise,
                         }) => {
                             oceans.depth = ocean_depth;
@@ -926,6 +1008,7 @@ fn update_ui(
                             depth.0 = tect_depth;
                             tect_steps.0 = steps;
                             **noise = new_noise;
+                            **orbit_params = orbit;
                         }
                         Err(err) => {
                             ui.colored_label(ui.style().visuals.error_fg_color, err.to_string());
@@ -994,6 +1077,7 @@ fn update_ui(
                             depth: depth.0,
                             steps: tect_steps.0,
                         },
+                        orbit: **orbit_params,
                         noise,
                     })
                     .unwrap()
@@ -1299,7 +1383,40 @@ fn update_texture(
     *minimap.single_mut() = image;
 }
 
-fn rotate_sphere(mut query: Query<&mut Transform, With<Planet>>, time: Res<Time>) {
-    let mut trans = query.single_mut();
-    trans.rotate_y(time.delta_seconds() / 2.0);
+fn update_positions(
+    mut center: Query<&mut Transform, With<PlanetCenter>>,
+    mut planet: Query<&mut Transform, (With<Planet>, Without<PlanetCenter>)>,
+    time: Res<Time>,
+    scale: Res<TimeScale>,
+    params: Res<OrbitParams>,
+    mut last_tilt: Local<f32>,
+) {
+    let delta = time.delta_seconds();
+    let mut center = center.single_mut();
+    let mut angle = center.translation.xy().to_angle();
+    let diff = delta / params.year_length * TAU * scale.0;
+    angle += diff;
+    info!(angle, diff, "rotating");
+    center.translation = Vec2::from_angle(angle).extend(0.0) * params.distance;
+    let mut planet = planet.single_mut();
+    planet.rotate_x(params.axial_tilt - *last_tilt);
+    planet.rotate_axis(
+        Dir3::new(Vec2::from_angle(params.axial_tilt).extend(0.0).yzx()).unwrap(),
+        delta / params.day_length * TAU * scale.0,
+    );
+    *last_tilt = params.axial_tilt;
+}
+
+fn reparent_camera(
+    mut commands: Commands,
+    camera: Query<Entity, With<Camera3d>>,
+    planet: Query<Entity, With<PlanetCenter>>,
+    star: Query<Entity, With<PointLight>>,
+    focus: Res<CameraFocus>,
+) {
+    let parent = match *focus {
+        CameraFocus::Planet => planet.single(),
+        CameraFocus::Star => star.single(),
+    };
+    commands.entity(camera.single()).set_parent(parent);
 }
