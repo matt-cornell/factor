@@ -105,6 +105,7 @@ struct NoiseTerrain(Vec<(Shifted<ValueOrGradient>, f32)>);
 #[derive(Resource)]
 struct DockedControls {
     display: bool,
+    orbit: bool,
     oceans: bool,
     noise: bool,
     tectonics: bool,
@@ -311,6 +312,7 @@ fn main() {
         .insert_resource(ShowCenters(false))
         .insert_resource(DockedControls {
             display: true,
+            orbit: true,
             oceans: true,
             noise: true,
             tectonics: true,
@@ -439,8 +441,7 @@ fn setup(
                 Planet,
             ));
             commands.spawn(Camera3dBundle {
-                transform: Transform::from_xyz(50.0, 20.0, 10.0)
-                    .looking_at(Vec3::new(0.0, 0.0, 0.0), Vec3::Z),
+                transform: Transform::from_xyz(20.0, 20.0, 10.0).looking_at(Vec3::ZERO, Vec3::Z),
                 ..default()
             });
         });
@@ -508,11 +509,13 @@ fn handle_keypresses(
                 delta: Vec2 { x, y },
             } in drags.read()
             {
-                let rot = Quat::from_euler(EulerRot::YXZ, x * -0.1, y * -0.1, 0.0);
+                let rot = Quat::from_euler(EulerRot::ZXY, x * -0.1, y * 0.1, 0.0);
                 camera.rotation *= rot;
                 camera.translation = rot.mul_vec3(camera.translation);
             }
-            *camera = camera.looking_at(Vec3::ZERO, Vec3::Y);
+            *camera = camera.looking_at(Vec3::ZERO, Vec3::Z);
+        } else {
+            drags.clear();
         }
         for &MouseWheel { y, .. } in scroll.read() {
             camera.translation *= 0.99f32.powf(y);
@@ -610,6 +613,7 @@ fn update_ui(
     let orbit_params = UnsafeCell::new(orbit_params);
     let DockedControls {
         display: dock_display,
+        orbit: dock_orbit,
         oceans: dock_oceans,
         noise: dock_noise,
         tectonics: dock_tectonics,
@@ -671,6 +675,79 @@ fn update_ui(
             })
         } else {
             egui::Window::new("Display").show(context, render);
+            None
+        }
+    };
+    let render_orbit = {
+        let docked = *dock_orbit;
+        let render = |ui: &mut egui::Ui| {
+            let orbit_params = unsafe { &mut *orbit_params.get() };
+            let label = if *dock_orbit { "Undock" } else { "Dock" };
+            if ui.button(label).clicked() {
+                *dock_orbit = !*dock_orbit;
+            }
+            if ui
+                .add(
+                    egui::Slider::new(
+                        &mut orbit_params.bypass_change_detection().day_length,
+                        0.1..=100.0,
+                    )
+                    .logarithmic(true)
+                    .clamping(egui::SliderClamping::Never)
+                    .text("Day Length"),
+                )
+                .changed()
+            {
+                let _ = &mut **orbit_params;
+            }
+            if ui
+                .add(
+                    egui::Slider::new(
+                        &mut orbit_params.bypass_change_detection().year_length,
+                        0.1..=1000.0,
+                    )
+                    .logarithmic(true)
+                    .clamping(egui::SliderClamping::Never)
+                    .text("Year Length"),
+                )
+                .changed()
+            {
+                let _ = &mut **orbit_params;
+            }
+            if ui
+                .add(
+                    egui::Slider::new(
+                        &mut orbit_params.bypass_change_detection().distance,
+                        25.0..=1000.0,
+                    )
+                    .logarithmic(true)
+                    .clamping(egui::SliderClamping::Never)
+                    .text("Orbit Distance"),
+                )
+                .changed()
+            {
+                let _ = &mut **orbit_params;
+            }
+            if ui
+                .add(
+                    egui::Slider::new(
+                        &mut orbit_params.bypass_change_detection().axial_tilt,
+                        0.0..=FRAC_PI_2,
+                    )
+                    .clamping(egui::SliderClamping::Never)
+                    .text("Tilt"),
+                )
+                .changed()
+            {
+                let _ = &mut **orbit_params;
+            }
+        };
+        if docked {
+            Some(|ui: &mut egui::Ui| {
+                ui.collapsing(egui::RichText::new("Orbit").size(18.0), render);
+            })
+        } else {
+            egui::Window::new("Orbit").show(context, render);
             None
         }
     };
@@ -1096,6 +1173,7 @@ fn update_ui(
         }
     };
     if render_display.is_some()
+        || render_orbit.is_some()
         || render_oceans.is_some()
         || render_noise.is_some()
         || render_tectonics.is_some()
@@ -1106,6 +1184,9 @@ fn update_ui(
             .show(context, |ui| {
                 let undock = ui.button("Undock All").clicked();
                 if let Some(render) = render_display {
+                    render(ui);
+                }
+                if let Some(render) = render_orbit {
                     render(ui);
                 }
                 if let Some(render) = render_oceans {
@@ -1126,6 +1207,7 @@ fn update_ui(
         if undock {
             *docked_controls = DockedControls {
                 display: false,
+                orbit: false,
                 oceans: false,
                 noise: false,
                 tectonics: false,
@@ -1396,7 +1478,6 @@ fn update_positions(
     let mut angle = center.translation.xy().to_angle();
     let diff = delta / params.year_length * TAU * scale.0;
     angle += diff;
-    info!(angle, diff, "rotating");
     center.translation = Vec2::from_angle(angle).extend(0.0) * params.distance;
     let mut planet = planet.single_mut();
     planet.rotate_x(params.axial_tilt - *last_tilt);
