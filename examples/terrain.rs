@@ -1491,11 +1491,9 @@ fn update_positions(
     angle += diff;
     center.translation = Vec2::from_angle(angle).extend(0.0) * params.distance;
     let mut planet = planet.single_mut();
-    planet.rotate_x(params.axial_tilt - *last_tilt);
-    planet.rotate_axis(
-        Dir3::new(Vec2::from_angle(params.axial_tilt).extend(0.0).yzx()).unwrap(),
-        delta / params.day_length * TAU * scale.0,
-    );
+    planet.rotation = Quat::from_rotation_y(params.axial_tilt - *last_tilt)
+        * planet.rotation
+        * Quat::from_rotation_z(delta / params.day_length * TAU * scale.0);
     *last_tilt = params.axial_tilt;
 }
 
