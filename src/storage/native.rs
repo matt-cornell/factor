@@ -75,7 +75,7 @@ impl PersistentBackend {
         })?;
         saves.push("saves");
         saves.push(name);
-        saves.set_extension("redb");
+        saves.add_extension("redb");
         info!(path = %saves.display(), "Deleting save file");
         if let Err(err) = std::fs::remove_file(&saves) {
             error!(%err, "Failed to delete file");
