@@ -1,4 +1,5 @@
 #![allow(clippy::too_many_arguments, clippy::type_complexity)]
+#![feature(more_float_constants)]
 use bevy::input::mouse::*;
 use bevy::prelude::*;
 use bevy::render::render_asset::RenderAssetUsages;
@@ -56,10 +57,6 @@ struct NoiseMap(Box<[usize]>);
 #[derive(Resource)]
 struct NoiseHeights(Box<[f32]>);
 
-/// Total computed heights
-#[derive(Resource)]
-struct TotalHeights(Box<[f32]>);
-
 #[derive(Default, Clone, Copy, Resource, PartialEq)]
 enum LayerFilter {
     #[default]
@@ -71,11 +68,11 @@ enum LayerFilter {
 
 /// Are we showing the centers of plates?
 #[derive(Resource)]
-struct ShowCenters(bool);
-
-/// Are we showing the borders of the plates?
-#[derive(Resource)]
-struct ShowBorders(bool);
+struct ShowFeatures {
+    centers: bool,
+    borders: bool,
+    coords: bool,
+}
 
 #[derive(Debug, Default, Clone, Copy, Resource, PartialEq)]
 enum ColorKind {
@@ -84,6 +81,7 @@ enum ColorKind {
     Height,
     Density,
     Features,
+    Intensity,
 }
 
 #[derive(Resource)]
@@ -309,8 +307,11 @@ fn main() {
         .insert_resource(TimeScale(1.0))
         .insert_resource(TectonicDepth(5))
         .insert_resource(TectonicScale(1.0))
-        .insert_resource(ShowBorders(false))
-        .insert_resource(ShowCenters(false))
+        .insert_resource(ShowFeatures {
+            centers: false,
+            borders: false,
+            coords: false,
+        })
         .insert_resource(DockedControls {
             display: true,
             orbit: true,
@@ -355,8 +356,8 @@ fn main() {
                         .or_else(resource_changed::<ShowOceans>)
                         .or_else(resource_changed::<LayerFilter>)
                         .or_else(resource_changed::<ColorKind>)
-                        .or_else(resource_changed::<ShowBorders>)
-                        .or_else(resource_changed::<ShowCenters>),
+                        .or_else(resource_changed::<ShowFeatures>)
+                        .or_else(resource_equals(ColorKind::Intensity)),
                 ),
                 update_noise_terrain
                     .after(reload_noise)
@@ -487,8 +488,6 @@ fn handle_keypresses(
     state: Res<State<AppState>>,
     mut next_state: ResMut<NextState<AppState>>,
     mut oceans: ResMut<ShowOceans>,
-    mut centers: ResMut<ShowCenters>,
-    mut recolor_evt: EventWriter<RecolorPlates>,
     mut exit_evt: EventWriter<AppExit>,
 ) {
     let has_focus = {
@@ -532,14 +531,6 @@ fn handle_keypresses(
                     running: !running,
                 });
             }
-            if !has_focus {
-                if keys.just_pressed(KeyCode::KeyC) {
-                    recolor_evt.send(RecolorPlates);
-                }
-                if keys.just_pressed(KeyCode::KeyX) {
-                    centers.0 = !centers.0;
-                }
-            }
         }
     }
 }
@@ -555,9 +546,8 @@ fn update_ui(
     mut tect_depth: ResMut<TectonicDepth>,
     mut orbit_params: ResMut<OrbitParams>,
     (mut terr_scale, mut tect_steps): (ResMut<TectonicScale>, ResMut<TerrainSteps>),
-    (mut borders, mut centers, mut oceans, mut focus, mut time_scale): (
-        ResMut<ShowBorders>,
-        ResMut<ShowCenters>,
+    (mut features, mut oceans, mut focus, mut time_scale): (
+        ResMut<ShowFeatures>,
         ResMut<ShowOceans>,
         ResMut<CameraFocus>,
         ResMut<TimeScale>,
@@ -634,16 +624,31 @@ fn update_ui(
                 *dock_display = !*dock_display;
             }
             if ui
-                .checkbox(&mut borders.bypass_change_detection().0, "Plate Boundaries")
+                .checkbox(
+                    &mut features.bypass_change_detection().borders,
+                    "Plate Boundaries",
+                )
                 .changed()
             {
-                let _ = &mut *borders;
+                let _ = &mut *features;
             }
             if ui
-                .checkbox(&mut centers.bypass_change_detection().0, "Plate Centers")
+                .checkbox(
+                    &mut features.bypass_change_detection().centers,
+                    "Plate Centers",
+                )
                 .changed()
             {
-                let _ = &mut *centers;
+                let _ = &mut *features;
+            }
+            if ui
+                .checkbox(
+                    &mut features.bypass_change_detection().coords,
+                    "Coordinate Axes",
+                )
+                .changed()
+            {
+                let _ = &mut *features;
             }
             let old = *coloring;
             egui::ComboBox::new("color-kind", "Coloring")
@@ -654,6 +659,7 @@ fn update_ui(
                     ui.selectable_value(r, ColorKind::Features, "Features");
                     ui.selectable_value(r, ColorKind::Height, "Height");
                     ui.selectable_value(r, ColorKind::Density, "Density");
+                    ui.selectable_value(r, ColorKind::Intensity, "Intensity");
                 });
             if *coloring != old {
                 let _ = &mut *coloring;
@@ -1374,13 +1380,12 @@ fn update_texture(
     tect: (Res<TerrainData>, Res<TectonicMap>, Res<TectonicScale>),
     oceans: Res<ShowOceans>,
     filter: Res<LayerFilter>,
-    borders: Res<ShowBorders>,
+    features: Res<ShowFeatures>,
     mut images: ResMut<Assets<Image>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
-    mut planet: Query<&mut Handle<StandardMaterial>, With<Planet>>,
+    mut planet: Query<(&mut Handle<StandardMaterial>, &GlobalTransform), With<Planet>>,
     mut minimap: Query<&mut Handle<Image>, With<MiniMap>>,
     terrain: Option<Res<TerrainData>>,
-    show_centers: Res<ShowCenters>,
 ) {
     let mut img = Image::new(
         Extent3d {
@@ -1393,11 +1398,12 @@ fn update_texture(
         TextureFormat::Rgba8Unorm,
         RenderAssetUsages::RENDER_WORLD,
     );
+    let (mut planet_material, planet_transform) = planet.single_mut();
     'pixels: for (n, d) in bytemuck::cast_slice_mut(&mut img.data)
         .iter_mut()
         .enumerate()
     {
-        if show_centers.0 {
+        if features.centers {
             if let Some(r) = &terrain {
                 let TerrainData(state, colors) = &**r;
                 let mut black = false;
@@ -1421,12 +1427,16 @@ fn update_texture(
         use std::f32::consts::*;
         let cell_idx = tect.1 .0[n];
         let cell = tect.0 .0.cells()[cell_idx];
-        if borders.0 && tect.0 .0.boundaries().contains(cell_idx as _) {
+        if features.borders && tect.0 .0.boundaries().contains(cell_idx as _) {
             *d = LinearRgba::rgb(1.0, 0.0, 1.0).as_u32();
             continue;
         }
         let x = ((n % WIDTH) as f32) * TAU / WIDTH as f32;
         let y = ((n / WIDTH) as f32).mul_add(-PI / HEIGHT as f32, FRAC_PI_2);
+        if features.coords && (x.abs() < 0.05 || x.abs() > TAU - 0.05 || y.abs() < 0.05) {
+            *d = LinearRgba::GREEN.as_u32();
+            continue;
+        }
         let height = match *filter {
             LayerFilter::All => {
                 noise.0 .0[noise.1 .0[n]]
@@ -1453,7 +1463,24 @@ fn update_texture(
                 };
                 base.with_luminance((-(cell.feats.dist as f32 * 0.5).powi(2)).exp())
             }
-            c => {
+            ColorKind::Intensity => {
+                let (xsin, xcos) = x.sin_cos();
+                let (ysin, ycos) = y.sin_cos();
+                let point = Vec3::new(xcos * ycos, xsin * ycos, ysin);
+                let (_, rot, trans) = planet_transform.to_scale_rotation_translation();
+                let intensity = rot.mul_vec3(point).dot(-trans.normalize_or_zero()).max(0.0);
+                let rotation = Vec2::from_angle(intensity * FRAC_PI_3 * 4.0);
+                LinearRgba::rgb(
+                    rotation
+                        .dot(Vec2::new(-0.5, -SQRT_3 * 0.5))
+                        .mul_add(0.5, 0.5),
+                    rotation
+                        .dot(Vec2::new(-0.5, SQRT_3 * 0.5))
+                        .mul_add(0.5, 0.5),
+                    rotation.dot(Vec2::X).mul_add(0.5, 0.5),
+                )
+            }
+            c @ (ColorKind::Height | ColorKind::Density) => {
                 if *filter == LayerFilter::All && oceans.show && height < oceans.depth {
                     LinearRgba::from(Srgba::rgb_u8(0, 51, 102)).with_luminance(height * 0.5)
                 } else if c == ColorKind::Density {
@@ -1469,7 +1496,7 @@ fn update_texture(
         .as_u32();
     }
     let image = images.add(img);
-    *planet.single_mut() = materials.add(StandardMaterial {
+    *planet_material = materials.add(StandardMaterial {
         base_color_texture: Some(image.clone()),
         ..default()
     });
