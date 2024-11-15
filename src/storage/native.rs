@@ -30,7 +30,7 @@ impl PersistentBackend {
     /// Fails on native if creating the home directory can't be found, creating/opening the file fails, or the database is already open.
     /// Never fails in the web.
     pub fn new(name: String) -> Result<Self, DatabaseError> {
-        info_span!("Creating persistent backend", name);
+        let _ = info_span!("Creating persistent backend", name).entered();
         let mut saves = Self::data_dir().map_err(|_| {
             error!("Couldn't find a home directory");
             io::Error::new(io::ErrorKind::Other, "Couldn't find a home directory")
@@ -69,6 +69,7 @@ impl PersistentBackend {
     /// Fails if the associated file operation fails on native platforms.
     /// Never fails on web.
     pub fn delete_save(name: &str) -> io::Result<()> {
+        let _ = info_span!("Deleting saves", name).entered();
         let mut saves = Self::data_dir().map_err(|_| {
             error!("Couldn't find a home directory");
             io::Error::new(io::ErrorKind::Other, "Couldn't find a home directory")
@@ -86,7 +87,7 @@ impl PersistentBackend {
     }
     /// List the loadable saves. Returns an empty iterator if we can't open a necessary file, skips files that can't be opened.
     pub fn list_saves() -> impl Iterator<Item = String> {
-        info_span!("Loading save names");
+        let _ = info_span!("Loading save names").entered();
         let Ok(mut saves) = Self::data_dir() else {
             error!("Couldn't find home directory");
             return None.into_iter().flatten();
