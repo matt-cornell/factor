@@ -43,23 +43,6 @@ impl PersistentBackend {
     pub fn new(name: String) -> Result<Self, DatabaseError> {
         Ok(Self { name })
     }
-    /// List the loadable saves. Returns an empty iterator if we can't open a necessary file, skips files that can't be opened.
-    pub fn list_saves() -> impl Iterator<Item = String> {
-        let storage = local_storage();
-        let length = storage.length().unwrap_throw();
-        (0..length).filter_map(move |i| {
-            let mut name = storage.key(i).ok()??;
-            if name.ends_with("-len") {
-                name.truncate(name.len() - 4);
-            }
-            if name.starts_with("factorsave-") {
-                name.replace_range(0..11, "");
-                Some(name)
-            } else {
-                None
-            }
-        })
-    }
     /// Delete a save with the given name.
     /// Fails if the associated file operation fails on native platforms.
     /// Never fails on web.
@@ -76,6 +59,23 @@ impl PersistentBackend {
         for key in prune {
             storage.remove_item(&key);
         }
+    }
+    /// List the loadable saves. Returns an empty iterator if we can't open a necessary file, skips files that can't be opened.
+    pub fn list_saves() -> impl Iterator<Item = String> {
+        let storage = local_storage();
+        let length = storage.length().unwrap_throw();
+        (0..length).filter_map(move |i| {
+            let mut name = storage.key(i).ok()??;
+            if name.ends_with("-len") {
+                name.truncate(name.len() - 4);
+            }
+            if name.starts_with("factorsave-") {
+                name.replace_range(0..11, "");
+                Some(name)
+            } else {
+                None
+            }
+        })
     }
     fn load_block(&self, idx: usize, storage: &Storage) -> io::Result<Option<String>> {
         let key = format!("factorsave-{}-{idx:>010x}", self.name);

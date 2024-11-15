@@ -39,14 +39,14 @@ impl PersistentBackend {
         info!(dir = %saves.display(), "Found save directory");
         if !saves.exists() {
             debug!(dir = %saves.display(), "Creating save directory");
-            if let Err(err) = std::fs::create_dir_all(&saves) {
+            if let Err(err) = fs::create_dir_all(&saves) {
                 error!(%err, "Error creating save directory");
                 Err(err)?;
             }
         }
         saves.push(name);
         saves.add_extension("redb");
-        let res = std::fs::OpenOptions::new()
+        let res = fs::OpenOptions::new()
             .read(true)
             .append(true)
             .create(true)
@@ -77,7 +77,7 @@ impl PersistentBackend {
         saves.push(name);
         saves.add_extension("redb");
         info!(path = %saves.display(), "Deleting save file");
-        if let Err(err) = std::fs::remove_file(&saves) {
+        if let Err(err) = fs::remove_file(&saves) {
             error!(%err, "Failed to delete file");
             Err(err)
         } else {
