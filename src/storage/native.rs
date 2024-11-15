@@ -4,11 +4,15 @@ use redb::{backends::FileBackend, *};
 use std::path::PathBuf;
 use std::{fs, io};
 
+/// A persistent `redb` backend that can be saved and loaded by a name.
+/// On native platforms (this implementation), it saves it to a file called `<name>.redb`
+/// On the web, it save data in local storage, with keys prefixed by `factorsave-<name>`
 #[derive(Debug)]
 pub struct PersistentBackend {
     inner: FileBackend,
 }
 impl PersistentBackend {
+    /// The data directory to use. This doesn't have a web counterpart.
     pub fn data_dir() -> Result<PathBuf, HomeDirError> {
         match choose_app_strategy(AppStrategyArgs {
             top_level_domain: "com".to_string(),
@@ -22,10 +26,15 @@ impl PersistentBackend {
             }
         }
     }
+    /// Create a new database.
+    /// Fails on native if creating the home directory can't be found, creating/opening the file fails, or the database is already open.
+    /// Never fails in the web.
     pub fn new(name: String) -> Result<Self, DatabaseError> {
         info_span!("Creating persistent backend", name);
-        let mut saves = Self::data_dir()
-            .map_err(|_| io::Error::new(io::ErrorKind::Other, "Couldn't find a home directory"))?;
+        let mut saves = Self::data_dir().map_err(|_| {
+            error!("Couldn't find a home directory");
+            io::Error::new(io::ErrorKind::Other, "Couldn't find a home directory")
+        })?;
         saves.push("saves");
         info!(dir = %saves.display(), "Found save directory");
         if !saves.exists() {
@@ -56,6 +65,26 @@ impl PersistentBackend {
             }
         }
     }
+    /// Delete a save with the given name.
+    /// Fails if the associated file operation fails on native platforms.
+    /// Never fails on web.
+    pub fn delete_save(name: &str) -> io::Result<()> {
+        let mut saves = Self::data_dir().map_err(|_| {
+            error!("Couldn't find a home directory");
+            io::Error::new(io::ErrorKind::Other, "Couldn't find a home directory")
+        })?;
+        saves.push("saves");
+        saves.push(name);
+        saves.set_extension("redb");
+        info!(path = %saves.display(), "Deleting save file");
+        if let Err(err) = std::fs::remove_file(&saves) {
+            error!(%err, "Failed to delete file");
+            Err(err)
+        } else {
+            Ok(())
+        }
+    }
+    /// List the loadable saves. Returns an empty iterator if we can't open a necessary file, skips files that can't be opened.
     pub fn list_saves() -> impl Iterator<Item = String> {
         info_span!("Loading save names");
         let Ok(mut saves) = Self::data_dir() else {
@@ -75,7 +104,14 @@ impl PersistentBackend {
                             let path = entry.path();
                             if let Some(n) = name.strip_suffix(".redb") {
                                 name.truncate(n.len());
-                                if fs::File::open(&path).is_ok() {
+                                let mut opts = fs::OpenOptions::new();
+                                #[cfg(unix)]
+                                // we're just checking to see if we can open the file, so we want to avoid setting the atime
+                                std::os::unix::fs::OpenOptionsExt::custom_flags(
+                                    &mut opts,
+                                    libc::O_NOATIME,
+                                );
+                                if opts.read(true).open(&path).is_ok() {
                                     Some(name)
                                 } else {
                                     warn!(
