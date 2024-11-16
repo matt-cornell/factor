@@ -26,7 +26,7 @@ jobs:
         run: |
           mkdir static-deployment/examples/
           for name in $examples; do
-            wasm-bindgen --no-typescript --target no-modules --out-dir static-deployment/examples target/wasm32-unknown-unknown/release/$name.wasm
+            wasm-bindgen --no-typescript --target no-modules --out-dir static-deployment/examples target/wasm32-unknown-unknown/release/examples/$name.wasm
             cp static-deployment/_base_example.html static-deployment/examples/$name.html
           done
       - name: Upload pages artifact
