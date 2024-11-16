@@ -2,7 +2,7 @@ name: Deploy site
 
 on:
   push:
-    branches: ["main", "github-deployment"]
+    branches: ["main"]
 
 env:
   examples: terrain
@@ -24,7 +24,7 @@ jobs:
         run: cargo build --target wasm32-unknown-unknown --release $(echo $examples | sed 's/[^ ]* */--example &/g')
       - name: Create bindings
         run: |
-          mkdir static-deployment/examples/
+          mkdir -p static-deployment/examples/
           for name in $examples; do
             wasm-bindgen --no-typescript --target no-modules --out-dir static-deployment/examples target/wasm32-unknown-unknown/release/examples/$name.wasm
             cp static-deployment/_base_example.html static-deployment/examples/$name.html
