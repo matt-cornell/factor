@@ -38,8 +38,7 @@
       }
       let idx = base.lastIndexOf("/");
       let name = idx > 0 ? base.substring(idx + 1) : base;
-      name = name.toLowercase();
-      name[0] = name[0].toUppercase();
+      name = name[0].toUpperCase() + name.substring(1).toLowerCase();
       document.title = "Factor- " + name;
 
       async function run() {
