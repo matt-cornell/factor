@@ -32,12 +32,12 @@
     <script>
       let base = location + "";
       if (base.endsWith(".html")) {
-        base = base.substring(0, name.length - 5);
+        base = base.substring(0, base.length - 5);
       } else {
         throw new Error("Location doesn't end in .html");
       }
       let idx = base.lastIndexOf("/");
-      let name = idx > 0 ? name.substring(idx + 1) : name;
+      let name = idx > 0 ? base.substring(idx + 1) : base;
       name = name.toLowercase();
       name[0] = name[0].toUppercase();
       document.title = "Factor- " + name;
