@@ -16,8 +16,8 @@ jobs:
         uses: actions/checkout@v4
       - name: Setup Rust
         run: |
-          rustup target add wasm32-unknown-unknown
           rustup override set nightly
+          rustup target add wasm32-unknown-unknown
       - name: Install wasm-bindgen
         run: cargo install wasm-bindgen-cli
       - name: Build examples
