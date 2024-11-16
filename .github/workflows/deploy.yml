@@ -18,6 +18,8 @@ jobs:
         run: |
           rustup override set nightly
           rustup target add wasm32-unknown-unknown
+      - name: Cache dependencies
+        uses: Swatinem/rust-cache@v2
       - name: Install wasm-bindgen
         run: cargo install wasm-bindgen-cli
       - name: Build examples
