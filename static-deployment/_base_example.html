@@ -6,7 +6,7 @@
     <meta http-equiv="X-UA-Compatible" content="IE=edge" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <link rel="icon" href="data:," />
-    <title>Factor- Terrain</title>
+    <title>Factor- Example</title>
 
     <style>
       body,
@@ -30,14 +30,20 @@
 
   <body>
     <script>
-      let name = location + "";
-      if (name.endsWith(".html")) {
-        name = name.substring(0, name.length - 5);
+      let base = location + "";
+      if (base.endsWith(".html")) {
+        base = base.substring(0, name.length - 5);
       } else {
         throw new Error("Location doesn't end in .html");
       }
+      let idx = base.lastIndexOf("/");
+      let name = idx > 0 ? name.substring(idx + 1) : name;
+      name = name.toLowercase();
+      name[0] = name[0].toUppercase();
+      document.title = "Factor- " + name;
+
       async function run() {
-        await wasm_bindgen({ module_or_path: name + "_bg.wasm" }).catch(
+        await wasm_bindgen({ module_or_path: base + "_bg.wasm" }).catch(
           (error) => {
             if (
               !error.message.startsWith(
@@ -51,7 +57,7 @@
       }
       let script = document.createElement("script");
       script.type = "text/javascript";
-      script.src = name + ".js";
+      script.src = base + ".js";
       script.onload = run;
       document.body.appendChild(script);
     </script>
