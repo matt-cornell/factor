@@ -1,0 +1,28 @@
+name: Deploy site
+
+on:
+  push:
+    branches: ["main", "github-deployment"]
+
+env:
+  examples: terrain
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Build examples
+        run: cargo build --target wasm32-unknown-unknown --release $(echo $examples | sed 's/[^ ]* */--example &/g')
+      - name: Create bindings
+        run: |
+          mkdir static-deployment/examples/
+          for name in $examples; do
+            wasm-bindgen --no-typescript --target no-modules --out-dir static-deployment/examples target/wasm32-unknown-unknown/release/$name.wasm
+            cp static-deployment/_base_example.html static-deployment/examples/$name.html
+          done
+      - name: Upload pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: static-deployment/
