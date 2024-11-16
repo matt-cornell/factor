@@ -51,14 +51,15 @@ impl PersistentBackend {
         let length = storage.length().unwrap_throw();
         let prefix = format!("factorsave-{name}");
         let prune = (0..length)
-            .filter_map(move |i| {
-                let mut name = storage.key(i).ok()??;
+            .filter_map(|i| {
+                let name = storage.key(i).ok()??;
                 name.starts_with(&prefix).then_some(name)
             })
             .collect::<Vec<_>>();
         for key in prune {
-            storage.remove_item(&key);
+            let _ = storage.remove_item(&key);
         }
+        Ok(())
     }
     /// List the loadable saves. Returns an empty iterator if we can't open a necessary file, skips files that can't be opened.
     pub fn list_saves() -> impl Iterator<Item = String> {
@@ -129,7 +130,7 @@ impl StorageBackend for PersistentBackend {
     }
     fn read(&self, offset: u64, len: usize) -> io::Result<Vec<u8>> {
         let offset = offset as usize;
-        let end = offset as usize + len;
+        let end = offset + len;
         let start_block = offset >> BLOCK_BITS;
         let end_block = end >> BLOCK_BITS;
         let start_off = offset & BLOCK_MASK;
@@ -145,8 +146,8 @@ impl StorageBackend for PersistentBackend {
                 BASE64_CODEC
                     .decode_vec(&data[start..end], &mut out)
                     .unwrap();
-                out.drain(..((start_off - real_start) as usize));
-                out.truncate(out.len() - (real_end - end_off) as usize);
+                out.drain(..(start_off - real_start));
+                out.truncate(out.len() - real_end - end_off);
             } else {
                 out.resize(len, 0);
             }
@@ -158,7 +159,7 @@ impl StorageBackend for PersistentBackend {
                     BASE64_CODEC.decode_vec(&data[start..], &mut out).unwrap();
                     out.drain(..(start_off - real_start));
                 } else {
-                    out.resize(BLOCK_SIZE - start_off as usize, 0);
+                    out.resize(BLOCK_SIZE - start_off, 0);
                 }
             }
             for blk in (start_block + 1)..end_block {
@@ -201,7 +202,7 @@ impl StorageBackend for PersistentBackend {
     }
     fn write(&self, offset: u64, mut data: &[u8]) -> io::Result<()> {
         let offset = offset as usize;
-        let end = offset as usize + data.len();
+        let end = offset + data.len();
         let start_block = offset >> BLOCK_BITS;
         let end_block = end >> BLOCK_BITS;
         let start_off = offset & BLOCK_MASK;
