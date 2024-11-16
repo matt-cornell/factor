@@ -13,6 +13,12 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+      - name: Setup Rust
+        run: |
+          rustup target install wasm32-unknown-unknown
+          rustup override set nightly
+      - name: Install wasm-bindgen
+        run: cargo install wasm-bindgen-cli
       - name: Build examples
         run: cargo build --target wasm32-unknown-unknown --release $(echo $examples | sed 's/[^ ]* */--example &/g')
       - name: Create bindings
