@@ -15,9 +15,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
       - name: Setup Rust
-        run: |
-          rustup override set nightly
-          rustup target add wasm32-unknown-unknown
+        run: rustup target add wasm32-unknown-unknown
       - name: Cache dependencies
         uses: Swatinem/rust-cache@v2
       - name: Install wasm-bindgen

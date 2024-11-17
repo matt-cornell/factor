@@ -10,12 +10,22 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  build:
+  native:
     runs-on: ubuntu-latest
-
     steps:
+      - name: Install system libraries
+        run: sudo apt install -y libasound2-dev libudev-dev libwayland-dev
       - uses: actions/checkout@v4
       - name: Build
-        run: cargo clippy --verbose
+        run: cargo clippy
       - name: Run tests
-        run: cargo test --verbose
+        run: cargo test
+  wasm:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Install WASM target
+        run: rustup target add wasm32-unknown-unknown
+      - name: Build
+        run: cargo clippy --target wasm32-unknown-unknown
