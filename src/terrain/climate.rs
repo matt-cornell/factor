@@ -76,24 +76,18 @@ pub fn step_climate<F: FnMut(f32, f32) -> f32, R: Rng + ?Sized>(
         let mut cum_wind = Vec2::ZERO;
         let (clon, clat) = layer.center(i as _);
         let (clon, clat) = (clon as f32, clat as f32);
-        let (osin, ocos) = clon.sin_cos();
-        let (asin, acos) = clat.sin_cos();
-        let axis_x = Vec3::new(-osin, ocos, 0.0);
-        let axis_y = Vec3::new(-asin * ocos, -asin * osin, acos);
-        let center_3d = Vec3::new(ocos * acos, osin * asin, asin);
+        let (asin1, acos1) = clat.sin_cos();
         let base_pressure = cells[i].temp.recip();
         for &n in neighbors {
             let cell = &cells[n as usize];
             cum_temp += cell.temp;
             cum_humid += cell.humidity;
             let pressure_diff = base_pressure - cell.temp.recip();
-            let (clon, clat) = layer.center(n);
-            let (clon, clat) = (clon as f32, clat as f32);
-            let (osin, ocos) = clon.sin_cos();
-            let (asin, acos) = clat.sin_cos();
-            let center2 = Vec3::new(ocos * acos, osin * asin, asin);
-            let diff = center2 - center_3d;
-            let base = Vec2::new(diff.dot(axis_x), diff.dot(axis_y));
+            let (lon, lat) = layer.center(n);
+            let (lon, lat) = (lon as f32, lat as f32);
+            let (asin2, acos2) = lat.sin_cos();
+            let (osin, ocos) = (clon - lon).sin_cos();
+            let base = Vec2::new(osin * acos2, acos1 * asin2 - asin1 * acos2 * ocos);
             cum_wind += base.normalize_or_zero() * pressure_diff;
         }
         cum_temp /= neighbors.len() as f32;
