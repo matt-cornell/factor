@@ -16,7 +16,7 @@ pub struct ClimateCell {
     pub wind: Vec2,
 }
 
-pub fn setup_climate<F: FnMut(u64) -> f32, R: Rng + ?Sized>(
+pub fn init_climate<F: FnMut(u64) -> f32, R: Rng + ?Sized>(
     depth: u8,
     mut heights: F,
     ocean_coverage: f32,

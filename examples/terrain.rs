@@ -6,6 +6,7 @@ use bevy::render::render_asset::RenderAssetUsages;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use bevy::window::PrimaryWindow;
 use bevy_egui::{egui, EguiContexts, EguiPlugin};
+use factor::terrain::climate::*;
 use factor::terrain::noise::*;
 use factor::terrain::tectonic::*;
 use rand::prelude::*;
@@ -21,7 +22,15 @@ use web_time::{Duration, Instant};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, States)]
 enum AppState {
-    Tectonics { iter: u16, running: bool },
+    Tectonics {
+        iter: u16,
+        running: bool,
+    },
+    Climate {
+        iter: u16,
+        running: bool,
+        tect_steps: u16,
+    },
 }
 impl Default for AppState {
     fn default() -> Self {
@@ -34,7 +43,19 @@ impl Default for AppState {
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, SubStates)]
 #[source(AppState = AppState::Tectonics { running: true, .. })]
-struct Simulating;
+struct SimulatingTectonics;
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, SubStates)]
+#[source(AppState = AppState::Climate { running: true, .. })]
+struct SimulatingClimate;
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, SubStates)]
+#[source(AppState = AppState::Tectonics { .. })]
+struct TectonicsPhase;
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, SubStates)]
+#[source(AppState = AppState::Climate { .. })]
+struct ClimatePhase;
 
 #[derive(Resource)]
 struct ShowOceans {
@@ -46,12 +67,18 @@ struct ShowOceans {
 #[derive(Resource)]
 struct TectonicDepth(u8);
 
+#[derive(Resource)]
+struct ClimateDepth(u8);
+
 /// Mapping from pixel to corresponding section
 #[derive(Resource)]
 struct TectonicMap(Box<[usize]>);
 
 #[derive(Resource)]
 struct NoiseMap(Box<[usize]>);
+
+#[derive(Resource)]
+struct ClimateMap(Box<[usize]>);
 
 /// Heights to use for noise sampling
 #[derive(Resource)]
@@ -83,6 +110,9 @@ enum ColorKind {
     Features,
     Intensity,
 }
+
+#[derive(Resource)]
+struct ClimateData(Box<[ClimateCell]>);
 
 #[derive(Resource)]
 struct TerrainData(TectonicState, Box<[LinearRgba]>);
@@ -301,12 +331,16 @@ fn main() {
         }))
         .add_plugins(EguiPlugin)
         .init_state::<AppState>()
-        .add_sub_state::<Simulating>()
+        .add_sub_state::<SimulatingTectonics>()
+        .add_sub_state::<SimulatingClimate>()
+        .add_sub_state::<TectonicsPhase>()
+        .add_sub_state::<ClimatePhase>()
         .add_event::<ReloadTerrain>()
         .add_event::<RecolorPlates>()
         .insert_resource(TimeScale(1.0))
         .insert_resource(TectonicDepth(5))
         .insert_resource(TectonicScale(1.0))
+        .insert_resource(ClimateDepth(5))
         .insert_resource(ShowFeatures {
             centers: false,
             borders: false,
@@ -348,7 +382,7 @@ fn main() {
             (
                 handle_keypresses,
                 update_ui.after(setup),
-                update_terrain_min,
+                update_tectonics_min.run_if(in_state(TectonicsPhase)),
                 update_positions,
                 update_texture.run_if(
                     resource_changed::<NoiseTerrain>
@@ -366,14 +400,15 @@ fn main() {
                 reparent_camera.run_if(resource_changed::<CameraFocus>),
             ),
         )
-        .add_systems(FixedUpdate, update_terrain.run_if(in_state(Simulating)))
         .add_systems(
-            OnEnter(AppState::Tectonics {
-                iter: 0,
-                running: false,
-            }),
-            setup_tectonics,
+            FixedUpdate,
+            (
+                update_tectonics.run_if(in_state(SimulatingTectonics)),
+                update_climate.run_if(in_state(SimulatingClimate)),
+            ),
         )
+        .add_systems(OnEnter(TectonicsPhase), setup_tectonics)
+        .add_systems(OnEnter(ClimatePhase), setup_climate)
         .run();
 }
 
@@ -528,6 +563,26 @@ fn handle_keypresses(
             if keys.just_pressed(KeyCode::Space) {
                 next_state.set(AppState::Tectonics {
                     iter,
+                    running: !running,
+                });
+            }
+            if keys.just_pressed(KeyCode::Enter) {
+                next_state.set(AppState::Climate {
+                    iter: 0,
+                    running: false,
+                    tect_steps: iter,
+                });
+            }
+        }
+        AppState::Climate {
+            iter,
+            running,
+            tect_steps,
+        } => {
+            if keys.just_pressed(KeyCode::Space) {
+                next_state.set(AppState::Climate {
+                    iter,
+                    tect_steps,
                     running: !running,
                 });
             }
@@ -782,14 +837,21 @@ fn update_ui(
             {
                 let _ = &mut **oceans;
             }
-            if ui
-                .add(egui::Slider::new(
-                    &mut oceans.bypass_change_detection().depth,
-                    0.0..=1.0,
-                ))
-                .changed()
-            {
-                let _ = &mut **oceans;
+            match **state {
+                AppState::Tectonics { .. } => {
+                    if ui
+                        .add(egui::Slider::new(
+                            &mut oceans.bypass_change_detection().depth,
+                            0.0..=1.0,
+                        ))
+                        .changed()
+                    {
+                        let _ = &mut **oceans;
+                    }
+                }
+                AppState::Climate { .. } => {
+                    ui.label("Can't set ocean depth in climate phase");
+                }
             }
         };
         if docked {
@@ -801,7 +863,10 @@ fn update_ui(
             None
         }
     };
-    let render_noise = {
+    let render_noise = 'render: {
+        if !matches!(**state, AppState::Tectonics { .. }) {
+            break 'render None;
+        }
         // safety: this doesn't escape, and only one of these functions runs at once
         let (filter, old_filter, noise) = unsafe {
             (
@@ -989,7 +1054,10 @@ fn update_ui(
             None
         }
     };
-    let render_tectonics = {
+    let render_tectonics = 'render: {
+        if !matches!(**state, AppState::Tectonics { .. }) {
+            break 'render None;
+        }
         let docked = *dock_tectonics;
         let render = |ui: &mut egui::Ui| {
             // safety: this doesn't escape, and only one of these functions runs at once
@@ -1017,6 +1085,12 @@ fn update_ui(
                             let _ = &mut **depth;
                         }
                     });
+                }
+                _ => {
+                    ui.label("Tectonics finished");
+                    if ui.button("Reset").clicked() {
+                        let _ = &mut **depth;
+                    }
                 }
             }
 
@@ -1277,26 +1351,30 @@ fn setup_tectonics(
     });
 }
 
-fn update_terrain(
+fn update_tectonics(
     mut terr: ResMut<TerrainData>,
     state: Res<State<AppState>>,
     mut next_state: ResMut<NextState<AppState>>,
 ) {
+    let AppState::Tectonics { running, iter } = **state else {
+        return;
+    };
     step_terrain(&mut terr.0, &mut thread_rng());
-    let AppState::Tectonics { running, iter } = **state;
     next_state.set(AppState::Tectonics {
         running,
         iter: iter + 1,
     });
 }
 
-fn update_terrain_min(
+fn update_tectonics_min(
     steps: Res<TerrainSteps>,
     mut terr: ResMut<TerrainData>,
     state: Res<State<AppState>>,
     mut next_state: ResMut<NextState<AppState>>,
 ) {
-    let AppState::Tectonics { running, mut iter } = **state;
+    let AppState::Tectonics { running, mut iter } = **state else {
+        return;
+    };
     if iter < steps.0 {
         let start = Instant::now();
         while iter < steps.0 {
@@ -1374,10 +1452,88 @@ fn update_noise_terrain(
     })
 }
 
+fn setup_climate(
+    mut commands: Commands,
+    depth: Res<ClimateDepth>,
+    noise: (Res<NoiseHeights>, Res<NoiseSourceRes>),
+    tect: (Res<TerrainData>, Res<TectonicScale>, Res<TectonicDepth>),
+) {
+    let image_map = (0..(WIDTH * HEIGHT))
+        .map(|i| {
+            use std::f64::consts::*;
+            let x = ((i % WIDTH) as f64).mul_add(TAU / WIDTH as f64, -PI);
+            let y = ((i / WIDTH) as f64).mul_add(-PI / HEIGHT as f64, FRAC_PI_2);
+            cdshealpix::nested::hash(depth.0, x, y) as usize
+        })
+        .collect();
+    let state = init_climate(
+        depth.0,
+        |hash| {
+            use std::cmp::Ordering;
+            let noise_hash = match noise.1.depth.cmp(&depth.0) {
+                Ordering::Greater => hash << (noise.1.depth - depth.0),
+                Ordering::Less => hash >> (depth.0 - noise.1.depth),
+                Ordering::Equal => hash,
+            };
+            let noise_height = noise.0 .0[noise_hash as usize];
+            let tect_hash = match tect.2 .0.cmp(&depth.0) {
+                Ordering::Greater => hash << (tect.2 .0 - depth.0),
+                Ordering::Less => hash >> (depth.0 - tect.2 .0),
+                Ordering::Equal => hash,
+            };
+            let tect_height = tect.0 .0.cells()[tect_hash as usize]
+                .height
+                .mul_add(0.1, 0.2)
+                .clamp(0.0, 1.0)
+                * tect.1 .0;
+            noise_height + tect_height
+        },
+        0.5,
+        &mut thread_rng(),
+    );
+    commands.insert_resource(ClimateData(state));
+    commands.insert_resource(ClimateMap(image_map));
+}
+
+fn update_climate(
+    mut climate: ResMut<ClimateData>,
+    planet: Query<&GlobalTransform, With<Planet>>,
+    state: Res<State<AppState>>,
+    mut next_state: ResMut<NextState<AppState>>,
+) {
+    let AppState::Climate {
+        running,
+        iter,
+        tect_steps,
+    } = **state
+    else {
+        return;
+    };
+    let planet = planet.single();
+    step_climate(
+        &mut climate.0,
+        |x, y| {
+            let (xsin, xcos) = x.sin_cos();
+            let (ysin, ycos) = y.sin_cos();
+            let point = Vec3::new(xcos * ycos, xsin * ycos, ysin);
+            let (_, rot, trans) = planet.to_scale_rotation_translation();
+            rot.mul_vec3(point).dot(-trans.normalize_or_zero()).max(0.0)
+        },
+        &mut thread_rng(),
+    );
+    next_state.set(AppState::Climate {
+        running,
+        iter: iter + 1,
+        tect_steps,
+    });
+}
+
 fn update_texture(
+    state: Res<State<AppState>>,
     colors: Res<ColorKind>,
     noise: (Res<NoiseHeights>, Res<NoiseMap>, Res<NoiseTerrain>),
     tect: (Res<TerrainData>, Res<TectonicMap>, Res<TectonicScale>),
+    climate: (Option<Res<ClimateData>>, Option<Res<ClimateMap>>),
     oceans: Res<ShowOceans>,
     filter: Res<LayerFilter>,
     features: Res<ShowFeatures>,
@@ -1437,14 +1593,21 @@ fn update_texture(
             *d = LinearRgba::GREEN.as_u32();
             continue;
         }
-        let height = match *filter {
-            LayerFilter::All => {
-                noise.0 .0[noise.1 .0[n]]
-                    + cell.height.mul_add(0.1, 0.2).clamp(0.0, 1.0) * tect.2 .0
+        let (height, ocean) = match **state {
+            AppState::Tectonics { .. } => match *filter {
+                LayerFilter::All => {
+                    let height = noise.0 .0[noise.1 .0[n]]
+                        + cell.height.mul_add(0.1, 0.2).clamp(0.0, 1.0) * tect.2 .0;
+                    (height, height < oceans.depth)
+                }
+                LayerFilter::Tectonics => (cell.height.mul_add(0.1, 0.2).clamp(0.0, 1.0), false),
+                LayerFilter::AllNoise => (noise.0 .0[noise.1 .0[n]], false),
+                LayerFilter::NoiseLayer(idx) => (noise.2 .0[idx].get_height(x, y), false),
+            },
+            AppState::Climate { .. } => {
+                let cell = climate.0.as_ref().unwrap().0[climate.1.as_ref().unwrap().0[n]];
+                (cell.height, cell.ocean)
             }
-            LayerFilter::Tectonics => cell.height.mul_add(0.1, 0.2).clamp(0.0, 1.0),
-            LayerFilter::AllNoise => noise.0 .0[noise.1 .0[n]],
-            LayerFilter::NoiseLayer(idx) => noise.2 .0[idx].get_height(x, y),
         };
         *d = match *colors {
             ColorKind::Plates => tect.0 .1[cell.plate as usize],
@@ -1481,7 +1644,7 @@ fn update_texture(
                 )
             }
             c @ (ColorKind::Height | ColorKind::Density) => {
-                if *filter == LayerFilter::All && oceans.show && height < oceans.depth {
+                if ocean && oceans.show {
                     LinearRgba::from(Srgba::rgb_u8(0, 51, 102)).with_luminance(height * 0.5)
                 } else if c == ColorKind::Density {
                     let dens = (cell.density as f32).mul_add(0.0025, -0.05);
