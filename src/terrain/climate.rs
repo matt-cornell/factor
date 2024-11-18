@@ -3,7 +3,7 @@ use bevy::math::*;
 use rand::prelude::*;
 use rand_distr::Normal;
 
-const BOLTZMANN_CONSTANT: f32 = 5.6703744;
+const STEFAN_BOLTZMANN_CONSTANT: f32 = 5.6703744e-8;
 
 #[derive(Debug, Clone, Copy)]
 pub struct ClimateCell {
@@ -54,6 +54,7 @@ pub fn init_climate<F: FnMut(u64) -> f32, R: Rng + ?Sized>(
 pub fn step_climate<F: FnMut(f32, f32) -> f32, R: Rng + ?Sized>(
     cells: &mut [ClimateCell],
     mut solar_intensity: F,
+    time_scale: f32,
     _rng: &mut R,
 ) {
     let depth = {
@@ -67,12 +68,14 @@ pub fn step_climate<F: FnMut(f32, f32) -> f32, R: Rng + ?Sized>(
     for (idx, cell) in cells.iter_mut().enumerate() {
         let (lon, lat) = layer.center(idx as _);
         let sun = solar_intensity(lon as _, lat as _);
-        let energy = sun * cell.albedo - 0.9 * (cell.temp + 273.0).powi(4) * BOLTZMANN_CONSTANT;
-        cell.temp += energy / cell.heat_capacity;
+        let energy =
+            sun * cell.albedo - 0.9 * (cell.temp + 273.15).powi(4) * STEFAN_BOLTZMANN_CONSTANT;
+        // bevy::log::info!(energy, "radiated heat");
+        cell.temp += (energy / cell.heat_capacity * time_scale).max(-200.0);
     }
 
     // conduction
-    let scale = 0.8f32.powi(1 << depth.saturating_sub(2));
+    let scale = 1.0 - (1.0 - 0.8f32.powi(1 << depth.saturating_sub(2))) * time_scale;
     for i in 0..cells.len() {
         let neighbors = healpix::neighbors(depth, i as _);
         let mut cum_temp = 0.0;

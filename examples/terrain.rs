@@ -109,6 +109,7 @@ enum ColorKind {
     Density,
     Features,
     Intensity,
+    Temperature,
 }
 
 #[derive(Resource)]
@@ -148,6 +149,12 @@ struct TerrainSteps(u16);
 
 #[derive(Resource)]
 struct TimeScale(f32);
+
+#[derive(Resource, Serialize, Deserialize)]
+struct ClimateParams {
+    time_scale: f32,
+    intensity: f32,
+}
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Resource)]
 enum CameraFocus {
@@ -369,6 +376,10 @@ fn main() {
             year_length: 120.0,
             day_length: 2.0,
             axial_tilt: 0.0,
+        })
+        .insert_resource(ClimateParams {
+            time_scale: 0.001,
+            intensity: 2000.0,
         })
         .insert_resource(Time::<Fixed>::from_hz(2.0))
         .add_systems(Startup, setup)
@@ -716,6 +727,9 @@ fn update_ui(
                     ui.selectable_value(r, ColorKind::Height, "Height");
                     ui.selectable_value(r, ColorKind::Density, "Density");
                     ui.selectable_value(r, ColorKind::Intensity, "Intensity");
+                    if matches!(**state, AppState::Climate { .. }) {
+                        ui.selectable_value(r, ColorKind::Temperature, "Temperature");
+                    }
                 });
             if *coloring != old {
                 let _ = &mut *coloring;
@@ -1330,7 +1344,11 @@ fn setup_tectonics(
     mut commands: Commands,
     mut next_state: ResMut<NextState<AppState>>,
     depth: Res<TectonicDepth>,
+    mut color: ResMut<ColorKind>,
 ) {
+    if *color == ColorKind::Temperature {
+        *color = ColorKind::Height;
+    }
     let image_map = (0..(WIDTH * HEIGHT))
         .map(|i| {
             use std::f64::consts::*;
@@ -1490,6 +1508,7 @@ fn setup_climate(
 
 fn update_climate(
     mut climate: ResMut<ClimateData>,
+    params: Res<ClimateParams>,
     planet: Query<&GlobalTransform, With<Planet>>,
     state: Res<State<AppState>>,
     mut next_state: ResMut<NextState<AppState>>,
@@ -1510,8 +1529,9 @@ fn update_climate(
             let (ysin, ycos) = y.sin_cos();
             let point = Vec3::new(xcos * ycos, xsin * ycos, ysin);
             let (_, rot, trans) = planet.to_scale_rotation_translation();
-            rot.mul_vec3(point).dot(-trans.normalize_or_zero()).max(0.0)
+            params.intensity * rot.mul_vec3(point).dot(-trans.normalize_or_zero()).max(0.0)
         },
+        params.time_scale,
         &mut thread_rng(),
     );
     next_state.set(AppState::Climate {
@@ -1586,20 +1606,25 @@ fn update_texture(
             *d = LinearRgba::GREEN.as_u32();
             continue;
         }
-        let (height, ocean) = match **state {
-            AppState::Tectonics { .. } => match *filter {
-                LayerFilter::All => {
-                    let height = noise.0 .0[noise.1 .0[n]]
-                        + cell.height.mul_add(0.1, 0.2).clamp(0.0, 1.0) * tect.2 .0;
-                    (height, height < oceans.depth)
-                }
-                LayerFilter::Tectonics => (cell.height.mul_add(0.1, 0.2).clamp(0.0, 1.0), false),
-                LayerFilter::AllNoise => (noise.0 .0[noise.1 .0[n]], false),
-                LayerFilter::NoiseLayer(idx) => (noise.2 .0[idx].get_height(x, y), false),
-            },
+        let (height, ocean, temp) = match **state {
+            AppState::Tectonics { .. } => {
+                let (height, ocean) = match *filter {
+                    LayerFilter::All => {
+                        let height = noise.0 .0[noise.1 .0[n]]
+                            + cell.height.mul_add(0.1, 0.2).clamp(0.0, 1.0) * tect.2 .0;
+                        (height, height < oceans.depth)
+                    }
+                    LayerFilter::Tectonics => {
+                        (cell.height.mul_add(0.1, 0.2).clamp(0.0, 1.0), false)
+                    }
+                    LayerFilter::AllNoise => (noise.0 .0[noise.1 .0[n]], false),
+                    LayerFilter::NoiseLayer(idx) => (noise.2 .0[idx].get_height(x, y), false),
+                };
+                (height, ocean, 20.0)
+            }
             AppState::Climate { .. } => {
                 let cell = climate.0.as_ref().unwrap().0[climate.1.as_ref().unwrap().0[n]];
-                (cell.height, cell.ocean)
+                (cell.height, cell.ocean, cell.temp)
             }
         };
         *d = match *colors {
@@ -1636,9 +1661,26 @@ fn update_texture(
                     rotation.dot(Vec2::X).mul_add(0.5, 0.5),
                 )
             }
+            ColorKind::Temperature => {
+                let rotation =
+                    Vec2::from_angle(temp.mul_add(0.0125, 0.5).clamp(0.0, 1.0) * FRAC_PI_3 * 4.0);
+                LinearRgba::rgb(
+                    rotation
+                        .dot(Vec2::new(-0.5, -SQRT_3 * 0.5))
+                        .mul_add(0.5, 0.5),
+                    rotation
+                        .dot(Vec2::new(-0.5, SQRT_3 * 0.5))
+                        .mul_add(0.5, 0.5),
+                    rotation.dot(Vec2::X).mul_add(0.5, 0.5),
+                )
+            }
             c @ (ColorKind::Height | ColorKind::Density) => {
                 if ocean && oceans.show {
-                    LinearRgba::from(Srgba::rgb_u8(0, 51, 102)).with_luminance(height * 0.5)
+                    if temp < 0.0 {
+                        LinearRgba::WHITE
+                    } else {
+                        LinearRgba::from(Srgba::rgb_u8(0, 51, 102)).with_luminance(height * 0.5)
+                    }
                 } else if c == ColorKind::Density {
                     let dens = (cell.density as f32).mul_add(0.0025, -0.05);
                     let dens = dens.mul_add(0.2, -0.1);
