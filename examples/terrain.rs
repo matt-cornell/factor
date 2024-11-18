@@ -391,6 +391,7 @@ fn main() {
                         .or_else(resource_changed::<LayerFilter>)
                         .or_else(resource_changed::<ColorKind>)
                         .or_else(resource_changed::<ShowFeatures>)
+                        .or_else(resource_changed::<State<AppState>>)
                         .or_else(resource_equals(ColorKind::Intensity)),
                 ),
                 update_noise_terrain
@@ -1469,18 +1470,10 @@ fn setup_climate(
     let state = init_climate(
         depth.0,
         |hash| {
-            use std::cmp::Ordering;
-            let noise_hash = match noise.1.depth.cmp(&depth.0) {
-                Ordering::Greater => hash << (noise.1.depth - depth.0),
-                Ordering::Less => hash >> (depth.0 - noise.1.depth),
-                Ordering::Equal => hash,
-            };
+            let (lon, lat) = factor::healpix::nested::center(depth.0, hash);
+            let noise_hash = factor::healpix::nested::hash(noise.1.depth, lon, lat);
             let noise_height = noise.0 .0[noise_hash as usize];
-            let tect_hash = match tect.2 .0.cmp(&depth.0) {
-                Ordering::Greater => hash << (tect.2 .0 - depth.0),
-                Ordering::Less => hash >> (depth.0 - tect.2 .0),
-                Ordering::Equal => hash,
-            };
+            let tect_hash = factor::healpix::nested::hash(tect.2 .0, lon, lat);
             let tect_height = tect.0 .0.cells()[tect_hash as usize]
                 .height
                 .mul_add(0.1, 0.2)

@@ -56,7 +56,11 @@ pub fn step_climate<F: FnMut(f32, f32) -> f32, R: Rng + ?Sized>(
     mut solar_intensity: F,
     _rng: &mut R,
 ) {
-    let depth = healpix::depth(cells.len() as u32 / 12);
+    let depth = {
+        let per_square = cells.len() as u32 / 12;
+        debug_assert_eq!(per_square.count_ones(), 0);
+        per_square.trailing_zeros() as u8 / 2
+    };
     let layer = healpix::nested::get(depth);
 
     // radiation
