@@ -9,6 +9,7 @@ use bevy_egui::{egui, EguiContexts, EguiPlugin};
 use factor::terrain::climate::*;
 use factor::terrain::noise::*;
 use factor::terrain::tectonic::*;
+use itertools::Itertools;
 use rand::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::cell::UnsafeCell;
@@ -107,6 +108,9 @@ struct ClimateMetrics {
     max_temp: f32,
     med_temp: f32,
     avg_temp: f32,
+    min_wind: f32,
+    max_wind: f32,
+    avg_wind: f32,
 }
 
 #[derive(Debug, Default, Clone, Copy, Resource, PartialEq)]
@@ -1218,10 +1222,18 @@ fn update_ui(
                 }
             }
             if let Some(metrics) = &climate_metrics {
-                ui.label(format!(
-                    "Temperature:\nMin: {:.2}\nMax: {:.2}\nMed: {:.2}\nAvg: {:.2}",
-                    metrics.min_temp, metrics.max_temp, metrics.med_temp, metrics.avg_temp
-                ));
+                ui.collapsing("Temperature", |ui| {
+                    ui.label(format!(
+                        "Min: {:.2}\nMax: {:.2}\nMed: {:.2}\nAvg: {:.2}",
+                        metrics.min_temp, metrics.max_temp, metrics.med_temp, metrics.avg_temp
+                    ));
+                });
+                ui.collapsing("Wind", |ui| {
+                    ui.label(format!(
+                        "Min: {:.2}\nMax: {:.2}\nAvg: {:.2}",
+                        metrics.min_wind, metrics.max_wind, metrics.avg_wind
+                    ));
+                });
             }
             if ui
                 .add(
@@ -1635,6 +1647,9 @@ fn setup_climate(
         max_temp: START_TEMPERATURE,
         med_temp: START_TEMPERATURE,
         avg_temp: START_TEMPERATURE,
+        min_wind: 0.0,
+        max_wind: 0.0,
+        avg_wind: 0.0,
     });
 }
 
@@ -1672,7 +1687,20 @@ fn update_climate(
     metrics.min_temp = cells[0].temp;
     metrics.max_temp = cells[l - 1].temp;
     metrics.med_temp = cells[l / 2].temp;
-    metrics.avg_temp = cells.iter().map(|c| c.temp).sum::<f32>() / l as f32;
+    Vec2 {
+        x: metrics.avg_temp,
+        y: metrics.avg_wind,
+    } = cells
+        .iter()
+        .map(|c| Vec2::new(c.temp, c.wind.length()))
+        .sum::<Vec2>()
+        / l as f32;
+    (metrics.min_wind, metrics.max_wind) = cells
+        .iter()
+        .map(|c| c.wind.length())
+        .minmax_by(f32::total_cmp)
+        .into_option()
+        .unwrap();
     next_state.set(AppState::Climate {
         running,
         iter: iter + 1,

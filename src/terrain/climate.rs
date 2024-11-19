@@ -89,18 +89,18 @@ pub fn step_climate<F: FnMut(f32, f32) -> f32, R: Rng + ?Sized>(
         let (clon, clat) = layer.center(i as _);
         let (clon, clat) = (clon as f32, clat as f32);
         let (asin1, acos1) = clat.sin_cos();
-        let base_pressure = cell.temp.recip();
+        let base_pressure = cell.temp;
         for &n in neighbors {
             let cell = &old[n as usize];
             cum_temp += cell.temp;
             cum_humid += cell.humidity;
-            let pressure_diff = base_pressure - cell.temp.recip();
+            let pressure_diff = base_pressure - cell.temp;
             let (lon, lat) = layer.center(n);
             let (lon, lat) = (lon as f32, lat as f32);
             let (asin2, acos2) = lat.sin_cos();
             let (osin, ocos) = (clon - lon).sin_cos();
             let base = Vec2::new(osin * acos2, acos1 * asin2 - asin1 * acos2 * ocos);
-            cum_wind += base.normalize_or_zero() * pressure_diff;
+            cum_wind += base.normalize_or_zero() * pressure_diff * scale * scale;
         }
         cum_temp /= neighbors.len() as f32;
         cum_humid /= neighbors.len() as f32;
@@ -108,6 +108,38 @@ pub fn step_climate<F: FnMut(f32, f32) -> f32, R: Rng + ?Sized>(
         cell.temp += cum_temp * scale;
         cell.humidity *= 1.0 - scale;
         cell.humidity += cum_humid * scale;
+        cell.wind *= 1.0 - scale;
+        cell.wind += cum_wind * scale;
+    }
+    for (i, old) in old.iter().enumerate() {
+        let neighbors = healpix::neighbors(depth, i as _);
+        let (clon, clat) = layer.center(i as _);
+        let (clon, clat) = (clon as f32, clat as f32);
+        let (asin1, acos1) = clat.sin_cos();
+        for &n in neighbors {
+            let cell = &mut cells[n as usize];
+            let (lon, lat) = layer.center(n);
+            let (lon, lat) = (lon as f32, lat as f32);
+            let (asin2, acos2) = lat.sin_cos();
+            let (osin, ocos) = (clon - lon).sin_cos();
+            let base = Vec2::new(osin * acos2, acos1 * asin2 - asin1 * acos2 * ocos);
+            let dot = base.normalize_or_zero().dot(old.wind);
+            cell.wind += old.wind.normalize() * dot.abs() * 0.1;
+            if dot > 0.1 {
+                let k = dot.sqrt().min(1.0) * 0.25;
+                cell.temp *= 1.0 - scale * k * 0.1;
+                cell.temp += old.temp * scale * k * 0.1;
+                cell.humidity *= 1.0 - scale * k;
+                cell.humidity += old.humidity * scale * k;
+                let temp = cell.temp;
+                let humid = cell.humidity;
+                let cell = &mut cells[i];
+                cell.temp *= 1.0 - scale * k * 0.1;
+                cell.temp += temp * scale * k * 0.1;
+                cell.humidity *= 1.0 - scale * k;
+                cell.humidity += humid * scale * k;
+            }
+        }
     }
 
     old.into_boxed_slice()
