@@ -101,6 +101,14 @@ struct ShowFeatures {
     coords: bool,
 }
 
+#[derive(Resource)]
+struct ClimateMetrics {
+    min_temp: f32,
+    max_temp: f32,
+    med_temp: f32,
+    avg_temp: f32,
+}
+
 #[derive(Debug, Default, Clone, Copy, Resource, PartialEq)]
 enum ColorKind {
     Plates,
@@ -138,6 +146,7 @@ struct DockedControls {
     oceans: bool,
     noise: bool,
     tectonics: bool,
+    climate: bool,
     editor: bool,
 }
 
@@ -150,7 +159,7 @@ struct TerrainSteps(u16);
 #[derive(Resource)]
 struct TimeScale(f32);
 
-#[derive(Resource, Serialize, Deserialize)]
+#[derive(Clone, Copy, Resource, Serialize, Deserialize)]
 struct ClimateParams {
     time_scale: f32,
     intensity: f32,
@@ -186,6 +195,9 @@ struct ReloadTerrain;
 
 #[derive(Event)]
 struct RecolorPlates;
+
+#[derive(Event)]
+struct ResetClimate;
 
 const WIDTH: usize = 600;
 const HEIGHT: usize = 300;
@@ -302,15 +314,17 @@ struct TectonicConfig {
 #[derive(Serialize)]
 struct ConfigSerShim<'a> {
     oceans: OceanConfig,
-    tectonic: TectonicConfig,
     orbit: OrbitParams,
+    climate: ClimateParams,
+    tectonic: TectonicConfig,
     noise: &'a NoiseSourceRes,
 }
 #[derive(Deserialize)]
 struct ConfigDeShim {
     oceans: OceanConfig,
-    tectonic: TectonicConfig,
     orbit: OrbitParams,
+    climate: ClimateParams,
+    tectonic: TectonicConfig,
     noise: NoiseSourceRes,
 }
 struct RandomColor;
@@ -344,6 +358,7 @@ fn main() {
         .add_sub_state::<ClimatePhase>()
         .add_event::<ReloadTerrain>()
         .add_event::<RecolorPlates>()
+        .add_event::<ResetClimate>()
         .insert_resource(TimeScale(1.0))
         .insert_resource(TectonicDepth(5))
         .insert_resource(TectonicScale(1.0))
@@ -359,6 +374,7 @@ fn main() {
             oceans: true,
             noise: true,
             tectonics: true,
+            climate: true,
             editor: true,
         })
         .insert_resource(DockedMap(true))
@@ -386,7 +402,10 @@ fn main() {
         .add_systems(PostStartup, (reload_noise, setup_tectonics))
         .add_systems(
             PreUpdate,
-            setup_tectonics.run_if(resource_changed::<TectonicDepth>),
+            (
+                setup_tectonics.run_if(resource_changed::<TectonicDepth>),
+                setup_climate.run_if(on_event::<ResetClimate>()),
+            ),
         )
         .add_systems(
             Update,
@@ -605,21 +624,22 @@ fn handle_keypresses(
 fn update_ui(
     mut contexts: EguiContexts,
     mut coloring: ResMut<ColorKind>,
-    mut docked_controls: ResMut<DockedControls>,
-    mut docked_map: ResMut<DockedMap>,
+    (mut docked_controls, mut docked_map): (ResMut<DockedControls>, ResMut<DockedMap>),
     filter: ResMut<LayerFilter>,
     mut noise: ResMut<NoiseSourceRes>,
     mut terrain: ResMut<NoiseTerrain>,
     mut tect_depth: ResMut<TectonicDepth>,
-    mut orbit_params: ResMut<OrbitParams>,
+    climate_metrics: Option<Res<ClimateMetrics>>,
     (mut terr_scale, mut tect_steps): (ResMut<TectonicScale>, ResMut<TerrainSteps>),
-    (mut features, mut oceans, mut focus, mut time_scale): (
+    (mut features, mut oceans, mut focus, mut time_scale, mut climate, mut orbit_params): (
         ResMut<ShowFeatures>,
         ResMut<ShowOceans>,
         ResMut<CameraFocus>,
         ResMut<TimeScale>,
+        ResMut<ClimateParams>,
+        ResMut<OrbitParams>,
     ),
-    (state, mut next_state): (Res<State<AppState>>, ResMut<NextState<AppState>>),
+    (state, next_state): (Res<State<AppState>>, ResMut<NextState<AppState>>),
     (mut reroll_rand, mut recolor_plates): (EventWriter<ReloadTerrain>, EventWriter<RecolorPlates>),
     (mut wip_layer, mut code_editing, old_filter, mut file_load): (
         Local<Option<NoiseSourceBuilder>>,
@@ -631,6 +651,7 @@ fn update_ui(
         Query<Entity, With<PrimaryWindow>>,
         Query<&Handle<Image>, With<MiniMap>>,
     ),
+    mut reset_climate: EventWriter<ResetClimate>,
 ) {
     if let Some(input) = file_load.get() {
         *code_editing = None;
@@ -649,6 +670,7 @@ fn update_ui(
                     },
                 orbit,
                 noise: new_noise,
+                climate: new_climate,
             }) => {
                 oceans.depth = ocean_depth;
                 oceans.show = show;
@@ -657,8 +679,10 @@ fn update_ui(
                 tect_depth.0 = tdepth;
                 tect_steps.0 = steps;
                 *orbit_params = orbit;
+                *climate = new_climate;
             }
-            Err(_err) => {
+            Err(err) => {
+                error!(%err, "Error loading config");
                 // TODO: handle this
             }
         }
@@ -668,16 +692,19 @@ fn update_ui(
     let old_filter = UnsafeCell::new(old_filter);
     let noise = UnsafeCell::new(noise);
     let oceans = UnsafeCell::new(oceans);
-    let terr_scale = UnsafeCell::new(terr_scale);
-    let depth = UnsafeCell::new(tect_depth);
+    let tect_scale = UnsafeCell::new(terr_scale);
+    let tect_depth = UnsafeCell::new(tect_depth);
     let tect_steps = UnsafeCell::new(tect_steps);
     let orbit_params = UnsafeCell::new(orbit_params);
+    let next_state = UnsafeCell::new(next_state);
+    let climate = UnsafeCell::new(climate);
     let DockedControls {
         display: dock_display,
         orbit: dock_orbit,
         oceans: dock_oceans,
         noise: dock_noise,
         tectonics: dock_tectonics,
+        climate: dock_climate,
         editor: dock_editor,
     } = &mut *docked_controls;
     let map_docked = docked_map.0;
@@ -1076,13 +1103,14 @@ fn update_ui(
         let docked = *dock_tectonics;
         let render = |ui: &mut egui::Ui| {
             // safety: this doesn't escape, and only one of these functions runs at once
-            let (filter, old_filter, terr_scale, depth, tect_steps) = unsafe {
+            let (filter, old_filter, terr_scale, depth, tect_steps, next_state) = unsafe {
                 (
                     &mut *filter.get(),
                     &mut *old_filter.get(),
-                    &mut *terr_scale.get(),
-                    &mut *depth.get(),
+                    &mut *tect_scale.get(),
+                    &mut *tect_depth.get(),
                     &mut *tect_steps.get(),
+                    &mut *next_state.get(),
                 )
             };
             let label = if *dock_tectonics { "Undock" } else { "Dock" };
@@ -1153,17 +1181,97 @@ fn update_ui(
             None
         }
     };
+    let render_climate = 'render: {
+        if !matches!(**state, AppState::Climate { .. }) {
+            break 'render None;
+        }
+        let docked = *dock_climate;
+        let render = |ui: &mut egui::Ui| {
+            // safety: this doesn't escape, and only one of these functions runs at once
+            let (climate, next_state) = unsafe { (&mut *climate.get(), &mut *next_state.get()) };
+            let label = if *dock_climate { "Undock" } else { "Dock" };
+            if ui.button(label).clicked() {
+                *dock_climate = !*dock_climate;
+            }
+            match **state {
+                AppState::Climate {
+                    iter,
+                    mut running,
+                    tect_steps,
+                } => {
+                    ui.label(format!("Simulating\nStep: {iter}"));
+                    ui.horizontal(|ui| {
+                        if ui.checkbox(&mut running, "Running").changed() {
+                            next_state.set(AppState::Climate {
+                                iter,
+                                running,
+                                tect_steps,
+                            });
+                        }
+                        if ui.button("Reset").clicked() {
+                            reset_climate.send(ResetClimate);
+                        }
+                    });
+                }
+                _ => {
+                    ui.label("Not in climate phase");
+                }
+            }
+            if let Some(metrics) = &climate_metrics {
+                ui.label(format!(
+                    "Temperature:\nMin: {:.2}\nMax: {:.2}\nMed: {:.2}\nAvg: {:.2}",
+                    metrics.min_temp, metrics.max_temp, metrics.med_temp, metrics.avg_temp
+                ));
+            }
+            if ui
+                .add(
+                    egui::Slider::new(
+                        &mut climate.bypass_change_detection().intensity,
+                        0.0..=100000.0,
+                    )
+                    .logarithmic(true)
+                    .smallest_positive(1.0)
+                    .text("Solar Intensity"),
+                )
+                .changed()
+            {
+                let _ = &mut **climate;
+            }
+            if ui
+                .add(
+                    egui::Slider::new(
+                        &mut climate.bypass_change_detection().time_scale,
+                        0.0..=100.0,
+                    )
+                    .logarithmic(true)
+                    .text("Time Scale"),
+                )
+                .changed()
+            {
+                let _ = &mut **climate;
+            }
+        };
+        if docked {
+            Some(|ui: &mut egui::Ui| {
+                ui.collapsing(egui::RichText::new("Climate").size(18.0), render);
+            })
+        } else {
+            egui::Window::new("Climate").show(context, render);
+            None
+        }
+    };
     let render_editor = {
         let docked = *dock_editor;
         let render = |ui: &mut egui::Ui| {
-            let (noise, oceans, terr_scale, depth, tect_steps, orbit_params) = unsafe {
+            let (noise, oceans, terr_scale, depth, tect_steps, orbit_params, climate) = unsafe {
                 (
                     &mut *noise.get(),
                     &mut *oceans.get(),
-                    &mut *terr_scale.get(),
-                    &mut *depth.get(),
+                    &mut *tect_scale.get(),
+                    &mut *tect_depth.get(),
                     &mut *tect_steps.get(),
                     &mut *orbit_params.get(),
+                    &mut *climate.get(),
                 )
             };
 
@@ -1184,6 +1292,7 @@ fn update_ui(
                                 },
                             orbit,
                             noise: new_noise,
+                            climate: new_climate,
                         }) => {
                             oceans.depth = ocean_depth;
                             oceans.show = show;
@@ -1192,6 +1301,7 @@ fn update_ui(
                             tect_steps.0 = steps;
                             **noise = new_noise;
                             **orbit_params = orbit;
+                            **climate = new_climate;
                         }
                         Err(err) => {
                             ui.colored_label(ui.style().visuals.error_fg_color, err.to_string());
@@ -1261,6 +1371,7 @@ fn update_ui(
                             steps: tect_steps.0,
                         },
                         orbit: **orbit_params,
+                        climate: **climate,
                         noise,
                     })
                     .unwrap()
@@ -1283,6 +1394,7 @@ fn update_ui(
         || render_oceans.is_some()
         || render_noise.is_some()
         || render_tectonics.is_some()
+        || render_climate.is_some()
         || render_editor.is_some()
     {
         let undock = egui::SidePanel::left("Controls")
@@ -1304,6 +1416,9 @@ fn update_ui(
                 if let Some(render) = render_tectonics {
                     render(ui);
                 }
+                if let Some(render) = render_climate {
+                    render(ui);
+                }
                 if let Some(render) = render_editor {
                     render(ui);
                 }
@@ -1317,6 +1432,7 @@ fn update_ui(
                 oceans: false,
                 noise: false,
                 tectonics: false,
+                climate: false,
                 editor: false,
             };
         }
@@ -1476,7 +1592,17 @@ fn setup_climate(
     depth: Res<ClimateDepth>,
     noise: (Res<NoiseHeights>, Res<NoiseSourceRes>),
     tect: (Res<TerrainData>, Res<TectonicScale>, Res<TectonicDepth>),
+    state: Res<State<AppState>>,
+    mut next_state: ResMut<NextState<AppState>>,
 ) {
+    next_state.set(AppState::Climate {
+        iter: 0,
+        running: false,
+        tect_steps: match **state {
+            AppState::Climate { tect_steps, .. } => tect_steps,
+            AppState::Tectonics { iter, .. } => iter,
+        },
+    });
     let image_map = (0..(WIDTH * HEIGHT))
         .map(|i| {
             use std::f64::consts::*;
@@ -1499,11 +1625,17 @@ fn setup_climate(
                 * tect.1 .0;
             noise_height + tect_height
         },
-        0.5,
+        0.7,
         &mut thread_rng(),
     );
     commands.insert_resource(ClimateData(state));
     commands.insert_resource(ClimateMap(image_map));
+    commands.insert_resource(ClimateMetrics {
+        min_temp: START_TEMPERATURE,
+        max_temp: START_TEMPERATURE,
+        med_temp: START_TEMPERATURE,
+        avg_temp: START_TEMPERATURE,
+    });
 }
 
 fn update_climate(
@@ -1512,6 +1644,7 @@ fn update_climate(
     planet: Query<&GlobalTransform, With<Planet>>,
     state: Res<State<AppState>>,
     mut next_state: ResMut<NextState<AppState>>,
+    mut metrics: ResMut<ClimateMetrics>,
 ) {
     let AppState::Climate {
         running,
@@ -1522,7 +1655,7 @@ fn update_climate(
         return;
     };
     let planet = planet.single();
-    step_climate(
+    let mut cells = step_climate(
         &mut climate.0,
         |x, y| {
             let (xsin, xcos) = x.sin_cos();
@@ -1534,6 +1667,12 @@ fn update_climate(
         params.time_scale,
         &mut thread_rng(),
     );
+    cells.sort_by(|a, b| a.temp.total_cmp(&b.temp));
+    let l = cells.len();
+    metrics.min_temp = cells[0].temp;
+    metrics.max_temp = cells[l - 1].temp;
+    metrics.med_temp = cells[l / 2].temp;
+    metrics.avg_temp = cells.iter().map(|c| c.temp).sum::<f32>() / l as f32;
     next_state.set(AppState::Climate {
         running,
         iter: iter + 1,
