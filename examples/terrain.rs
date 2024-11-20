@@ -122,6 +122,8 @@ enum ColorKind {
     Features,
     Intensity,
     Temperature,
+    Humidity,
+    Rainfall,
 }
 
 #[derive(Resource)]
@@ -760,6 +762,8 @@ fn update_ui(
                     ui.selectable_value(r, ColorKind::Intensity, "Intensity");
                     if matches!(**state, AppState::Climate { .. }) {
                         ui.selectable_value(r, ColorKind::Temperature, "Temperature");
+                        ui.selectable_value(r, ColorKind::Humidity, "Humididty");
+                        ui.selectable_value(r, ColorKind::Rainfall, "Rainfall");
                     }
                 });
             if *coloring != old {
@@ -1670,7 +1674,7 @@ fn update_climate(
         return;
     };
     let planet = planet.single();
-    let mut cells = step_climate(
+    step_climate(
         &mut climate.0,
         |x, y| {
             let (xsin, xcos) = x.sin_cos();
@@ -1682,6 +1686,7 @@ fn update_climate(
         params.time_scale,
         &mut thread_rng(),
     );
+    let mut cells = climate.0.to_vec();
     cells.sort_by(|a, b| a.temp.total_cmp(&b.temp));
     let l = cells.len();
     metrics.min_temp = cells[0].temp;
@@ -1773,25 +1778,55 @@ fn update_texture(
             *d = LinearRgba::GREEN.as_u32();
             continue;
         }
-        let (height, ocean, temp) = match **state {
-            AppState::Tectonics { .. } => {
-                let (height, ocean) = match *filter {
-                    LayerFilter::All => {
-                        let height = noise.0 .0[noise.1 .0[n]]
-                            + cell.height.mul_add(0.1, 0.2).clamp(0.0, 1.0) * tect.2 .0;
-                        (height, height < oceans.depth)
+        let climate = match **state {
+            AppState::Tectonics { .. } => match *filter {
+                LayerFilter::All => {
+                    let height = noise.0 .0[noise.1 .0[n]]
+                        + cell.height.mul_add(0.1, 0.2).clamp(0.0, 1.0) * tect.2 .0;
+                    ClimateCell {
+                        height,
+                        temp: 20.0,
+                        humidity: 0.0,
+                        ocean: height < oceans.depth,
+                        heat_capacity: 0.0,
+                        albedo: 0.0,
+                        rainfall: 0.0,
+                        wind: Vec2::ZERO,
                     }
-                    LayerFilter::Tectonics => {
-                        (cell.height.mul_add(0.1, 0.2).clamp(0.0, 1.0), false)
-                    }
-                    LayerFilter::AllNoise => (noise.0 .0[noise.1 .0[n]], false),
-                    LayerFilter::NoiseLayer(idx) => (noise.2 .0[idx].get_height(x, y), false),
-                };
-                (height, ocean, 20.0)
-            }
+                }
+                LayerFilter::Tectonics => ClimateCell {
+                    height: cell.height.mul_add(0.1, 0.2).clamp(0.0, 1.0),
+                    temp: 20.0,
+                    humidity: 0.0,
+                    ocean: false,
+                    heat_capacity: 0.0,
+                    albedo: 0.0,
+                    rainfall: 0.0,
+                    wind: Vec2::ZERO,
+                },
+                LayerFilter::AllNoise => ClimateCell {
+                    height: noise.0 .0[noise.1 .0[n]],
+                    temp: 20.0,
+                    humidity: 0.0,
+                    ocean: false,
+                    heat_capacity: 0.0,
+                    albedo: 0.0,
+                    rainfall: 0.0,
+                    wind: Vec2::ZERO,
+                },
+                LayerFilter::NoiseLayer(idx) => ClimateCell {
+                    height: noise.2 .0[idx].get_height(x, y),
+                    temp: 20.0,
+                    humidity: 0.0,
+                    ocean: false,
+                    heat_capacity: 0.0,
+                    albedo: 0.0,
+                    rainfall: 0.0,
+                    wind: Vec2::ZERO,
+                },
+            },
             AppState::Climate { .. } => {
-                let cell = climate.0.as_ref().unwrap().0[climate.1.as_ref().unwrap().0[n]];
-                (cell.height, cell.ocean, cell.temp)
+                climate.0.as_ref().unwrap().0[climate.1.as_ref().unwrap().0[n]]
             }
         };
         *d = match *colors {
@@ -1828,9 +1863,27 @@ fn update_texture(
                     rotation.dot(Vec2::X).mul_add(0.5, 0.5),
                 )
             }
+            c @ (ColorKind::Height | ColorKind::Density) => {
+                if climate.ocean && oceans.show {
+                    if climate.temp < 0.0 {
+                        LinearRgba::WHITE
+                    } else {
+                        LinearRgba::from(Srgba::rgb_u8(0, 51, 102))
+                            .with_luminance(climate.height * 0.5)
+                    }
+                } else if c == ColorKind::Density {
+                    let dens = (cell.density as f32).mul_add(0.0025, -0.05);
+                    let dens = dens.mul_add(0.2, -0.1);
+                    let base = LinearRgba::rgb(0.5 - dens, 0.5, 0.5 + dens);
+                    base.with_luminance(climate.height)
+                } else {
+                    LinearRgba::gray(climate.height)
+                }
+            }
             ColorKind::Temperature => {
-                let rotation =
-                    Vec2::from_angle(temp.mul_add(0.0125, 0.5).clamp(0.0, 1.0) * FRAC_PI_3 * 4.0);
+                let rotation = Vec2::from_angle(
+                    climate.temp.mul_add(0.0125, 0.5).clamp(0.0, 1.0) * FRAC_PI_3 * 4.0,
+                );
                 LinearRgba::rgb(
                     rotation
                         .dot(Vec2::new(-0.5, -SQRT_3 * 0.5))
@@ -1841,21 +1894,33 @@ fn update_texture(
                     rotation.dot(Vec2::X).mul_add(0.5, 0.5),
                 )
             }
-            c @ (ColorKind::Height | ColorKind::Density) => {
-                if ocean && oceans.show {
-                    if temp < 0.0 {
-                        LinearRgba::WHITE
-                    } else {
-                        LinearRgba::from(Srgba::rgb_u8(0, 51, 102)).with_luminance(height * 0.5)
-                    }
-                } else if c == ColorKind::Density {
-                    let dens = (cell.density as f32).mul_add(0.0025, -0.05);
-                    let dens = dens.mul_add(0.2, -0.1);
-                    let base = LinearRgba::rgb(0.5 - dens, 0.5, 0.5 + dens);
-                    base.with_luminance(height)
-                } else {
-                    LinearRgba::gray(height)
-                }
+            ColorKind::Humidity => {
+                let rotation = Vec2::from_angle(
+                    climate.humidity.mul_add(0.1, 0.0).clamp(0.0, 1.0) * FRAC_PI_3 * 4.0,
+                );
+                LinearRgba::rgb(
+                    rotation
+                        .dot(Vec2::new(-0.5, -SQRT_3 * 0.5))
+                        .mul_add(0.5, 0.5),
+                    rotation
+                        .dot(Vec2::new(-0.5, SQRT_3 * 0.5))
+                        .mul_add(0.5, 0.5),
+                    rotation.dot(Vec2::X).mul_add(0.5, 0.5),
+                )
+            }
+            ColorKind::Rainfall => {
+                let rotation = Vec2::from_angle(
+                    climate.rainfall.mul_add(0.1, 0.0).clamp(0.0, 1.0) * FRAC_PI_3 * 4.0,
+                );
+                LinearRgba::rgb(
+                    rotation
+                        .dot(Vec2::new(-0.5, -SQRT_3 * 0.5))
+                        .mul_add(0.5, 0.5),
+                    rotation
+                        .dot(Vec2::new(-0.5, SQRT_3 * 0.5))
+                        .mul_add(0.5, 0.5),
+                    rotation.dot(Vec2::X).mul_add(0.5, 0.5),
+                )
             }
         }
         .as_u32();
