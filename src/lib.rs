@@ -2,6 +2,7 @@
 
 pub mod config;
 pub mod healpix;
+pub mod orbit;
 pub mod storage;
 pub mod terrain;
 pub mod utils;

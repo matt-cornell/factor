@@ -46,7 +46,7 @@ pub struct OrbitConfig {
 }
 
 /// Configuration that's used to create the world.
-#[derive(Debug, Clone, Asset, Reflect, Serialize, Deserialize)]
+#[derive(Debug, Clone, Asset, Resource, Reflect, Serialize, Deserialize)]
 pub struct WorldConfig {
     /// Random seed to use for terrain generation.
     #[serde(with = "crate::utils::option_bytes")]
