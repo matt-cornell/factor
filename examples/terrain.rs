@@ -1804,42 +1804,46 @@ fn update_texture(
                         height,
                         temp: 20.0,
                         humidity: 0.0,
-                        ocean: height < oceans.depth,
                         heat_capacity: 0.0,
                         albedo: 0.0,
                         rainfall: 0.0,
                         wind: Vec2::ZERO,
+                        flags: if height < oceans.depth {
+                            ClimateFlags::OCEAN
+                        } else {
+                            ClimateFlags::NONE
+                        },
                     }
                 }
                 LayerFilter::Tectonics => ClimateCell {
                     height: cell.height.mul_add(0.1, 0.2).clamp(0.0, 1.0),
                     temp: 20.0,
                     humidity: 0.0,
-                    ocean: false,
                     heat_capacity: 0.0,
                     albedo: 0.0,
                     rainfall: 0.0,
                     wind: Vec2::ZERO,
+                    flags: ClimateFlags::NONE,
                 },
                 LayerFilter::AllNoise => ClimateCell {
                     height: noise.0 .0[noise.1 .0[n]],
                     temp: 20.0,
                     humidity: 0.0,
-                    ocean: false,
                     heat_capacity: 0.0,
                     albedo: 0.0,
                     rainfall: 0.0,
                     wind: Vec2::ZERO,
+                    flags: ClimateFlags::NONE,
                 },
                 LayerFilter::NoiseLayer(idx) => ClimateCell {
                     height: noise.2 .0[idx].get_height(x, y),
                     temp: 20.0,
                     humidity: 0.0,
-                    ocean: false,
                     heat_capacity: 0.0,
                     albedo: 0.0,
                     rainfall: 0.0,
                     wind: Vec2::ZERO,
+                    flags: ClimateFlags::NONE,
                 },
             },
             AppState::Climate { .. } => {
@@ -1881,7 +1885,7 @@ fn update_texture(
                 )
             }
             c @ (ColorKind::Height | ColorKind::Density) => {
-                if climate.ocean && oceans.show {
+                if climate.flags.contains(ClimateFlags::OCEAN) && oceans.show {
                     if climate.temp < 0.0 {
                         LinearRgba::WHITE
                     } else {

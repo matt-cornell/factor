@@ -1,5 +1,6 @@
 use crate::healpix;
 use bevy::math::*;
+use bytemuck::*;
 use rand::prelude::*;
 use rand_distr::Normal;
 
@@ -35,16 +36,55 @@ fn saturation_pressure(temp: f32) -> f32 {
     WATER_CRIT_PRESSURE * (WATER_CRIT_TEMPERATURE / t * sum).exp()
 }
 
-#[derive(Debug, Clone, Copy)]
+bitflags::bitflags! {
+    /// Additional flags for each cell. Right now, it's just a single flag for oceans, but it needs to be like this to make `bytemuck` happy.
+    #[derive(Debug, Clone, Copy, Pod, Zeroable)]
+    #[repr(C)]
+    pub struct ClimateFlags: u32 {
+        const NONE = 0b0000;
+        const OCEAN = 0b0001;
+    }
+}
+
+#[derive(Debug, Clone, Copy, Pod, Zeroable)]
+#[repr(C)]
 pub struct ClimateCell {
     pub height: f32,
     pub temp: f32,
     pub humidity: f32,
-    pub ocean: bool,
     pub heat_capacity: f32,
     pub albedo: f32,
     pub rainfall: f32,
     pub wind: Vec2,
+    pub flags: ClimateFlags,
+}
+
+impl redb::Value for ClimateCell {
+    type SelfType<'a> = Self;
+    type AsBytes<'a> = [u8; size_of::<ClimateCell>()];
+    fn as_bytes<'a, 'b: 'a>(value: &'a Self::SelfType<'b>) -> Self::AsBytes<'a>
+    where
+        Self: 'a,
+        Self: 'b,
+    {
+        let mut out = [0u8; size_of::<ClimateCell>()];
+        out.copy_from_slice(bytes_of(value));
+        out
+    }
+    fn from_bytes<'a>(data: &'a [u8]) -> Self::SelfType<'a>
+    where
+        Self: 'a,
+    {
+        let mut this = Self::zeroed();
+        bytes_of_mut(&mut this).copy_from_slice(&data[..size_of::<ClimateCell>()]);
+        this
+    }
+    fn fixed_width() -> Option<usize> {
+        Some(size_of::<ClimateCell>())
+    }
+    fn type_name() -> redb::TypeName {
+        redb::TypeName::new("factor::ClimateCell")
+    }
 }
 
 pub fn init_climate<F: FnMut(u64) -> f32, R: Rng + ?Sized>(
@@ -63,11 +103,11 @@ pub fn init_climate<F: FnMut(u64) -> f32, R: Rng + ?Sized>(
             height: heights(n),
             temp: rng.sample(temp_sample),
             humidity: 0.0,
-            ocean: false,
             heat_capacity: rng.sample(heat_sample).abs(),
             albedo: rng.sample(albedo_sample).abs(),
             wind: Vec2::new(rng.sample(wind_sample), rng.sample(wind_sample)),
             rainfall: 0.0,
+            flags: ClimateFlags::NONE,
         })
         .collect::<Box<_>>();
     let mut sorted = (0..(len as usize)).collect::<Box<_>>();
@@ -78,7 +118,7 @@ pub fn init_climate<F: FnMut(u64) -> f32, R: Rng + ?Sized>(
         cell.humidity = 0.8 * 13.8; // 80% RH
         cell.heat_capacity = WATER_HEAT_CAPACITY;
         cell.albedo = 0.4;
-        cell.ocean = true;
+        cell.flags |= ClimateFlags::OCEAN;
     }
     cells
 }
@@ -202,7 +242,7 @@ pub fn step_climate<F: FnMut(f32, f32) -> f32, R: Rng + ?Sized>(
             let max_humidity = saturation_pressure(cell.temp + 273.15)
                 / (WATER_GAS_CONSTANT * (cell.temp + 273.15))
                 * 100.0;
-            if cell.ocean && cell.humidity < max_humidity {
+            if cell.flags.contains(ClimateFlags::OCEAN) && cell.humidity < max_humidity {
                 cell.humidity += (max_humidity - cell.humidity) * 0.5;
             }
             let humid_diff = (cell.humidity - max_humidity).max(0.0) * 0.05;

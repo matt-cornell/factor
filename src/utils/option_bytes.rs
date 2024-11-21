@@ -1,5 +1,4 @@
-pub mod option_bytes {
-    //! Optional bytes
+//! Optional bytes
     //!
     //! Taken from `hex::serde`, but adapted to use `Option<T>`.
     use hex::{FromHex, ToHex};
@@ -62,4 +61,3 @@ pub mod option_bytes {
 
         deserializer.deserialize_str(HexStrVisitor(PhantomData))
     }
-}

@@ -4,9 +4,12 @@ use super::tectonic::*;
 use crate::config::*;
 use crate::healpix;
 use crate::orbit::*;
+use crate::utils::database::*;
 use bevy::prelude::*;
 use rand::prelude::*;
 use rand_xoshiro::Xoshiro256PlusPlus as RandSource;
+
+const TERRAIN_TABLE: TableDefinition<u64, ClimateCell> = TableDefinition::new("terrain");
 
 #[derive(Debug, Clone)]
 enum ValueOrGradient {
@@ -45,6 +48,7 @@ pub fn setup_terrain(
         (&mut Transform, &mut PlanetSurface, &GlobalTransform),
         Without<PlanetCenter>,
     >,
+    database: Option<Res<Database>>,
 ) {
     let seed = *config.seed.get_or_insert_with(|| thread_rng().gen());
     let config = Res::from(config);
@@ -139,6 +143,40 @@ pub fn setup_terrain(
     let avg_temp = tot_temp / l as f32;
     let avg_rain = tot_rain / l as f32;
     let avg_wind = tot_wind / l as f32;
+    if let Some(db) = database {
+        match db.begin_write() {
+            Ok(txn) => {
+                let erred = match txn.open_table(TERRAIN_TABLE) {
+                    Ok(mut table) => 'save: {
+                        for (n, cell) in cells.iter().enumerate() {
+                            if let Err(err) = table.insert(n as u64, cell) {
+                                error!(%err, hash = n, "Error saving cell to table");
+                                break 'save true;
+                            }
+                        }
+                        false
+                    }
+                    Err(err) => {
+                        error!(%err, "Error opening terrain table");
+                        true
+                    }
+                };
+                #[allow(clippy::collapsible_else_if)]
+                if erred {
+                    if let Err(err) = txn.abort() {
+                        error!(%err, "Subsequent error on rollback");
+                    }
+                } else {
+                    if let Err(err) = txn.commit() {
+                        error!(%err, "Error committing save");
+                    }
+                }
+            }
+            Err(err) => {
+                error!(%err, "Error starting transaction");
+            }
+        }
+    }
     commands.insert_resource(ClimateData {
         depth: climate_depth,
         cells,
@@ -154,6 +192,7 @@ pub fn setup_terrain(
 }
 
 pub fn update_climate(
+    database: Option<Res<Database>>,
     mut climate: ResMut<ClimateData>,
     config: Res<WorldConfig>,
     planet: Query<&GlobalTransform, With<PlanetSurface>>,
@@ -196,4 +235,38 @@ pub fn update_climate(
     climate.avg_wind = tot_wind / l as f32;
     climate.max_rain = max_rain;
     climate.max_wind = max_wind;
+    if let Some(db) = database {
+        match db.begin_write() {
+            Ok(txn) => {
+                let erred = match txn.open_table(TERRAIN_TABLE) {
+                    Ok(mut table) => 'save: {
+                        for (n, cell) in climate.cells.iter().enumerate() {
+                            if let Err(err) = table.insert(n as u64, cell) {
+                                error!(%err, hash = n, "Error saving cell to table");
+                                break 'save true;
+                            }
+                        }
+                        false
+                    }
+                    Err(err) => {
+                        error!(%err, "Error opening terrain table");
+                        true
+                    }
+                };
+                #[allow(clippy::collapsible_else_if)]
+                if erred {
+                    if let Err(err) = txn.abort() {
+                        error!(%err, "Subsequent error on rollback");
+                    }
+                } else {
+                    if let Err(err) = txn.commit() {
+                        error!(%err, "Error committing save");
+                    }
+                }
+            }
+            Err(err) => {
+                error!(%err, "Error starting transaction");
+            }
+        }
+    }
 }
