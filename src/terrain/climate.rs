@@ -210,8 +210,8 @@ pub fn step_climate<F: FnMut(f32, f32) -> f32, R: Rng + ?Sized>(
             cell.rainfall *= 0.09;
             cell.rainfall += humid_diff * 0.8;
             cell.rainfall += cell.humidity
-                * 0.05
-                * f32::from(rng.gen_bool((cell.humidity as f64 * 0.05).clamp(0.0, 1.0)));
+                * 0.1
+                * f32::from(rng.gen_bool((cell.humidity as f64 * 0.1).clamp(0.0, 1.0)));
             cell.humidity = cell.humidity.clamp(0.0, 200.0);
             cell.temp = cell.temp.clamp(-50.0, 50.0);
         }
