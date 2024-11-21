@@ -1,0 +1,63 @@
+[oceans]
+depth = 0.6
+show = true
+
+[orbit]
+distance = 300.0
+year_length = 120.0
+day_length = 2.0
+axial_tilt = 0.6
+
+[climate]
+time_scale = 1.5
+intensity = 6000
+
+[tectonic]
+scale = 1.0
+depth = 5
+steps = 50
+
+[noise]
+depth = 6
+
+[[noise.layer]]
+gradient = false
+depth = 1
+shift = 0.0
+scale = 0.090
+
+[[noise.layer]]
+gradient = false
+depth = 1
+shift = 0.100
+scale = 0.090
+
+[[noise.layer]]
+gradient = false
+depth = 2
+shift = 0.200
+scale = 0.177
+
+[[noise.layer]]
+gradient = false
+depth = 2
+shift = 0.300
+scale = 0.177
+
+[[noise.layer]]
+gradient = false
+depth = 3
+shift = 0.5
+scale = 0.030
+
+[[noise.layer]]
+gradient = false
+depth = 3
+shift = 0.700
+scale = 0.030
+
+[[noise.layer]]
+gradient = true
+depth = 5
+shift = 0.0
+scale = 0.006
