@@ -32,6 +32,22 @@ pub struct TectonicConfig {
     pub depth: u8,
     /// Number of steps to use for the simulation. Generally between 50-200 works well.
     pub steps: u16,
+    /// Amount to scale tectonic depth by.
+    pub scale: f32,
+}
+
+/// Parameters for the climate simulation
+#[derive(Debug, Clone, Copy, Reflect, Serialize, Deserialize)]
+pub struct ClimateConfig {
+    /// HEALPix depth for the climate
+    pub depth: u8,
+    /// Intensity of the sunlight- 6000 works well for this
+    pub intensity: f32,
+    /// Initial number of steps.
+    pub init_steps: u16,
+    /// Time step to be used in the simulation.
+    /// Relates orbital parameters to thermal ones.
+    pub time_step: f32,
 }
 
 /// Parameters for the planet's orbit.
@@ -53,6 +69,8 @@ pub struct WorldConfig {
     pub seed: Option<[u8; 32]>,
     /// See [`OrbitConifg`].
     pub orbit: OrbitConfig,
+    /// See [`ClimateConfig`].
+    pub climate: ClimateConfig,
     /// See [`TectonicConfig`].
     pub tectonics: TectonicConfig,
     /// See [`NoiseConfig`].

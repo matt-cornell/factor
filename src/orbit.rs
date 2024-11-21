@@ -5,35 +5,35 @@ use crate::config::WorldConfig;
 /// Marker component for the center of the planet.
 ///
 /// This transform won't have its rotation updated, only its position.
-#[derive(Debug, Clone, Copy, Component)]
+#[derive(Debug, Default, Clone, Copy, Component)]
 pub struct PlanetCenter;
 
 /// Marker component for the planet.
 ///
 /// This is expected to be a child of a [`PlanetCenter`], and so only its rotation is updated.
-#[derive(Debug, Clone, Copy, Component)]
-pub struct PlanetSurface;
+#[derive(Debug, Default, Clone, Copy, Component)]
+pub struct PlanetSurface {
+    pub last_tilt: f32,
+}
 
 /// System to update the transforms of the planets.
 pub fn update_planet_transforms(
+    In(delta): In<f32>,
     mut center: Query<&mut Transform, With<PlanetCenter>>,
-    mut planet: Query<&mut Transform, (With<PlanetSurface>, Without<PlanetCenter>)>,
-    time: Res<Time>,
+    mut planet: Query<(&mut Transform, &mut PlanetSurface), Without<PlanetCenter>>,
     params: Res<WorldConfig>,
-    mut last_tilt: Local<f32>,
 ) {
     use std::f32::consts::TAU;
-    let delta = time.delta_seconds();
     for mut center in center.iter_mut() {
         center.translation = Quat::from_rotation_z(delta / params.orbit.year_length * TAU)
             .mul_vec3(center.translation);
     }
-    for mut planet in planet.iter_mut() {
-        planet.rotation = Quat::from_rotation_y(params.orbit.obliquity - *last_tilt)
+    for (mut planet, mut surface) in planet.iter_mut() {
+        planet.rotation = Quat::from_rotation_y(params.orbit.obliquity - surface.last_tilt)
             * planet.rotation
             * Quat::from_rotation_z(delta / params.orbit.day_length * TAU);
+        surface.last_tilt = params.orbit.obliquity;
     }
-    *last_tilt = params.orbit.obliquity;
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -53,7 +53,7 @@ impl Plugin for OrbitPlugin {
         if let Some(dist) = self.setup_planets {
             let surface = app
                 .world_mut()
-                .spawn((TransformBundle::default(), PlanetSurface))
+                .spawn((TransformBundle::default(), PlanetSurface::default()))
                 .id();
             app.world_mut()
                 .spawn((
@@ -65,6 +65,9 @@ impl Plugin for OrbitPlugin {
                 ))
                 .add_child(surface);
         }
-        app.add_systems(Update, update_planet_transforms);
+        app.add_systems(
+            Update,
+            (|time: Res<Time<Virtual>>| time.delta_seconds()).pipe(update_planet_transforms),
+        );
     }
 }
