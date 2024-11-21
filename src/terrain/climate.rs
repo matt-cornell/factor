@@ -87,8 +87,10 @@ pub fn step_climate<F: FnMut(f32, f32) -> f32, R: Rng + ?Sized>(
     cells: &mut [ClimateCell],
     mut solar_intensity: F,
     time_scale: f32,
-    _rng: &mut R,
+    rng: &mut R,
 ) {
+    let temp_sample = Normal::new(0.0f32, 2.0).unwrap();
+    let humid_sample = Normal::new(0.0f32, 0.1).unwrap();
     let depth = {
         let per_square = cells.len() as u32 / 12;
         debug_assert_eq!(per_square.count_ones(), 1);
@@ -144,8 +146,10 @@ pub fn step_climate<F: FnMut(f32, f32) -> f32, R: Rng + ?Sized>(
                         let cell = &mut cells[i];
                         cell.temp *= 1.0 - scale * 0.5 * k;
                         cell.temp += temp * scale * 0.5 * k;
-                        cell.humidity *= 1.0 - scale * 0.5 * k;
-                        cell.humidity += humid * scale * 0.5 * k;
+                        cell.temp += rng.sample(temp_sample).max(-cell.temp);
+                        cell.humidity *= 1.0 - scale * k;
+                        cell.humidity += humid * scale * k;
+                        cell.humidity *= rng.sample(humid_sample).max(-cell.humidity).exp();
                     }
                 }
             }
@@ -164,6 +168,7 @@ pub fn step_climate<F: FnMut(f32, f32) -> f32, R: Rng + ?Sized>(
             let neighbors = healpix::neighbors(depth, i as _);
             let mut cum_temp = 0.0;
             let mut cum_humid = 0.0;
+            let mut cum_rain = 0.0;
             let mut cum_wind = Vec2::ZERO;
             let (clon, clat) = layer.center(i as _);
             let (clon, clat) = (clon as f32, clat as f32);
@@ -173,6 +178,7 @@ pub fn step_climate<F: FnMut(f32, f32) -> f32, R: Rng + ?Sized>(
                 let cell = &old[n as usize];
                 cum_temp += cell.temp;
                 cum_humid += cell.humidity;
+                cum_rain += cell.rainfall;
                 let pressure_diff = base_pressure - cell.temp;
                 let (lon, lat) = layer.center(n);
                 let (lon, lat) = (lon as f32, lat as f32);
@@ -183,13 +189,16 @@ pub fn step_climate<F: FnMut(f32, f32) -> f32, R: Rng + ?Sized>(
             }
             cum_temp /= neighbors.len() as f32;
             cum_humid /= neighbors.len() as f32;
+            cum_rain /= neighbors.len() as f32;
             assert_ne!(neighbors.len(), 0);
             cell.temp *= 1.0 - scale;
             cell.temp += cum_temp * scale;
-            cell.humidity *= 1.0 - scale;
-            cell.humidity += cum_humid * scale;
+            cell.humidity *= 1.0 - scale * 0.1;
+            cell.humidity += cum_humid * scale * 0.1;
             cell.wind *= 1.0 - scale;
             cell.wind += cum_wind * scale;
+            cell.rainfall *= 1.0 - scale * 0.5;
+            cell.rainfall += cum_rain * scale * 0.5;
             let max_humidity = saturation_pressure(cell.temp + 273.15)
                 / (WATER_GAS_CONSTANT * (cell.temp + 273.15))
                 * 100.0;
@@ -199,8 +208,10 @@ pub fn step_climate<F: FnMut(f32, f32) -> f32, R: Rng + ?Sized>(
             let humid_diff = (cell.humidity - max_humidity).max(0.0) * 0.05;
             cell.humidity -= humid_diff;
             cell.rainfall *= 0.09;
-            cell.rainfall += humid_diff * 0.9;
-            cell.rainfall += cell.humidity * 0.01;
+            cell.rainfall += humid_diff * 0.8;
+            cell.rainfall += cell.humidity
+                * 0.05
+                * f32::from(rng.gen_bool((cell.humidity as f64 * 0.05).clamp(0.0, 1.0)));
             cell.humidity = cell.humidity.clamp(0.0, 200.0);
             cell.temp = cell.temp.clamp(-50.0, 50.0);
         }
