@@ -37,3 +37,16 @@ etcetera = "0.8.0"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2.162"
+
+[profile.dev.package.'*']
+opt-level = 3
+
+[profile.release]
+lto = true
+opt-level = 3
+codegen-units = 1
+incremental = false
+debug = false
+
+[target.wasm32-unknown-unknown.profile.release]
+opt-level = "z"
