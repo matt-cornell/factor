@@ -764,7 +764,7 @@ fn update_ui(
                     ui.selectable_value(r, ColorKind::Intensity, "Intensity");
                     if matches!(**state, AppState::Climate { .. }) {
                         ui.selectable_value(r, ColorKind::Temperature, "Temperature");
-                        ui.selectable_value(r, ColorKind::Humidity, "Humidty");
+                        ui.selectable_value(r, ColorKind::Humidity, "Humidity");
                         ui.selectable_value(r, ColorKind::Rainfall, "Rainfall");
                     }
                 });
