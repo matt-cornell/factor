@@ -1,5 +1,5 @@
-use crate::healpix;
 use bevy::math::Vec2;
+use factor_common::healpix;
 use rand::distributions::Standard;
 use rand::prelude::*;
 use rand_distr::{Normal, StandardNormal};

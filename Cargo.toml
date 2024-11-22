@@ -1,42 +1,31 @@
 [package]
 name = "factor"
-version = "0.1.0"
+version.workspace = true
+edition.workspace = true
+
+[workspace]
+members = ["common", "client", "server"]
+
+[workspace.package]
 edition = "2021"
+version = "0.1.0"
 
 [dependencies]
-base64 = "0.22.1"
+factor-common.workspace = true
+factor-client.path = "client/"
+factor-server.path = "server/"
+
+[workspace.dependencies]
+factor-common.path = "common/"
+
 bevy = "0.14.2"
-bevy_egui = { version = "0.30.0", default-features = false, features = ["default_fonts", "render"] }
-bitflags = { version = "2.6.0", features = ["bytemuck"] }
 bytemuck = { version = "1.19.0", features = ["derive", "extern_crate_std"] }
 cdshealpix = "0.7.0"
 hex = { version = "0.4.3", features = ["serde"] }
 itertools = "0.13.0"
-once_map = { version = "0.4.21", features = ["serde"] }
-ordered-float = "4.5.0"
-rand = "0.8.5"
-rand_distr = "0.4.3"
-rand_xoshiro = "0.6.0"
-redb = { version = "2.2.0", features = ["logging"] }
 serde = { version = "1.0.214", features = ["derive"] }
 thiserror = "2.0.3"
 thread_local = { version = "1.1.8", features = ["nightly"] }
-tinyset = "0.5.1"
-toml = "0.8.19"
-
-[dev-dependencies]
-rfd = "0.15.0"
-
-[target.'cfg(target_family = "wasm")'.dependencies]
-wasm-bindgen = "0.2.95"
-web-sys = { version = "0.3.72", features = ["console", "Document", "Storage", "Window"] }
-web-time = "1.1.0"
-
-[target.'cfg(not(target_family = "wasm"))'.dependencies]
-etcetera = "0.8.0"
-
-[target.'cfg(unix)'.dependencies]
-libc = "0.2.162"
 
 [profile.dev.package.'*']
 opt-level = 3
@@ -47,6 +36,3 @@ opt-level = 3
 codegen-units = 1
 incremental = false
 debug = false
-
-[target.wasm32-unknown-unknown.profile.release]
-opt-level = "z"

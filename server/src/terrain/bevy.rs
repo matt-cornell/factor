@@ -2,10 +2,10 @@ use super::climate::*;
 use super::noise::*;
 use super::tectonic::*;
 use crate::config::*;
-use crate::healpix;
 use crate::orbit::*;
 use crate::utils::database::*;
 use bevy::prelude::*;
+use factor_common::healpix;
 use rand::prelude::*;
 use rand_xoshiro::Xoshiro256PlusPlus as RandSource;
 

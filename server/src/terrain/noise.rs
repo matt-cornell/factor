@@ -1,6 +1,6 @@
-use crate::healpix;
 use bevy::math::Vec2;
 use bevy::utils::HashMap;
+use factor_common::healpix;
 use ordered_float::OrderedFloat;
 use std::f64::consts::{FRAC_PI_2, TAU};
 use std::sync::{Mutex, PoisonError};

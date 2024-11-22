@@ -5,7 +5,7 @@ on:
     branches: ["main"]
 
 env:
-  examples: terrain
+  server-examples: terrain
   CARGO_TERM_COLOR: always
 
 jobs:
@@ -20,12 +20,12 @@ jobs:
         uses: Swatinem/rust-cache@v2
       - name: Install wasm-bindgen
         run: cargo install wasm-bindgen-cli
-      - name: Build examples
-        run: cargo build --target wasm32-unknown-unknown --release $(echo $examples | sed 's/[^ ]* */--example &/g')
+      - name: Build server examples
+        run: cargo build --target wasm32-unknown-unknown --release -p factor-server $(echo $server-examples | sed 's/[^ ]* */--example &/g')
       - name: Create bindings
         run: |
           mkdir -p static-deployment/examples/
-          for name in $examples; do
+          for name in $server-examples; do
             wasm-bindgen --no-typescript --target no-modules --out-dir static-deployment/examples target/wasm32-unknown-unknown/release/examples/$name.wasm
             cp static-deployment/_base_example.html static-deployment/examples/$name.html
           done

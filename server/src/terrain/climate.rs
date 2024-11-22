@@ -1,6 +1,6 @@
-use crate::healpix;
 use bevy::math::*;
 use bytemuck::*;
+use factor_common::healpix;
 use rand::prelude::*;
 use rand_distr::Normal;
 

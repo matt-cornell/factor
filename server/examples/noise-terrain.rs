@@ -4,7 +4,8 @@ use bevy::render::render_asset::RenderAssetUsages;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use bevy::window::PrimaryWindow;
 use bevy_egui::{egui, EguiContexts, EguiPlugin};
-use factor::terrain::noise::*;
+use factor_common::healpix;
+use factor_server::terrain::noise::*;
 use rand::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::f32::consts::*;
@@ -83,7 +84,7 @@ fn cell_noise(gradient: bool, depth: u8, shift: f32) -> Shifted<ValueOrGradient>
             hasher: thread_rng()
                 .sample_iter(rand_distr::UnitCircle)
                 .map(|[x, y]| Vec2::new(x, y))
-                .take(factor::healpix::n_hash(depth) as _)
+                .take(healpix::n_hash(depth) as _)
                 .collect::<Box<[Vec2]>>(),
             scale: linear,
         })
@@ -92,7 +93,7 @@ fn cell_noise(gradient: bool, depth: u8, shift: f32) -> Shifted<ValueOrGradient>
             depth,
             hasher: thread_rng()
                 .sample_iter(rand_distr::Standard)
-                .take(factor::healpix::n_hash(depth) as _)
+                .take(healpix::n_hash(depth) as _)
                 .collect::<Box<[f32]>>(),
             scale: linear,
         })

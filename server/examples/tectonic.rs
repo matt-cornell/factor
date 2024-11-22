@@ -5,7 +5,7 @@ use bevy::render::render_asset::RenderAssetUsages;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use bevy::render::view::RenderLayers;
 use bevy::window::WindowResized;
-use factor::terrain::tectonic::*;
+use factor_server::terrain::tectonic::*;
 use rand::prelude::*;
 use std::f32::consts::*;
 

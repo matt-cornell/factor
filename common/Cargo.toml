@@ -1,0 +1,7 @@
+[package]
+name = "factor-common"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+cdshealpix.workspace = true
