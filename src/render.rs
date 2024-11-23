@@ -50,19 +50,21 @@ pub fn render_select_sp(
             ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
                 ui.heading("Singleplayer");
             });
-
-            ui.with_layout(egui::Layout::left_to_right(egui::Align::Min).with_main_justify(true), |ui| {
-                ui.add(egui::TextEdit::singleline(&mut *search).desired_width(f32::INFINITY));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+                if ui.button("Exit").clicked() {
+                    next_state.set(SingleplayerState::Base(ClientState::MainMenu));
+                }
                 if ui.button("New World").clicked() {
                     next_state.set(SingleplayerState::WorldCreation(Some(std::mem::take(&mut *search))));
                 }
+                ui.add(egui::TextEdit::singleline(&mut *search).desired_width(f32::INFINITY));
             });
 
             {
                 let mut prep = egui::Frame::group(ui.style()).begin(ui);
                 {
                     let ui = &mut prep.content_ui;
-                    ui.set_width(500.0);
+                    ui.set_width(ui.max_rect().width());
                     ui.label(egui::RichText::new("Temporary World").size(14.0));
                     ui.label("This world will no longer exist after you close it. For testing/demo purposes only!");
                 }
@@ -82,77 +84,82 @@ pub fn render_select_sp(
                         continue;
                     };
                     any = true;
-                    let mut prep = egui::Frame::group(ui.style()).begin(ui);
-                    {
-                        let ui = &mut prep.content_ui;
-                        ui.set_width(500.0);
-                        let mut layout = egui::text::LayoutJob::single_section(
-                            world[..idx].to_string(),
-                            egui::TextFormat {
-                                font_id: egui::FontId::proportional(14.0),
-                                ..default()
-                            },
-                        );
-                        layout.append(
-                            &world[idx..(idx + search.len())],
-                            0.0,
-                            egui::TextFormat {
-                                font_id: egui::FontId::proportional(14.0),
-                                background: egui::Color32::YELLOW,
-                                ..default()
-                            },
-                        );
-                        layout.append(
-                            &world[(idx + search.len())..],
-                            0.0,
-                            egui::TextFormat {
-                                font_id: egui::FontId::proportional(14.0),
-                                ..default()
-                            },
-                        );
-                        ui.label(layout);
-                        
-                        let popup_id = egui::Id::new(("close-popup", &world));
-                        
-                        let delete_res = ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
-                            let res = ui.button("Delete");
-                            if res.clicked() {
-                                ui.memory_mut(|mem| mem.open_popup(popup_id));
-                            }
-                            res
-                        });
-                        egui::popup_above_or_below_widget(ui, popup_id, &delete_res.inner, egui::AboveOrBelow::Below, egui::PopupCloseBehavior::CloseOnClickOutside, |ui| {
-                            ui.label(format!("Delete world {world:?}?"));
-                            if ui.button("Confirm").clicked() {
-                                if let Err(err) = PersistentBackend::delete_save(world) {
-                                    *erred = Some(DatabaseError::Storage(StorageError::Io(err)));
+                    let res = ui.scope(|ui| {
+                        let mut prep = egui::Frame::group(ui.style()).begin(ui);
+                        let mut click_inside = false;
+                        {
+                            let ui = &mut prep.content_ui;
+                            ui.set_width(ui.max_rect().width());
+                            let mut layout = egui::text::LayoutJob::single_section(
+                                world[..idx].to_string(),
+                                egui::TextFormat {
+                                    font_id: egui::FontId::proportional(14.0),
+                                    ..default()
+                                },
+                            );
+                            layout.append(
+                                &world[idx..(idx + search.len())],
+                                0.0,
+                                egui::TextFormat {
+                                    font_id: egui::FontId::proportional(14.0),
+                                    background: egui::Color32::YELLOW,
+                                    ..default()
+                                },
+                            );
+                            layout.append(
+                                &world[(idx + search.len())..],
+                                0.0,
+                                egui::TextFormat {
+                                    font_id: egui::FontId::proportional(14.0),
+                                    ..default()
+                                },
+                            );
+                            ui.label(layout);
+                            let popup_id = egui::Id::new(("close-popup", &world));
+                            let delete_res = ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+                                let res = ui.button("Delete");
+                                if res.clicked() {
+                                    ui.memory_mut(|mem| mem.open_popup(popup_id));
                                 }
-                                *needs_tick = true;
-                                ui.memory_mut(|mem| mem.close_popup());
-                            }
-                            if ui.button("Cancel").clicked() {
-                                ui.memory_mut(|mem| mem.close_popup());
-                            }
-                        });
-
-                        if let Some(err) = erred {
-                            prep.frame.fill = if ui.style().visuals.dark_mode {
-                                egui::Color32::DARK_RED
-                            } else {
-                                egui::Color32::RED
-                            };
-                            ui.label(format!("Error: {err}"));
-                        }
-                    }
-                    if prep.allocate_space(ui).hovered() {
-                        prep.frame.stroke.color =
-                            egui::Color32::from_gray(if ui.style().visuals.dark_mode {
-                                240
-                            } else {
-                                16
+                                res
                             });
-                    }
-                    if prep.end(ui).interact(egui::Sense::click()).clicked() {
+                            egui::popup_above_or_below_widget(ui, popup_id, &delete_res.inner, egui::AboveOrBelow::Below, egui::PopupCloseBehavior::CloseOnClickOutside, |ui| {
+                                ui.set_min_width(100.0);
+                                ui.label(format!("Delete world {world:?}?"));
+                                if ui.button("Confirm").clicked() {
+                                    if let Err(err) = PersistentBackend::delete_save(world) {
+                                        *erred = Some(DatabaseError::Storage(StorageError::Io(err)));
+                                    }
+                                    *needs_tick = true;
+                                    click_inside = true;
+                                    ui.memory_mut(|mem| mem.close_popup());
+                                }
+                                if ui.button("Cancel").clicked() {
+                                    click_inside = true;
+                                    ui.memory_mut(|mem| mem.close_popup());
+                                }
+                            });
+
+                            if let Some(err) = erred {
+                                prep.frame.fill = if ui.style().visuals.dark_mode {
+                                    egui::Color32::DARK_RED
+                                } else {
+                                    egui::Color32::RED
+                                };
+                                ui.label(format!("Error: {err}"));
+                            }
+                        }
+                        if prep.allocate_space(ui).hovered() {
+                            prep.frame.stroke.color =
+                                egui::Color32::from_gray(if ui.style().visuals.dark_mode {
+                                    240
+                                } else {
+                                    16
+                                });
+                        }
+                        prep.end(ui);
+                    });
+                    if res.response.interact(egui::Sense::click()).clicked() {
                         info!(name = world, "Loading world");
                         match Database::persistent(world.clone()) {
                             Ok(db) => {
