@@ -5,7 +5,7 @@ use bevy_egui::{egui, EguiContexts};
 use factor_client::core_ui::ClientState;
 use factor_server::config::WorldConfig;
 use factor_server::storage::PersistentBackend;
-use factor_server::utils::database::{Database, DatabaseError};
+use factor_server::utils::database::{Database, DatabaseError, StorageError};
 use std::time::Duration;
 
 pub fn render_select_sp(
@@ -124,7 +124,10 @@ pub fn render_select_sp(
                         egui::popup_above_or_below_widget(ui, popup_id, &delete_res.inner, egui::AboveOrBelow::Below, egui::PopupCloseBehavior::CloseOnClickOutside, |ui| {
                             ui.label(format!("Delete world {world:?}?"));
                             if ui.button("Confirm").clicked() {
-                                PersistentBackend::delete_save(world);
+                                if let Err(err) = PersistentBackend::delete_save(world) {
+                                    *erred = Some(DatabaseError::Storage(StorageError::Io(err)));
+                                }
+                                *needs_tick = true;
                                 ui.memory_mut(|mem| mem.close_popup());
                             }
                             if ui.button("Cancel").clicked() {
