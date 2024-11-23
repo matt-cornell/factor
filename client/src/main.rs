@@ -5,7 +5,7 @@ fn main() {
     App::new()
         .add_plugins(DefaultPlugins)
         .add_plugins(ClientPlugin {
-            can_use_singleplayer: true,
+            can_use_singleplayer: false,
         })
         .run();
 }
