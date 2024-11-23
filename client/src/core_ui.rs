@@ -1,51 +1,55 @@
 use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts};
-
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, States)]
-pub enum BaseClientState {
-    #[default]
-    MainMenu,
-    RunningSP,
-    RunningMP,
-}
-impl From<BaseClientState> for ClientState {
-    fn from(value: BaseClientState) -> Self {
-        match value {
-            BaseClientState::MainMenu => ClientState::MainMenu,
-            BaseClientState::RunningSP => ClientState::RunningSP,
-            BaseClientState::RunningMP => ClientState::RunningMP,
-        }
-    }
-}
+use std::ops::Deref;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, States)]
 pub enum ClientState {
+    /// Main menu. This is where we start.
     #[default]
     MainMenu,
+    /// Singleplayer selection.
+    ///
+    /// This crate doesn't have any special handling for it, as that's expected to be handled in the combined crate. Still, we need this so we can transition to this state.
     SPSelect,
+    /// Multiplayer selection screen.
     MPSelect,
-    Settings(BaseClientState),
-    Paused(BaseClientState),
-    RunningSP,
-    RunningMP,
+    /// Settings screen.
+    Settings,
+    /// A paused game.
+    ///
+    /// Whether or not the world is still running depends on the server implementation, but that's not our problem.
+    Paused,
+    /// The world is loading.
+    WorldLoading,
+    /// Actually in the game now, showing the world.
+    Running,
+    /// Some other state to be handled by someone else.
+    ///
+    /// The string is a marker that can be used for other, more advanced states to determine if their state is active.
+    Other(&'static str),
 }
 
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, SubStates)]
-#[source(ClientState = ClientState::RunningSP | ClientState::RunningMP)]
-pub struct RunningGame;
+/// Stores the last state for the `ClientState`.
+///
+/// This is useful for "back" buttons.
+#[derive(Debug, PartialEq, Eq, Hash, Resource)]
+pub struct LastState(pub(crate) ClientState);
+impl Deref for LastState {
+    type Target = ClientState;
 
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, SubStates)]
-#[source(ClientState = ClientState::Paused(_))]
-pub struct Paused;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
 
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, SubStates)]
-#[source(ClientState = ClientState::Settings(_))]
-pub struct InSettings;
+pub fn track_state_changes(state: Res<State<ClientState>>, mut last_state: ResMut<LastState>) {
+    last_state.0 = **state;
+}
 
 pub fn render_main_menu(
     mut contexts: EguiContexts,
-    mut state: ResMut<NextState<ClientState>>,
-    config: Res<super::ClientPlugin>,
+    mut next_state: ResMut<NextState<ClientState>>,
+    config: Res<crate::ClientPlugin>,
 ) {
     egui::Area::new(egui::Id::new("Main Menu"))
         .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
@@ -61,17 +65,35 @@ pub fn render_main_menu(
                 )
                 .clicked()
             {
-                state.set(ClientState::SPSelect);
+                next_state.set(ClientState::SPSelect);
             }
             if ui
                 .add_enabled(false, egui::Button::new("Multiplayer"))
                 .on_disabled_hover_text("Multiplayer is planned, but not implemented yet :(")
                 .clicked()
             {
-                state.set(ClientState::MPSelect);
+                next_state.set(ClientState::MPSelect);
             }
             if ui.button("Settings").clicked() {
-                state.set(ClientState::Settings(BaseClientState::MainMenu));
+                next_state.set(ClientState::Settings);
+            }
+        });
+}
+
+pub fn render_settings(
+    mut contexts: EguiContexts,
+    last_state: Res<LastState>,
+    mut next_state: ResMut<NextState<ClientState>>,
+) {
+    egui::Area::new(egui::Id::new("Settings"))
+        .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+        .show(contexts.ctx_mut(), |ui| {
+            ui.heading("Settings");
+
+            ui.label("No settings here yet, check back later!");
+
+            if ui.button("Back").clicked() {
+                next_state.set(**last_state);
             }
         });
 }

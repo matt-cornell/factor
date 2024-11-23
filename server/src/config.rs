@@ -44,9 +44,11 @@ pub struct ClimateConfig {
     /// Intensity of the sunlight- 6000 works well for this
     pub intensity: f32,
     /// Initial number of steps.
+    #[serde(alias = "init-steps")]
     pub init_steps: u16,
     /// Time step to be used in the simulation.
     /// Relates orbital parameters to thermal ones.
+    #[serde(rename = "time-step")]
     pub time_step: f32,
 }
 
@@ -54,10 +56,13 @@ pub struct ClimateConfig {
 #[derive(Debug, Clone, Copy, Reflect, Serialize, Deserialize)]
 pub struct OrbitConfig {
     /// Length of a day in seconds.
+    #[serde(alias = "day-length")]
     pub day_length: f32,
     /// Length of a year in seconds.
+    #[serde(alias = "year-length")]
     pub year_length: f32,
     /// Orbital obliquity in radians.
+    #[serde(alias = "axial-tilt", alias = "axial_tilt", alias = "tilt")]
     pub obliquity: f32,
 }
 
@@ -65,7 +70,7 @@ pub struct OrbitConfig {
 #[derive(Debug, Clone, Asset, Resource, Reflect, Serialize, Deserialize)]
 pub struct WorldConfig {
     /// Random seed to use for terrain generation.
-    #[serde(with = "crate::utils::option_bytes")]
+    #[serde(default, with = "crate::utils::option_bytes")]
     pub seed: Option<[u8; 32]>,
     /// See [`OrbitConifg`].
     pub orbit: OrbitConfig,
@@ -77,7 +82,15 @@ pub struct WorldConfig {
     pub noise: NoiseConfig,
 }
 
-#[derive(Debug, Clone, Copy)]
+static DEFAULT_CONFIG_FILE: &str = include_str!("default-config.toml");
+
+impl Default for WorldConfig {
+    fn default() -> Self {
+        toml::from_str(DEFAULT_CONFIG_FILE).unwrap()
+    }
+}
+
+#[derive(Debug, Default, Clone, Copy)]
 pub struct WorldConfigLoader;
 impl AssetLoader for WorldConfigLoader {
     type Asset = WorldConfig;

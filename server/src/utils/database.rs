@@ -23,7 +23,8 @@ impl Database {
     pub fn persistent(name: String) -> Result<Self, DatabaseError> {
         Ok(Self {
             inner: InnerDatabase::builder()
-                .create_with_backend(crate::storage::PersistentBackend::new(name)?)?,
+                .create_with_backend(crate::storage::PersistentBackend::new(name)?)
+                .inspect_err(|err| bevy::log::error!(%err, "Error opening database"))?,
         })
     }
     /// Get the inner database.

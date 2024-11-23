@@ -1,4 +1,3 @@
-#![allow(clippy::too_many_arguments)]
 use bevy::prelude::*;
 use bevy::render::camera::Viewport;
 use bevy::render::render_asset::RenderAssetUsages;

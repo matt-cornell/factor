@@ -5,3 +5,6 @@ edition.workspace = true
 
 [dependencies]
 cdshealpix.workspace = true
+
+[lints]
+workspace = true

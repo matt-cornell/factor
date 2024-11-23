@@ -48,8 +48,9 @@ impl PersistentBackend {
         saves.add_extension("redb");
         let res = fs::OpenOptions::new()
             .read(true)
-            .append(true)
+            .write(true)
             .create(true)
+            .truncate(false)
             .open(saves);
         match res {
             Ok(file) => match FileBackend::new(file) {
