@@ -4,6 +4,7 @@ use core_ui::*;
 use std::sync::{Arc, OnceLock};
 
 pub mod core_ui;
+pub mod net;
 
 #[derive(Debug, Clone, Resource)]
 pub struct ClientPlugin {
