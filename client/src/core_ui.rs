@@ -2,6 +2,8 @@ use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts};
 use std::ops::Deref;
 
+use crate::ClientPlugin;
+
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, States)]
 pub enum ClientState {
     /// Main menu. This is where we start.
@@ -50,50 +52,75 @@ pub fn render_main_menu(
     mut contexts: EguiContexts,
     mut next_state: ResMut<NextState<ClientState>>,
     config: Res<crate::ClientPlugin>,
+    mut exit: EventWriter<AppExit>,
 ) {
     egui::Area::new(egui::Id::new("Main Menu"))
         .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
         .show(contexts.ctx_mut(), |ui| {
-            ui.heading("Factor");
-            if ui
-                .add_enabled(
-                    config.can_use_singleplayer,
-                    egui::Button::new("Singleplayer"),
-                )
-                .on_disabled_hover_text(
-                    "Singleplayer worlds are not supported here! Try using a different build.",
-                )
-                .clicked()
-            {
-                next_state.set(ClientState::SPSelect);
-            }
-            if ui
-                .add_enabled(false, egui::Button::new("Multiplayer"))
-                .on_disabled_hover_text("Multiplayer is planned, but not implemented yet :(")
-                .clicked()
-            {
-                next_state.set(ClientState::MPSelect);
-            }
-            if ui.button("Settings").clicked() {
-                next_state.set(ClientState::Settings);
-            }
+            ui.set_style(config.egui_style.clone());
+            egui::Frame::window(ui.style()).show(ui, |ui| {
+                ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
+                    ui.set_width(200.0);
+                    ui.heading("Factor");
+                    if ui
+                    .add_enabled(
+                        config.can_use_singleplayer,
+                        egui::Button::new(egui::RichText::new("Singleplayer").text_style(egui::TextStyle::Button)).min_size(egui::vec2(ui.max_rect().width(), 0.0)),
+                    )
+                    .on_disabled_hover_text(
+                        "Singleplayer worlds are not supported here! Try using a different build.",
+                    )
+                    .clicked()
+                {
+                    next_state.set(ClientState::SPSelect);
+                }
+                    if ui
+                        .add_enabled(false, 
+                            egui::Button::new(egui::RichText::new("Multiplayer").text_style(egui::TextStyle::Button)).min_size(egui::vec2(ui.max_rect().width(), 0.0))
+                        )
+                        .on_disabled_hover_text(
+                            "Multiplayer is planned, but not implemented yet :(",
+                        )
+                        .clicked()
+                    {
+                        next_state.set(ClientState::MPSelect);
+                    }
+                    if ui.add(
+                        egui::Button::new(egui::RichText::new("Settings").text_style(egui::TextStyle::Button)).min_size(egui::vec2(ui.max_rect().width(), 0.0)),
+                    ).clicked() {
+                        next_state.set(ClientState::Settings);
+                    }
+                    if ui.add(
+                        egui::Button::new(egui::RichText::new("Quit").text_style(egui::TextStyle::Button)).min_size(egui::vec2(ui.max_rect().width(), 0.0))
+                    ).clicked() {
+                        exit.send_default();
+                    }
+                });
+            });
         });
 }
 
 pub fn render_settings(
     mut contexts: EguiContexts,
+    config: Res<ClientPlugin>,
     last_state: Res<LastState>,
     mut next_state: ResMut<NextState<ClientState>>,
 ) {
     egui::Area::new(egui::Id::new("Settings"))
         .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
         .show(contexts.ctx_mut(), |ui| {
-            ui.heading("Settings");
+            ui.set_style(config.egui_style.clone());
+            egui::Frame::window(ui.style()).show(ui, |ui| {
+                ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
+                    ui.set_width(500.0);
+                    ui.label(egui::RichText::new("Settings").heading().size(40.0));
 
-            ui.label("No settings here yet, check back later!");
+                    ui.label("No settings here yet, check back later!");
 
-            if ui.button("Back").clicked() {
-                next_state.set(**last_state);
-            }
+                    if ui.button("Back").clicked() {
+                        next_state.set(**last_state);
+                    }
+                });
+            });
         });
 }
