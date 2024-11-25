@@ -14,6 +14,7 @@ use std::task::Context;
 use std::task::Poll;
 
 type Inner = WebSocketStream<ClientStream<TcpStream>>;
+pub type ConnectError = tungstenite::Error;
 
 #[derive(Debug)]
 pub struct WebSocket {

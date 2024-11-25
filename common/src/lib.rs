@@ -2,3 +2,4 @@
 
 pub mod glue;
 pub mod healpix;
+pub mod util;

@@ -5,6 +5,8 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 use ws_stream_wasm::{WsErr, WsMessage, WsMeta, WsStream};
 
+pub type ConnectError = WsErr;
+
 #[derive(Debug)]
 pub struct WebSocket {
     inner: WsStream,

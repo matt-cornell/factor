@@ -1,3 +1,5 @@
+#![feature(trait_upcasting)]
+
 use bevy::prelude::*;
 use bevy_egui::{egui, EguiPlugin};
 use core_ui::*;

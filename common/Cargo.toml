@@ -7,8 +7,10 @@ edition.workspace = true
 async-trait.workspace = true
 bevy.workspace = true
 cdshealpix.workspace = true
+futures-sink.workspace = true
 postcard.workspace = true
 serde.workspace = true
+triomphe.workspace = true
 
 [lints]
 workspace = true
