@@ -7,6 +7,7 @@ use bevy::prelude::*;
 use bevy::render::render_asset::RenderAssetUsages;
 use bevy::window::CursorGrabMode;
 use bevy_egui::{egui, EguiContexts, EguiPlugin};
+use factor_common::coords::*;
 use factor_common::healpix;
 use std::convert::Infallible;
 use std::f32::consts::{FRAC_PI_2, TAU};
@@ -19,11 +20,10 @@ static CACHE: [LazyLock<
 >; 29] = [const { LazyLock::new(|| quick_cache::sync::Cache::new(65536)) }; 29];
 fn cache_slice(depth: u8, hash: u64) -> ([Vec2; 4], Arc<[(u64, OnceLock<Mat4>); 8]>) {
     let Ok(res) = CACHE[depth as usize].get_or_insert_with(&hash, || {
-        let layer = healpix::nested::get(depth);
+        let layer = healpix::Layer::new(depth);
         let vertices = layer.vertices(hash);
-        let (lo1, la1) = layer.center(hash);
-        let corners =
-            vertices.map(|(lo2, la2)| get_relative((lo1 as _, la1 as _), (lo2 as _, la2 as _)));
+        let center = layer.center(hash);
+        let corners = vertices.map(|c2| get_relative(center, c2));
         let slice = &healpix::neighbors_list(depth)[(hash as usize * 8)..(hash as usize * 8 + 8)];
         let neighbors = <[u64; 8]>::try_from(slice)
             .unwrap()
@@ -46,48 +46,19 @@ fn transforms_for(depth: u8, base: u64, neighbor: u64) -> Mat4 {
     };
 
     *cell.get_or_init(|| {
-        let layer = healpix::nested::get(depth);
+        let layer = healpix::Layer::new(depth);
         let vertices = layer.vertices(neighbor);
         let from = Mat4::from_cols_array_2d(
             &corners_of(depth, neighbor).map(|v| v.extend(0.0).extend(1.0).to_array()),
         );
         let to = {
-            let (lo1, la1) = layer.center(base);
-            Mat4::from_cols_array_2d(&vertices.map(|(lo2, la2)| {
-                get_relative((lo1 as _, la1 as _), (lo2 as _, la2 as _))
-                    .extend(0.0)
-                    .extend(1.0)
-                    .to_array()
-            }))
+            let center = layer.center(base);
+            Mat4::from_cols_array_2d(
+                &vertices.map(|c2| get_relative(center, c2).extend(0.0).extend(1.0).to_array()),
+            )
         };
         to.mul_mat4(&from.inverse())
     })
-}
-
-fn get_relative(start: (f32, f32), end: (f32, f32)) -> Vec2 {
-    let (lo1, la1) = start;
-    let (lo2, la2) = end;
-    let dlo = lo2 - lo1;
-    let dla = la2 - la1;
-    let (dlosin, dlocos) = dlo.sin_cos();
-    let (la1sin, la1cos) = la1.sin_cos();
-    let (la2sin, la2cos) = la2.sin_cos();
-    let azimuth = (dlosin * la2cos).atan2(la1cos * la2sin - la1sin * la2cos * dlocos);
-    let a = (dla * 0.5).sin().powi(2) + la1cos * la2cos * (dlo * 0.5).sin().powi(2);
-    let dist = a.sqrt().atan2((1.0 - a).sqrt());
-    Vec2::from_angle(azimuth) * dist
-}
-
-fn get_absolute(start: (f32, f32), offset: Vec2) -> (f32, f32) {
-    let (lo1, la1) = start;
-    let azimuth = offset.to_angle();
-    let dist = offset.length();
-    let (lasin, lacos) = la1.sin_cos();
-    let (azsin, azcos) = azimuth.sin_cos();
-    let (dsin, dcos) = dist.sin_cos();
-    let la2 = (lasin * dcos + lacos * dsin * azcos).asin();
-    let lo2 = lo1 + (azsin * dsin * lacos).atan2(dcos - lasin * la2.sin());
-    (lo2, la2)
 }
 
 /// Which cell
@@ -129,10 +100,7 @@ fn main() {
             ..default()
         }))
         .add_plugins(EguiPlugin)
-        .insert_resource(HealpixParams {
-            depth: 10,
-            delta: 2,
-        })
+        .insert_resource(HealpixParams { depth: 5, delta: 2 })
         .insert_resource(LockedMouse(false))
         .insert_resource(MovementSpeed(0.001))
         .add_systems(Startup, setup)
@@ -246,9 +214,9 @@ fn show_ui(
             .anchor(egui::Align2::LEFT_TOP, egui::vec2(10.0, 10.0))
             .show(ctx, |ui| {
                 let (trans, cell) = camera.single();
-                let layer = healpix::nested::get(params.depth);
-                let (cx, cy) = layer.center(cell.0);
-                let (lon, lat) = get_absolute((cx as _, cy as _), trans.translation.xz());
+                let layer = healpix::Layer::new(params.depth);
+                let LonLat { lon, lat } =
+                    get_absolute(layer.center(cell.0), trans.translation.xz());
                 ui.label(format!(
                     "Cell: {}\nX: {:.5}, Y: {:.5}, Z: {:.5}\nLon: {lon:.3}, Lat: {lat:.3}",
                     cell.0, trans.translation.x, trans.translation.y, trans.translation.z,
@@ -294,14 +262,14 @@ fn show_ui(
             {
                 let _ = &mut *trans;
             }
-            let layer = healpix::nested::get(params.depth);
-            let (cx, cy) = layer.center(cell.0);
-            let (lon, lat) = get_absolute((cx as _, cy as _), trans.translation.xz());
+            let layer = healpix::Layer::new(params.depth);
+            let center = layer.center(cell.0);
+            let LonLat { lon, lat } = get_absolute(center, trans.translation.xz());
             let (mut new_lon, mut new_lat) = (lon, lat);
             ui.add(egui::Slider::new(&mut new_lon, 0.0..=TAU).text("Longitude"));
             ui.add(egui::Slider::new(&mut new_lat, -FRAC_PI_2..=FRAC_PI_2).text("Latitude"));
             if lon != new_lon || lat != new_lat {
-                let off = get_relative((cx as _, cy as _), (new_lon as _, new_lat as _));
+                let off = get_relative(center, LonLat::new(new_lon, new_lat));
                 trans.translation.x = off.x;
                 trans.translation.z = off.y;
             }
@@ -332,14 +300,14 @@ fn update_coords(
     if old == params.depth {
         return;
     }
-    let old_layer = healpix::nested::get(old);
-    let new_layer = healpix::nested::get(params.depth);
+    let old_layer = healpix::Layer::new(old);
+    let new_layer = healpix::Layer::new(params.depth);
     for (mut trans, mut cell) in objects.iter_mut() {
-        let (old_x, old_y) = old_layer.center(cell.0);
-        let (lon, lat) = get_absolute((old_x as _, old_y as _), trans.translation.xz());
-        cell.0 = new_layer.hash(lon as _, lat as _);
-        let (new_x, new_y) = new_layer.center(cell.0);
-        let off = get_relative((new_x as _, new_y as _), (lon, lat));
+        let old = old_layer.center(cell.0);
+        let abs = get_absolute(old, trans.translation.xz());
+        cell.0 = new_layer.hash(abs);
+        let new = new_layer.center(cell.0);
+        let off = get_relative(new, abs);
         trans.translation.x = off.x;
         trans.translation.z = off.y;
     }
@@ -353,16 +321,16 @@ fn check_cell(
     >,
     params: Res<HealpixParams>,
 ) {
-    let layer = healpix::nested::get(params.depth);
+    let layer = healpix::Layer::new(params.depth);
     for (mut trans, mut cell) in objects.iter_mut() {
-        let (old_x, old_y) = layer.center(cell.0);
-        let (lon, lat) = get_absolute((old_x as _, old_y as _), trans.translation.xz());
-        let new_hash = layer.hash(lon as _, lat as _);
+        let old = layer.center(cell.0);
+        let abs = get_absolute(old, trans.translation.xz());
+        let new_hash = layer.hash(abs);
         if new_hash == cell.0 {
             continue;
         }
-        let (new_x, new_y) = layer.center(new_hash);
-        let off = get_relative((new_x as _, new_y as _), (lon, lat));
+        let new = layer.center(new_hash);
+        let off = get_relative(new, abs);
         trans.translation.x = off.x;
         trans.translation.z = off.y;
         cell.0 = new_hash;
@@ -391,7 +359,7 @@ fn spawn_cell(
 ) {
     let (cell, entity) = cell.0;
     let corners = corners_of(params.depth, cell);
-    debug!(cell, ?corners, "spawning cell");
+    info!(hash = cell, ?corners, %entity, "initializing cell");
     let (min_x, max_x, min_y, max_y) = corners.iter().fold(
         (
             f32::INFINITY,
@@ -440,13 +408,13 @@ fn load_cells(
     >,
     params: Res<HealpixParams>,
     time: Res<Time>,
+    systems: Res<Systems>,
 ) {
     let (&OwningCell(center), camera) = camera.single();
-    let base_layer = healpix::nested::get(params.depth);
-    let (cx, cy) = base_layer.center(center);
-    let (clon, clat) = get_absolute((cx as _, cy as _), camera.translation.xz());
-    let delta_layer = healpix::nested::get(params.depth + params.delta);
-    let delta_hash = delta_layer.hash(clon as f64, clat as f64);
+    let base_layer = healpix::Layer::new(params.depth);
+    let abs = get_absolute(base_layer.center(center), camera.translation.xz());
+    let delta_layer = healpix::Layer::new(params.depth + params.delta);
+    let delta_hash = delta_layer.hash(abs);
     let mut set = tinyset::SetU64::new();
     let elapsed = time.elapsed();
     for (entity, mut vis, mut trans, OwningCell(cell)) in cells.iter_mut() {
@@ -473,11 +441,25 @@ fn load_cells(
             *vis = Visibility::Hidden;
         }
     }
+    for &i in base_layer.neighbors_slice(center) {
+        if set.contains(i) {
+            continue;
+        }
+        if base_layer
+            .external_edge(i, params.delta)
+            .contains(&delta_hash)
+        {
+            let id = commands.spawn_empty().id();
+            info!(%id, hash = i, "spawning cell");
+            commands.run_system_with_input(systems.spawn_cell, (i, id));
+        }
+    }
 }
 
 fn despawn_system(mut commands: Commands, time: Res<Time>, query: Query<(Entity, &DespawnTime)>) {
     for (entity, despawn) in query.iter() {
         if despawn.0 > time.elapsed() {
+            debug!(%entity, "despawning entity");
             commands.entity(entity).despawn();
         }
     }
