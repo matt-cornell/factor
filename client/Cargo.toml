@@ -10,6 +10,9 @@ bevy_egui.workspace = true
 factor-common.workspace = true
 futures-sink.workspace = true
 futures-util.workspace = true
+quick_cache.workspace = true
+tinyset.workspace = true
+triomphe.workspace = true
 
 [target.'cfg(target_family = "wasm")'.dependencies]
 ws_stream_wasm.workspace = true
