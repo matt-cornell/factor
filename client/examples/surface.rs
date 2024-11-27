@@ -5,17 +5,23 @@ use bevy::ecs::system::SystemId;
 use bevy::input::mouse::MouseMotion;
 use bevy::prelude::*;
 use bevy::render::render_asset::RenderAssetUsages;
+use bevy::render::render_resource::{
+    Extent3d, TextureDescriptor, TextureDimension, TextureFormat, TextureUsages,
+};
+use bevy::render::view::RenderLayers;
 use bevy::window::CursorGrabMode;
+use bevy::window::WindowFocused;
 use bevy_egui::{egui, EguiContexts, EguiPlugin};
 use factor_common::coords::*;
 use factor_common::healpix;
+use itertools::Itertools;
 use std::convert::Infallible;
 use std::f64::consts::{FRAC_PI_2, TAU};
 use std::sync::{LazyLock, OnceLock};
 use std::time::Duration;
 use triomphe::Arc;
 
-const SCALE: f64 = 1000000.0;
+const SCALE: f64 = 1000.0;
 
 static CACHE: [LazyLock<
     quick_cache::sync::Cache<u64, ([Vec2; 4], Arc<[(u64, OnceLock<Mat4>); 8]>)>,
@@ -44,25 +50,27 @@ fn transforms_for(depth: u8, base: u64, neighbor: u64) -> Mat4 {
         .iter()
         .find_map(|(n, c)| (*n == neighbor).then_some(c))
     else {
-        panic!("Cell {neighbor} doesn't neighbor {base}!");
+        return Mat4::NAN;
     };
 
     *cell.get_or_init(|| {
         let layer = healpix::Layer::new(depth);
         let vertices = layer.vertices(neighbor);
-        let from = Mat4::from_cols_array_2d(
-            &corners_of(depth, neighbor).map(|v| v.extend(0.0).extend(1.0).to_array()),
-        );
-        let to = {
+        let min;
+        let mut to = {
             let center = layer.center(base);
-            Mat4::from_cols_array_2d(&vertices.map(|c2| {
-                (get_relative(center, c2) * SCALE)
-                    .as_vec2()
-                    .extend(0.0)
-                    .extend(1.0)
-                    .to_array()
-            }))
+            let verts = vertices.map(|c2| (get_relative(center, c2) * SCALE).as_vec2());
+            min = verts
+                .iter()
+                .position_max_by(|a, b| a.length_squared().total_cmp(&b.length_squared()))
+                .unwrap();
+            Mat4::from_cols_array_2d(&verts.map(|v| v.extend(0.0).xzy().extend(1.0).to_array()))
         };
+        let mut from = Mat4::from_cols_array_2d(
+            &corners_of(depth, neighbor).map(|v| v.extend(0.0).xzy().extend(1.0).to_array()),
+        );
+        from.col_mut(min).y = 1.0;
+        to.col_mut(min).y = 1.0;
         to.mul_mat4(&from.inverse())
     })
 }
@@ -106,21 +114,30 @@ fn main() {
             ..default()
         }))
         .add_plugins(EguiPlugin)
-        .insert_resource(HealpixParams { depth: 5, delta: 2 })
+        .insert_resource(HealpixParams { depth: 5, delta: 0 })
         .insert_resource(LockedMouse(false))
         .insert_resource(MovementSpeed(0.1))
+        .insert_resource(AmbientLight {
+            color: Color::WHITE,
+            brightness: 100.0,
+        })
         .add_systems(Startup, setup)
         .add_systems(FixedUpdate, handle_input)
+        .add_systems(PreUpdate, despawn_system)
         .add_systems(
             Update,
             (
                 show_ui,
                 check_cell,
-                despawn_system,
                 load_cells,
+                free_mouse,
                 update_coords.run_if(resource_changed::<HealpixParams>),
                 grab_mouse.run_if(resource_changed::<LockedMouse>),
             ),
+        )
+        .add_systems(
+            PostUpdate,
+            render_axes.after(bevy::transform::TransformSystem::TransformPropagate),
         )
         .run();
 }
@@ -131,9 +148,11 @@ fn setup(mut commands: Commands) {
         .with_children(|commands| {
             commands.spawn((
                 Camera3dBundle {
-                    transform: Transform::from_xyz(0.0, 0.1, 0.0).looking_at(Vec3::ZERO, Dir3::Y),
+                    transform: Transform::from_xyz(0.0, 10.0, -0.05)
+                        .looking_at(Vec3::ZERO, Dir3::Y),
                     ..default()
                 },
+                RenderLayers::layer(0),
                 OwningCell(0),
             ));
         })
@@ -146,7 +165,7 @@ fn setup(mut commands: Commands) {
             shadows_enabled: true,
             ..default()
         },
-        transform: Transform::from_xyz(0.0, 1000.0, 0.0).with_scale(Vec3::splat(100.0)),
+        transform: Transform::from_xyz(0.0, 30.0, 0.0),
         ..default()
     });
     let spawn_cell = commands.register_one_shot_system(spawn_cell);
@@ -172,7 +191,7 @@ fn handle_input(
     if keys.pressed(KeyCode::Space) {
         velocity += Vec3::Y * speed.0;
     }
-    if keys.pressed(KeyCode::ShiftLeft) {
+    if camera.translation.y > speed.0 && keys.pressed(KeyCode::ShiftLeft) {
         velocity -= Vec3::Y * speed.0;
     }
     let forward = camera
@@ -200,9 +219,9 @@ fn handle_input(
     } in mouse.read()
     {
         use std::f32::consts::FRAC_PI_2;
-        camera.rotate_local_y(x * 0.01);
+        camera.rotate_y(x * -0.01);
         let angle = camera.up().y.asin();
-        let new_angle = (angle + y * 0.01).clamp(-FRAC_PI_2, FRAC_PI_2);
+        let new_angle = (angle + y * -0.01).clamp(-FRAC_PI_2, FRAC_PI_2);
         camera.rotate_local_x(new_angle - angle);
     }
 }
@@ -224,10 +243,11 @@ fn show_ui(
                     layer.center(cell.0),
                     trans.translation.xz().as_dvec2() / SCALE,
                 );
-                ui.label(format!(
-                    "Cell: {}\nX: {:.5}, Y: {:.5}, Z: {:.5}\nLon: {lon:.3}, Lat: {lat:.3}",
-                    cell.0, trans.translation.x, trans.translation.y, trans.translation.z,
-                ));
+                let rot = trans.forward();
+                ui.label(egui::text::LayoutJob::simple(format!(
+                    "Cell: {}\nX: {:.5}, Y: {:.5}, Z: {:.5}\nLon: {lon:.3}, Lat: {lat:.3}\nRotX: {:.3}, RotY: {:.3}",
+                    cell.0, trans.translation.x, trans.translation.y, trans.translation.z, rot.xz().to_angle(), rot.y.asin(),
+                ), default(), ui.style().visuals.text_color(), 0.0));
             });
     } else {
         egui::Window::new("Position").show(ctx, |ui| {
@@ -237,9 +257,10 @@ fn show_ui(
                 .add(
                     egui::Slider::new(
                         &mut trans.bypass_change_detection().translation.x,
-                        -1.0..=1.0,
+                        -10.0..=10.0,
                     )
-                    .text("X"),
+                    .text("X")
+                    .clamping(egui::SliderClamping::Never),
                 )
                 .changed()
             {
@@ -249,9 +270,11 @@ fn show_ui(
                 .add(
                     egui::Slider::new(
                         &mut trans.bypass_change_detection().translation.y,
-                        -1.0..=1.0,
+                        0.0..=100.0,
                     )
-                    .text("Y"),
+                    .text("Y")
+                    .clamping(egui::SliderClamping::Never)
+                    .logarithmic(true),
                 )
                 .changed()
             {
@@ -261,9 +284,10 @@ fn show_ui(
                 .add(
                     egui::Slider::new(
                         &mut trans.bypass_change_detection().translation.z,
-                        -1.0..=1.0,
+                        -10.0..=10.0,
                     )
-                    .text("Z"),
+                    .text("Z")
+                    .clamping(egui::SliderClamping::Never),
                 )
                 .changed()
             {
@@ -288,6 +312,15 @@ fn show_ui(
                 .add(
                     egui::Slider::new(&mut params.bypass_change_detection().depth, 0..=29)
                         .text("Healpix Depth"),
+                )
+                .changed()
+            {
+                let _ = &mut *params;
+            }
+            if ui
+                .add(
+                    egui::Slider::new(&mut params.bypass_change_detection().delta, 0..=5)
+                        .text("Loading Delta"),
                 )
                 .changed()
             {
@@ -326,7 +359,10 @@ fn update_coords(
 fn check_cell(
     mut objects: Query<
         (&mut Transform, &mut OwningCell),
-        Or<(Changed<Transform>, Changed<OwningCell>)>,
+        (
+            Or<(Changed<Transform>, Changed<OwningCell>)>,
+            Without<CellCenter>,
+        ),
     >,
     params: Res<HealpixParams>,
 ) {
@@ -365,10 +401,11 @@ fn spawn_cell(
     mut commands: Commands,
     params: Res<HealpixParams>,
     assets: Res<AssetServer>,
+    mut translate: Local<f32>,
 ) {
     let (cell, entity) = cell.0;
     let corners = corners_of(params.depth, cell);
-    info!(hash = cell, ?corners, %entity, "initializing cell");
+    // info!(hash = cell, ?corners, %entity, "initializing cell");
     let (min_x, max_x, min_y, max_y) = corners.iter().fold(
         (
             f32::INFINITY,
@@ -376,12 +413,10 @@ fn spawn_cell(
             f32::INFINITY,
             f32::NEG_INFINITY,
         ),
-        |(ix, iy, ax, ay), &Vec2 { x, y }| (ix.min(x), ax.max(x), iy.min(y), ay.max(y)),
+        |(ix, ax, iy, ay), &Vec2 { x, y }| (ix.min(x), ax.max(x), iy.min(y), ay.max(y)),
     );
     let scale_x = (max_x - min_x).recip();
     let scale_y = (max_y - min_y).recip();
-    let add_x = -min_x * scale_x;
-    let add_y = -min_y * scale_y;
     let mesh = Mesh::new(
         bevy::render::mesh::PrimitiveTopology::TriangleList,
         RenderAssetUsages::all(),
@@ -393,23 +428,71 @@ fn spawn_cell(
     .with_inserted_attribute(
         Mesh::ATTRIBUTE_UV_0,
         corners
-            .map(|v| [v.x.mul_add(scale_x, add_x), v.y.mul_add(scale_y, add_y)])
+            .map(|v| [(v.x - min_x) * scale_x, (v.y - min_y) * scale_y])
             .to_vec(),
     )
-    // .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, vec![Vec3::Y; 4])
-    .with_inserted_indices(bevy::render::mesh::Indices::U16(vec![0, 3, 1, 1, 3, 2]));
-    commands.entity(entity).insert((
-        PbrBundle {
-            mesh: assets.add(mesh),
-            material: assets.add(StandardMaterial {
-                base_color: Color::LinearRgba(LinearRgba::WHITE),
-                ..default()
-            }),
-            ..default()
+    .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, vec![Vec3::Y; 4])
+    .with_inserted_indices(bevy::render::mesh::Indices::U16(vec![2, 3, 1, 1, 3, 0]));
+    let size = Extent3d {
+        width: 512,
+        height: 512,
+        ..default()
+    };
+    let mut image = Image {
+        texture_descriptor: TextureDescriptor {
+            label: None,
+            size,
+            dimension: TextureDimension::D2,
+            format: TextureFormat::Bgra8UnormSrgb,
+            mip_level_count: 1,
+            sample_count: 1,
+            usage: TextureUsages::TEXTURE_BINDING
+                | TextureUsages::COPY_DST
+                | TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
         },
-        OwningCell(cell),
-        CellCenter,
-    ));
+        ..default()
+    };
+    image.resize(size);
+    let handle = assets.add(image);
+    commands
+        .entity(entity)
+        .insert((
+            PbrBundle {
+                mesh: assets.add(mesh),
+                material: assets.add(StandardMaterial {
+                    base_color: Color::LinearRgba(LinearRgba::WHITE),
+                    base_color_texture: Some(handle.clone()),
+                    ..default()
+                }),
+                ..default()
+            },
+            RenderLayers::layer(0),
+            OwningCell(cell),
+            CellCenter,
+        ))
+        .with_children(|commands| {
+            commands.spawn((
+                Camera2dBundle {
+                    camera: Camera {
+                        target: bevy::render::camera::RenderTarget::Image(handle.clone()),
+                        ..default()
+                    },
+                    transform: Transform::from_xyz(*translate, 0.0, 0.0),
+                    ..default()
+                },
+                RenderLayers::layer(1),
+            ));
+            commands.spawn((
+                Text2dBundle {
+                    text: Text::from_section(cell.to_string(), default()),
+                    transform: Transform::from_xyz(*translate, 0.0, 0.0),
+                    ..default()
+                },
+                RenderLayers::layer(1),
+            ));
+            *translate += 10000.0;
+        });
 }
 
 fn load_cells(
@@ -444,32 +527,65 @@ fn load_cells(
             .contains(&delta_hash)
         {
             commands.entity(entity).remove::<DespawnTime>();
-            *vis = Visibility::Visible;
-            *trans = Transform::from_matrix(transforms_for(params.depth, center, *cell));
+            let mat = transforms_for(params.depth, center, *cell);
+            if mat.is_nan() {
+                warn!(%entity, cell, "despawning \"neighboring\" entity");
+                commands.entity(entity).despawn();
+            } else {
+                *vis = Visibility::Visible;
+                *trans = Transform::from_matrix(mat);
+            }
         } else {
             commands
                 .entity(entity)
                 .add(move |mut entity: EntityWorldMut| {
                     if !entity.contains::<DespawnTime>() {
-                        entity.insert(DespawnTime(elapsed));
+                        entity.insert(DespawnTime(elapsed + Duration::from_secs(5)));
                     }
                 });
             *vis = Visibility::Hidden;
         }
     }
-    for &i in base_layer.neighbors_slice(center) {
-        if set.contains(i) {
+    if !set.contains(center) {
+        let id = commands
+            .spawn((
+                CellCenter,
+                OwningCell(center),
+                Transform::default(),
+                Visibility::default(),
+            ))
+            .id();
+        info!(%id, hash = center, "spawning cell");
+        commands.run_system_with_input(systems.spawn_cell, (center, id));
+    }
+    for &cell in base_layer.neighbors_slice(center) {
+        if set.contains(cell) {
             continue;
         }
         if base_layer
-            .external_edge(i, params.delta)
+            .external_edge(cell, params.delta)
             .contains(&delta_hash)
         {
-            let id = commands.spawn_empty().id();
-            info!(%id, hash = i, "spawning cell");
-            commands.run_system_with_input(systems.spawn_cell, (i, id));
+            let id = commands
+                .spawn((
+                    CellCenter,
+                    OwningCell(cell),
+                    Transform::default(),
+                    Visibility::default(),
+                ))
+                .id();
+            info!(%id, hash = cell, "spawning cell");
+            commands.run_system_with_input(systems.spawn_cell, (cell, id));
         }
     }
+}
+
+fn render_axes(mut gizmos: Gizmos, camera: Query<&GlobalTransform, With<Camera3d>>) {
+    let camera = camera.single();
+    let center = camera.transform_point(-Vec3::Z);
+    gizmos.line(center, center + Vec3::X * 0.1, LinearRgba::RED);
+    gizmos.line(center, center + Vec3::Y * 0.1, LinearRgba::GREEN);
+    gizmos.line(center, center + Vec3::Z * 0.1, LinearRgba::BLUE);
 }
 
 fn despawn_system(mut commands: Commands, time: Res<Time>, query: Query<(Entity, &DespawnTime)>) {
@@ -478,5 +594,11 @@ fn despawn_system(mut commands: Commands, time: Res<Time>, query: Query<(Entity,
             debug!(%entity, "despawning entity");
             commands.entity(entity).despawn();
         }
+    }
+}
+
+fn free_mouse(mut locked: ResMut<LockedMouse>, mut evt: EventReader<WindowFocused>) {
+    if let Some(WindowFocused { focused: false, .. }) = evt.read().last() {
+        locked.0 = false;
     }
 }

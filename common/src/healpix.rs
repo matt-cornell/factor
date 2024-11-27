@@ -93,7 +93,9 @@ impl Layer {
     }
     pub fn hash(&self, coords: LonLat) -> u64 {
         let (lon, lat) = coords.as_f64();
-        self.0.hash(lon, lat)
+        self.0
+            .hash_checked(lon, lat)
+            .unwrap_or_else(|msg| panic!("Hash of {coords:?} failed with message {msg:?}"))
     }
     pub fn hash_checked(&self, coords: LonLat) -> Result<u64, String> {
         let (lon, lat) = coords.as_f64();
