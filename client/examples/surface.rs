@@ -10,10 +10,12 @@ use bevy_egui::{egui, EguiContexts, EguiPlugin};
 use factor_common::coords::*;
 use factor_common::healpix;
 use std::convert::Infallible;
-use std::f32::consts::{FRAC_PI_2, TAU};
+use std::f64::consts::{FRAC_PI_2, TAU};
 use std::sync::{LazyLock, OnceLock};
 use std::time::Duration;
 use triomphe::Arc;
+
+const SCALE: f64 = 1000000.0;
 
 static CACHE: [LazyLock<
     quick_cache::sync::Cache<u64, ([Vec2; 4], Arc<[(u64, OnceLock<Mat4>); 8]>)>,
@@ -23,7 +25,7 @@ fn cache_slice(depth: u8, hash: u64) -> ([Vec2; 4], Arc<[(u64, OnceLock<Mat4>); 
         let layer = healpix::Layer::new(depth);
         let vertices = layer.vertices(hash);
         let center = layer.center(hash);
-        let corners = vertices.map(|c2| get_relative(center, c2));
+        let corners = vertices.map(|c2| (get_relative(center, c2) * SCALE).as_vec2());
         let slice = &healpix::neighbors_list(depth)[(hash as usize * 8)..(hash as usize * 8 + 8)];
         let neighbors = <[u64; 8]>::try_from(slice)
             .unwrap()
@@ -53,9 +55,13 @@ fn transforms_for(depth: u8, base: u64, neighbor: u64) -> Mat4 {
         );
         let to = {
             let center = layer.center(base);
-            Mat4::from_cols_array_2d(
-                &vertices.map(|c2| get_relative(center, c2).extend(0.0).extend(1.0).to_array()),
-            )
+            Mat4::from_cols_array_2d(&vertices.map(|c2| {
+                (get_relative(center, c2) * SCALE)
+                    .as_vec2()
+                    .extend(0.0)
+                    .extend(1.0)
+                    .to_array()
+            }))
         };
         to.mul_mat4(&from.inverse())
     })
@@ -102,7 +108,7 @@ fn main() {
         .add_plugins(EguiPlugin)
         .insert_resource(HealpixParams { depth: 5, delta: 2 })
         .insert_resource(LockedMouse(false))
-        .insert_resource(MovementSpeed(0.001))
+        .insert_resource(MovementSpeed(0.1))
         .add_systems(Startup, setup)
         .add_systems(FixedUpdate, handle_input)
         .add_systems(
@@ -125,9 +131,7 @@ fn setup(mut commands: Commands) {
         .with_children(|commands| {
             commands.spawn((
                 Camera3dBundle {
-                    transform: Transform::from_xyz(0.0, 0.1, 0.0)
-                        .looking_at(Vec3::ZERO, Dir3::Y)
-                        .with_scale(Vec3::splat(1000.0)),
+                    transform: Transform::from_xyz(0.0, 0.1, 0.0).looking_at(Vec3::ZERO, Dir3::Y),
                     ..default()
                 },
                 OwningCell(0),
@@ -195,6 +199,7 @@ fn handle_input(
         delta: Vec2 { x, y },
     } in mouse.read()
     {
+        use std::f32::consts::FRAC_PI_2;
         camera.rotate_local_y(x * 0.01);
         let angle = camera.up().y.asin();
         let new_angle = (angle + y * 0.01).clamp(-FRAC_PI_2, FRAC_PI_2);
@@ -215,8 +220,10 @@ fn show_ui(
             .show(ctx, |ui| {
                 let (trans, cell) = camera.single();
                 let layer = healpix::Layer::new(params.depth);
-                let LonLat { lon, lat } =
-                    get_absolute(layer.center(cell.0), trans.translation.xz());
+                let LonLat { lon, lat } = get_absolute(
+                    layer.center(cell.0),
+                    trans.translation.xz().as_dvec2() / SCALE,
+                );
                 ui.label(format!(
                     "Cell: {}\nX: {:.5}, Y: {:.5}, Z: {:.5}\nLon: {lon:.3}, Lat: {lat:.3}",
                     cell.0, trans.translation.x, trans.translation.y, trans.translation.z,
@@ -264,12 +271,14 @@ fn show_ui(
             }
             let layer = healpix::Layer::new(params.depth);
             let center = layer.center(cell.0);
-            let LonLat { lon, lat } = get_absolute(center, trans.translation.xz());
+            let LonLat { lon, lat } =
+                get_absolute(center, trans.translation.xz().as_dvec2() / SCALE);
             let (mut new_lon, mut new_lat) = (lon, lat);
             ui.add(egui::Slider::new(&mut new_lon, 0.0..=TAU).text("Longitude"));
             ui.add(egui::Slider::new(&mut new_lat, -FRAC_PI_2..=FRAC_PI_2).text("Latitude"));
             if lon != new_lon || lat != new_lat {
-                let off = get_relative(center, LonLat::new(new_lon, new_lat));
+                let off =
+                    (get_relative(center, LonLat::from_f64(new_lon, new_lat)) * SCALE).as_vec2();
                 trans.translation.x = off.x;
                 trans.translation.z = off.y;
             }
@@ -304,10 +313,10 @@ fn update_coords(
     let new_layer = healpix::Layer::new(params.depth);
     for (mut trans, mut cell) in objects.iter_mut() {
         let old = old_layer.center(cell.0);
-        let abs = get_absolute(old, trans.translation.xz());
+        let abs = get_absolute(old, trans.translation.xz().as_dvec2() / SCALE);
         cell.0 = new_layer.hash(abs);
         let new = new_layer.center(cell.0);
-        let off = get_relative(new, abs);
+        let off = (get_relative(new, abs) * SCALE).as_vec2();
         trans.translation.x = off.x;
         trans.translation.z = off.y;
     }
@@ -324,13 +333,13 @@ fn check_cell(
     let layer = healpix::Layer::new(params.depth);
     for (mut trans, mut cell) in objects.iter_mut() {
         let old = layer.center(cell.0);
-        let abs = get_absolute(old, trans.translation.xz());
+        let abs = get_absolute(old, trans.translation.xz().as_dvec2() / SCALE);
         let new_hash = layer.hash(abs);
         if new_hash == cell.0 {
             continue;
         }
         let new = layer.center(new_hash);
-        let off = get_relative(new, abs);
+        let off = (get_relative(new, abs) * SCALE).as_vec2();
         trans.translation.x = off.x;
         trans.translation.z = off.y;
         cell.0 = new_hash;
@@ -392,6 +401,10 @@ fn spawn_cell(
     commands.entity(entity).insert((
         PbrBundle {
             mesh: assets.add(mesh),
+            material: assets.add(StandardMaterial {
+                base_color: Color::LinearRgba(LinearRgba::WHITE),
+                ..default()
+            }),
             ..default()
         },
         OwningCell(cell),
@@ -412,7 +425,10 @@ fn load_cells(
 ) {
     let (&OwningCell(center), camera) = camera.single();
     let base_layer = healpix::Layer::new(params.depth);
-    let abs = get_absolute(base_layer.center(center), camera.translation.xz());
+    let abs = get_absolute(
+        base_layer.center(center),
+        camera.translation.xz().as_dvec2() / SCALE,
+    );
     let delta_layer = healpix::Layer::new(params.depth + params.delta);
     let delta_hash = delta_layer.hash(abs);
     let mut set = tinyset::SetU64::new();
