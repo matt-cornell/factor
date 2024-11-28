@@ -50,7 +50,8 @@ fn transforms_for(depth: u8, base: u64, neighbor: u64) -> Mat4 {
         .iter()
         .find_map(|(n, c)| (*n == neighbor).then_some(c))
     else {
-        return Mat4::NAN;
+        panic!("cell {neighbor} doesn't neighbor {base}");
+        // return Mat4::NAN;
     };
 
     *cell.get_or_init(|| {
@@ -137,26 +138,24 @@ fn main() {
         )
         .add_systems(
             PostUpdate,
-            render_axes.after(bevy::transform::TransformSystem::TransformPropagate),
+            (
+                nan_checks,
+                render_axes.after(bevy::transform::TransformSystem::TransformPropagate),
+            ),
         )
         .run();
 }
 
 fn setup(mut commands: Commands) {
-    let base = commands
-        .spawn_empty()
-        .with_children(|commands| {
-            commands.spawn((
-                Camera3dBundle {
-                    transform: Transform::from_xyz(0.0, 10.0, -0.05)
-                        .looking_at(Vec3::ZERO, Dir3::Y),
-                    ..default()
-                },
-                RenderLayers::layer(0),
-                OwningCell(0),
-            ));
-        })
-        .id();
+    let base = commands.spawn_empty().id();
+    commands.spawn((
+        Camera3dBundle {
+            transform: Transform::from_xyz(1.0, 10.0, -1.0).looking_at(Vec3::ZERO, Dir3::Y),
+            ..default()
+        },
+        RenderLayers::layer(0),
+        OwningCell(0),
+    ));
     commands.spawn(PointLightBundle {
         point_light: PointLight {
             intensity: 400.0,
@@ -215,22 +214,34 @@ fn handle_input(
     }
     camera.translation += velocity;
     for &MouseMotion {
-        delta: Vec2 { x, y },
+        delta: delta @ Vec2 { x, y },
     } in mouse.read()
     {
-        use std::f32::consts::FRAC_PI_2;
+        let before = camera.rotation;
         camera.rotate_y(x * -0.01);
-        let angle = camera.up().y.asin();
-        let new_angle = (angle + y * -0.01).clamp(-FRAC_PI_2, FRAC_PI_2);
-        camera.rotate_local_x(new_angle - angle);
+        camera.rotate_local_x(y * -0.01);
+        assert!(
+            camera.is_finite(),
+            "infinite camera transform, before={before}, delta={delta}"
+        );
     }
 }
 
 fn show_ui(
     mut contexts: EguiContexts,
+    time: Res<Time>,
     locked: Res<LockedMouse>,
     mut params: ResMut<HealpixParams>,
     mut camera: Query<(&mut Transform, &mut OwningCell), With<Camera3d>>,
+    cells: Query<
+        (
+            &OwningCell,
+            &Transform,
+            &GlobalTransform,
+            Option<&DespawnTime>,
+        ),
+        (With<CellCenter>, Without<Camera3d>),
+    >,
 ) {
     let ctx = contexts.ctx_mut();
     if locked.0 {
@@ -245,14 +256,14 @@ fn show_ui(
                 );
                 let rot = trans.forward();
                 ui.label(egui::text::LayoutJob::simple(format!(
-                    "Cell: {}\nX: {:.5}, Y: {:.5}, Z: {:.5}\nLon: {lon:.3}, Lat: {lat:.3}\nRotX: {:.3}, RotY: {:.3}",
-                    cell.0, trans.translation.x, trans.translation.y, trans.translation.z, rot.xz().to_angle(), rot.y.asin(),
+                    "Cell: {}\nX: {:.5}, Y: {:.5}, Z: {:.5}\nLon: {lon:.3}, Lat: {lat:.3}\nRotX: {:.3}, RotY: {:.3}\n{} cells loaded",
+                    cell.0, trans.translation.x, trans.translation.y, trans.translation.z, rot.xz().to_angle(), rot.y.asin(), cells.iter().count(),
                 ), default(), ui.style().visuals.text_color(), 0.0));
             });
     } else {
+        let (mut trans, containing) = camera.single_mut();
         egui::Window::new("Position").show(ctx, |ui| {
-            let (mut trans, cell) = camera.single_mut();
-            ui.label(format!("Cell: {}", cell.0));
+            ui.label(format!("Cell: {}", containing.0));
             if ui
                 .add(
                     egui::Slider::new(
@@ -294,7 +305,7 @@ fn show_ui(
                 let _ = &mut *trans;
             }
             let layer = healpix::Layer::new(params.depth);
-            let center = layer.center(cell.0);
+            let center = layer.center(containing.0);
             let LonLat { lon, lat } =
                 get_absolute(center, trans.translation.xz().as_dvec2() / SCALE);
             let (mut new_lon, mut new_lat) = (lon, lat);
@@ -327,6 +338,53 @@ fn show_ui(
                 let _ = &mut *params;
             }
         });
+        egui::Window::new("Cells").show(ctx, |ui| {
+            ui.label(format!("{} cells loaded", cells.iter().len()));
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                for (OwningCell(cell), trans, gtrans, despawn) in cells.iter() {
+                    ui.collapsing(
+                        format!(
+                            "{cell}{}",
+                            if *cell == containing.0 {
+                                "- Containing"
+                            } else {
+                                ""
+                            }
+                        ),
+                        |ui| {
+                            if let Some(DespawnTime(despawn)) = despawn {
+                                if let Some(remaining) = despawn.checked_sub(time.elapsed()) {
+                                    ui.label(format!("Queued to despawn in {remaining:?}"));
+                                } else {
+                                    ui.label("Despawn imminent!");
+                                }
+                            }
+                            ui.collapsing("Transform", |ui| {
+                                ui.label(format!("Translation: {:5.2}", trans.translation));
+                                ui.label(format!("Rotation: {:5.2}", trans.rotation));
+                                ui.label(format!("Scale: {:5.2}", trans.scale));
+                                let mat = trans.compute_matrix();
+                                ui.label(format!(
+                                    "Matrix:\n{:5.2}\n{:5.2}\n{}\n{:5.2}",
+                                    mat.x_axis, mat.y_axis, mat.z_axis, mat.w_axis
+                                ));
+                            });
+                            ui.collapsing("Global Transform", |ui| {
+                                let trans = gtrans.compute_transform();
+                                ui.label(format!("Translation: {:5.2}", trans.translation));
+                                ui.label(format!("Rotation: {:5.2}", trans.rotation));
+                                ui.label(format!("Scale: {:5.2}", trans.scale));
+                                let mat = trans.compute_matrix();
+                                ui.label(format!(
+                                    "Matrix:\n{:5.2}\n{:5.2}\n{}\n{:5.2}",
+                                    mat.x_axis, mat.y_axis, mat.z_axis, mat.w_axis
+                                ));
+                            });
+                        },
+                    );
+                }
+            })
+        });
     }
 }
 
@@ -357,17 +415,19 @@ fn update_coords(
 }
 
 fn check_cell(
+    mut commands: Commands,
     mut objects: Query<
-        (&mut Transform, &mut OwningCell),
+        (Entity, &mut Transform, &mut OwningCell, Has<Camera3d>),
         (
             Or<(Changed<Transform>, Changed<OwningCell>)>,
             Without<CellCenter>,
         ),
     >,
+    cells: Query<(Entity, &OwningCell), With<CellCenter>>,
     params: Res<HealpixParams>,
 ) {
     let layer = healpix::Layer::new(params.depth);
-    for (mut trans, mut cell) in objects.iter_mut() {
+    for (entity, mut trans, mut cell, is_cam) in objects.iter_mut() {
         let old = layer.center(cell.0);
         let abs = get_absolute(old, trans.translation.xz().as_dvec2() / SCALE);
         let new_hash = layer.hash(abs);
@@ -379,6 +439,13 @@ fn check_cell(
         trans.translation.x = off.x;
         trans.translation.z = off.y;
         cell.0 = new_hash;
+        if is_cam {
+            continue;
+        }
+        let Some((new_parent, _)) = cells.iter().find(|c| c.1 .0 == new_hash) else {
+            panic!("Cell {new_hash} doesn't exist but an entity wants to be parented to it!");
+        };
+        commands.entity(entity).set_parent(new_parent);
     }
 }
 
@@ -405,7 +472,7 @@ fn spawn_cell(
 ) {
     let (cell, entity) = cell.0;
     let corners = corners_of(params.depth, cell);
-    // info!(hash = cell, ?corners, %entity, "initializing cell");
+    info!(hash = cell, ?corners, %entity, "initializing cell");
     let (min_x, max_x, min_y, max_y) = corners.iter().fold(
         (
             f32::INFINITY,
@@ -600,5 +667,14 @@ fn despawn_system(mut commands: Commands, time: Res<Time>, query: Query<(Entity,
 fn free_mouse(mut locked: ResMut<LockedMouse>, mut evt: EventReader<WindowFocused>) {
     if let Some(WindowFocused { focused: false, .. }) = evt.read().last() {
         locked.0 = false;
+    }
+}
+
+fn nan_checks(query: Query<(Entity, &Transform)>) {
+    for (entity, trans) in query.iter() {
+        assert!(
+            trans.is_finite(),
+            "entity {entity} has a non-finite transform!"
+        );
     }
 }
