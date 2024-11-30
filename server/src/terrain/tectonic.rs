@@ -122,7 +122,7 @@ fn init_terrain_impl<R: Rng + ?Sized>(depth: u8, rng: &mut R) -> TectonicState {
     for _ in 0..(6 + (1 << (depth - 2))) {
         std::mem::swap(&mut scratch, &mut changes);
         for (n, v) in changes.iter_mut().enumerate() {
-            let neighs = healpix::neighbors(depth, n as _);
+            let neighs = healpix::neighbors(depth, n as _, true);
             *v *= 0.2;
             *v += neighs.iter().map(|n| scratch[*n as usize]).sum::<Vec2>() / neighs.len() as f32
                 * 0.8;
@@ -193,10 +193,10 @@ fn init_terrain_impl<R: Rng + ?Sized>(depth: u8, rng: &mut R) -> TectonicState {
     let mut neighbors = vec![SetUsize::new(); plates.len()].into_boxed_slice();
     for i in 0..len {
         let plate = cells[i].plate;
-        let neighs = healpix::neighbors(depth, i as _);
+        let neighs = healpix::neighbors(depth, i as _, true);
         let mut seen_same = false;
         let mut seen = SetU64::new();
-        for &n in neighs {
+        for &n in &neighs {
             let p = cells[n as usize].plate;
             if p == plate {
                 seen_same = true;
@@ -251,7 +251,7 @@ fn step_terrain_impl<R: Rng + ?Sized>(
     for i in state.boundaries.iter() {
         let cell = state.cells[i as usize];
         let plate = state.plates[cell.plate as usize];
-        let set = healpix::neighbors(state.depth, i);
+        let set = healpix::neighbors(state.depth, i, true);
         {
             let cell = &mut state.cells[i as usize];
             if let CellFeature {
@@ -267,7 +267,7 @@ fn step_terrain_impl<R: Rng + ?Sized>(
                 cell.height = new;
             }
         }
-        for &c2 in set {
+        for &c2 in &set {
             let other = state.cells[c2 as usize];
             let p2 = other.plate;
             let plate2 = state.plates[p2 as usize];
@@ -317,12 +317,15 @@ fn step_terrain_impl<R: Rng + ?Sized>(
                         if new == i {
                             continue;
                         }
-                        if healpix::far_neighbors(state.depth, new).iter().any(|&h| {
-                            !matches!(
-                                state.cells[h as usize].feats.kind,
-                                CellFeatureKind::None | CellFeatureKind::Mountain
-                            )
-                        }) {
+                        if healpix::far_neighbors(state.depth, new, true)
+                            .iter()
+                            .any(|&h| {
+                                !matches!(
+                                    state.cells[h as usize].feats.kind,
+                                    CellFeatureKind::None | CellFeatureKind::Mountain
+                                )
+                            })
+                        {
                             continue;
                         }
                         let cell = &mut state.cells[new as usize];
@@ -362,12 +365,15 @@ fn step_terrain_impl<R: Rng + ?Sized>(
                         if new == i {
                             continue;
                         }
-                        if healpix::far_neighbors(state.depth, new).iter().any(|&h| {
-                            !matches!(
-                                state.cells[h as usize].feats.kind,
-                                CellFeatureKind::None | CellFeatureKind::Mountain
-                            )
-                        }) {
+                        if healpix::far_neighbors(state.depth, new, true)
+                            .iter()
+                            .any(|&h| {
+                                !matches!(
+                                    state.cells[h as usize].feats.kind,
+                                    CellFeatureKind::None | CellFeatureKind::Mountain
+                                )
+                            })
+                        {
                             continue;
                         }
                         let cell = &mut state.cells[new as usize];
@@ -383,7 +389,7 @@ fn step_terrain_impl<R: Rng + ?Sized>(
                 }
             }
         }
-        for &n in healpix::neighbors(state.depth, i) {
+        for &n in &healpix::neighbors(state.depth, i, true) {
             let other = state.cells[n as usize];
             if other.plate != cell.plate {
                 continue;
@@ -392,7 +398,7 @@ fn step_terrain_impl<R: Rng + ?Sized>(
     }
     for i in 0..state.cells.len() {
         let cell = state.cells[i];
-        for &o in healpix::neighbors(state.depth, i as _) {
+        for &o in &healpix::neighbors(state.depth, i as _, true) {
             if let CellFeature {
                 kind: CellFeatureKind::Mountain,
                 dist,
@@ -400,7 +406,7 @@ fn step_terrain_impl<R: Rng + ?Sized>(
             {
                 if cell.feats.kind == CellFeatureKind::Mountain
                     && cell.feats.dist < state.cells[o as usize].feats.dist
-                    && healpix::far_neighbors(state.depth, i as _)
+                    && healpix::far_neighbors(state.depth, i as _, true)
                         .iter()
                         .all(|&h| state.cells[h as usize].feats.kind == CellFeatureKind::None)
                     && rng.sample(mountain_spread).abs() as u8 > dist
@@ -424,7 +430,7 @@ fn step_terrain_impl<R: Rng + ?Sized>(
         let mut neigh_count = 0.0;
         let p = state.cells[i].plate;
         let h = state.plates[p as usize].height * 0.05;
-        for &n in healpix::neighbors(state.depth, i as _) {
+        for &n in &healpix::neighbors(state.depth, i as _, true) {
             let c2 = state.cells[n as usize];
             let mut mul = 1.0;
             if p != c2.plate {

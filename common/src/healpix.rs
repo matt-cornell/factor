@@ -3,20 +3,29 @@
 //! - Coordinates use `LonLat` (they have a `f32` representation)
 //! - American English spellings of "neighbor"
 use crate::coords::LonLat;
+use crate::util::MaybeArc;
 pub use cdshealpix as cds;
 use cdshealpix::compass_point::*;
 use cdshealpix::external_edge::ExternalEdge;
 pub use cdshealpix::nested;
 pub use cdshealpix::{n_hash, nside};
+use copyvec::CopyVec;
+use quick_cache::sync::Cache;
+use std::convert::Infallible;
 use std::fmt::{self, Debug, Formatter};
-use std::sync::OnceLock;
+use std::sync::{LazyLock, OnceLock};
+use triomphe::Arc;
 
 static NEIGHBORS: [OnceLock<Box<[u64]>>; 29] = [const { OnceLock::new() }; 29];
+static SPARSE_NEIGHBORS: [LazyLock<Cache<u64, CopyVec<u64, 8>>>; 23] =
+    [const { LazyLock::new(|| Cache::new(65536)) }; 23];
+
 #[allow(clippy::type_complexity)]
 static FAR_NEIGHBORS: [OnceLock<Box<[OnceLock<Box<[u64]>>]>>; 29] = [const { OnceLock::new() }; 29]; // TODO: precompute and save to a file
+static SPARSE_FAR_NEIGHBORS: [LazyLock<Cache<u64, Arc<[u64]>>>; 23] =
+    [const { LazyLock::new(|| Cache::new(65536)) }; 23];
 
-/// The list of neighbors for each cell. It can be broken into chunks of 8, with nonexistent neighbors having `u64::MAX`.
-pub fn neighbors_list(depth: u8) -> &'static [u64] {
+fn neighbors_list(depth: u8) -> &'static [u64] {
     NEIGHBORS[depth as usize].get_or_init(|| {
         let layer = nested::get(depth);
         let len = layer.n_hash();
@@ -35,18 +44,68 @@ pub fn neighbors_list(depth: u8) -> &'static [u64] {
     })
 }
 /// Neighbors for a given cell.
-pub fn neighbors(depth: u8, hash: u64) -> &'static [u64] {
-    let max_slice = &neighbors_list(depth)[(hash as usize * 8)..(hash as usize * 8 + 8)];
-    max_slice
-        .split_once(|x| *x == u64::MAX)
-        .map_or(max_slice, |x| x.0)
+/// The third parameter determines if we want to initialize a full array or use a LRU cache. The former is better if all are needed at once, but the latter is better if only a few are needed.
+pub fn neighbors(depth: u8, hash: u64, full: bool) -> CopyVec<u64, 8> {
+    if full || depth < 6 {
+        let max_slice = &neighbors_list(depth)[(hash as usize * 8)..(hash as usize * 8 + 8)];
+        let slice = max_slice
+            .split_once(|x| *x == u64::MAX)
+            .map_or(max_slice, |x| x.0);
+        let mut vec = CopyVec::from_array(slice.try_into().unwrap());
+        vec.retain(|i| *i != u64::MAX);
+        vec
+    } else if let Some(max_slice) = NEIGHBORS[depth as usize].get() {
+        let slice = max_slice
+            .split_once(|x| *x == u64::MAX)
+            .map_or(&**max_slice, |x| x.0);
+        let mut vec = CopyVec::from_array(slice.try_into().unwrap());
+        vec.retain(|i| *i != u64::MAX);
+        vec
+    } else {
+        let cache = &SPARSE_NEIGHBORS[hash as usize - 6];
+        let Ok(res) = cache.get_or_insert_with(&hash, || {
+            let map = nested::neighbours(depth, hash, false);
+            Ok::<_, Infallible>(
+                CopyVec::try_from_iter((0..9).map(|i| *map.get(MainWind::from_index(i)).unwrap()))
+                    .unwrap(),
+            )
+        });
+        res
+    }
 }
 /// Cells nearby a given cell. The number here scales with depth.
-pub fn far_neighbors(depth: u8, hash: u64) -> &'static [u64] {
-    FAR_NEIGHBORS[depth as usize]
-        .get_or_init(|| vec![OnceLock::new(); n_hash(depth) as usize].into_boxed_slice())
-        [hash as usize]
-        .get_or_init(|| {
+pub fn far_neighbors(depth: u8, hash: u64, full: bool) -> MaybeArc<'static, [u64]> {
+    if full || depth < 6 {
+        let res = FAR_NEIGHBORS[depth as usize]
+            .get_or_init(|| vec![OnceLock::new(); n_hash(depth) as usize].into_boxed_slice())
+            [hash as usize]
+            .get_or_init(|| {
+                let mut set = Vec::new();
+                let mut edge = vec![hash];
+                for _ in 0..((1 << depth.saturating_sub(3)) * 3 / 8) {
+                    let end = set.len();
+                    set.append(&mut edge);
+                    for &i in &set[end..] {
+                        edge.extend(
+                            neighbors(depth, i, true)
+                                .iter()
+                                .copied()
+                                .filter(|e| !set.contains(e)),
+                        );
+                    }
+                }
+                set.sort_unstable();
+                set.dedup();
+                set.into_boxed_slice()
+            });
+        MaybeArc::Borrowed(res)
+    } else {
+        if let Some(neighbors) = FAR_NEIGHBORS[depth as usize].get() {
+            if let Some(slice) = neighbors[hash as usize].get() {
+                return MaybeArc::Borrowed(slice);
+            }
+        }
+        let Ok(res) = SPARSE_FAR_NEIGHBORS[depth as usize - 6].get_or_insert_with(&hash, || {
             let mut set = Vec::new();
             let mut edge = vec![hash];
             for _ in 0..((1 << depth.saturating_sub(3)) * 3 / 8) {
@@ -54,7 +113,7 @@ pub fn far_neighbors(depth: u8, hash: u64) -> &'static [u64] {
                 set.append(&mut edge);
                 for &i in &set[end..] {
                     edge.extend(
-                        neighbors(depth, i)
+                        neighbors(depth, i, true)
                             .iter()
                             .copied()
                             .filter(|e| !set.contains(e)),
@@ -63,8 +122,10 @@ pub fn far_neighbors(depth: u8, hash: u64) -> &'static [u64] {
             }
             set.sort_unstable();
             set.dedup();
-            set.into_boxed_slice()
-        })
+            Ok::<_, Infallible>(Arc::from(set))
+        });
+        MaybeArc::Owned(res)
+    }
 }
 
 /// A wrapper around [`nested::Layer`] to use my APIs.
@@ -124,8 +185,8 @@ impl Layer {
         self.0.neighbours(hash, include_center)
     }
     #[inline(always)]
-    pub fn neighbors_slice(&self, hash: u64) -> &'static [u64] {
-        neighbors(self.depth(), hash)
+    pub fn neighbors_slice(&self, hash: u64, full: bool) -> CopyVec<u64, 8> {
+        neighbors(self.depth(), hash, full)
     }
     #[inline(always)]
     pub fn append_bulk_neighbours(&self, hash: u64, dest: &mut Vec<u64>) {

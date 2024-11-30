@@ -161,11 +161,11 @@ pub fn step_climate<F: FnMut(f32, f32) -> f32, R: Rng + ?Sized>(
         let scale = scale / num_iters as f32 * 0.6;
         for _ in 0..num_iters {
             for (i, old) in old.iter().enumerate() {
-                let neighbors = healpix::neighbors(depth, i as _);
+                let neighbors = healpix::neighbors(depth, i as _, true);
                 let (clon, clat) = layer.center(i as _);
                 let (clon, clat) = (clon as f32, clat as f32);
                 let (asin1, acos1) = clat.sin_cos();
-                for &n in neighbors {
+                for &n in &neighbors {
                     let cell = &mut cells[n as usize];
                     let (lon, lat) = layer.center(n);
                     let (lon, lat) = (lon as f32, lat as f32);
@@ -205,7 +205,7 @@ pub fn step_climate<F: FnMut(f32, f32) -> f32, R: Rng + ?Sized>(
     // conduction
     for _ in 0..(num_iters * 3 / 2) {
         for (i, cell) in cells.iter_mut().enumerate() {
-            let neighbors = healpix::neighbors(depth, i as _);
+            let neighbors = healpix::neighbors(depth, i as _, true);
             let mut cum_temp = 0.0;
             let mut cum_humid = 0.0;
             let mut cum_rain = 0.0;
@@ -214,7 +214,7 @@ pub fn step_climate<F: FnMut(f32, f32) -> f32, R: Rng + ?Sized>(
             let (clon, clat) = (clon as f32, clat as f32);
             let (asin1, acos1) = clat.sin_cos();
             let base_pressure = cell.temp;
-            for &n in neighbors {
+            for &n in &neighbors {
                 let cell = &old[n as usize];
                 cum_temp += cell.temp;
                 cum_humid += cell.humidity;

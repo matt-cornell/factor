@@ -3,7 +3,8 @@ use bevy::tasks::futures_lite::Stream;
 use futures_sink::Sink;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
-use std::fmt::{self, Debug, Formatter};
+use std::borrow::Borrow;
+use std::hash::Hash;
 use std::marker::PhantomData;
 use std::ops::Deref;
 use std::pin::Pin;
@@ -83,40 +84,63 @@ impl<R, W: Serialize, S: Sink<Vec<u8>>> Sink<W> for Translator<R, W, S> {
     }
 }
 
-pub struct InsideArc<T: ?Sized, B> {
-    ptr: *const T,
-    arc: Option<Arc<B>>,
+#[derive(Debug, Clone)]
+pub enum MaybeArc<'a, T: ?Sized> {
+    Borrowed(&'a T),
+    Owned(Arc<T>),
 }
-impl<T: ?Sized, B> InsideArc<T, B> {
-    pub fn new<F: FnOnce(&B) -> &T>(arc: Arc<B>, map: F) -> Self {
-        Self {
-            ptr: map(&arc) as *const T,
-            arc: Some(arc),
-        }
-    }
-    pub fn from_static(val: &'static T) -> Self {
-        Self {
-            ptr: val as *const T,
-            arc: None,
-        }
-    }
-    pub fn map<U: ?Sized, F: FnOnce(&T) -> &U>(this: Self, map: F) -> InsideArc<U, B> {
-        InsideArc {
-            ptr: map(&this) as *const U,
-            arc: this.arc,
-        }
+impl<'a, T: ?Sized> From<&'a T> for MaybeArc<'a, T> {
+    fn from(value: &'a T) -> Self {
+        Self::Borrowed(value)
     }
 }
-impl<T: ?Sized, B> Deref for InsideArc<T, B> {
+impl<T: ?Sized> From<Arc<T>> for MaybeArc<'_, T> {
+    fn from(value: Arc<T>) -> Self {
+        Self::Owned(value)
+    }
+}
+impl<T: ?Sized> Deref for MaybeArc<'_, T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
-        // SAFETY: we either borrow from `arc`, which we're keeping alive, or we have a static reference
-        unsafe { &*self.ptr }
+        match self {
+            Self::Borrowed(r) => r,
+            Self::Owned(o) => o,
+        }
     }
 }
-impl<T: Debug + ?Sized, B> Debug for InsideArc<T, B> {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        Debug::fmt(&**self, f)
+impl<T: ?Sized> AsRef<T> for MaybeArc<'_, T> {
+    fn as_ref(&self) -> &T {
+        self
+    }
+}
+impl<T: ?Sized> Borrow<T> for MaybeArc<'_, T> {
+    fn borrow(&self) -> &T {
+        self
+    }
+}
+impl<T: ?Sized + PartialEq> PartialEq for MaybeArc<'_, T> {
+    fn eq(&self, other: &Self) -> bool {
+        **self == **other
+    }
+    #[allow(clippy::partialeq_ne_impl)]
+    fn ne(&self, other: &Self) -> bool {
+        **self != **other
+    }
+}
+impl<T: ?Sized + PartialOrd> PartialOrd for MaybeArc<'_, T> {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        (**self).partial_cmp(other)
+    }
+}
+impl<T: ?Sized + Eq> Eq for MaybeArc<'_, T> {}
+impl<T: ?Sized + Ord> Ord for MaybeArc<'_, T> {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        (**self).cmp(other)
+    }
+}
+impl<T: ?Sized + Hash> Hash for MaybeArc<'_, T> {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        (**self).hash(state);
     }
 }

@@ -34,10 +34,13 @@ fn cache_slice(depth: u8, hash: u64) -> ([Vec2; 4], Arc<[(u64, OnceLock<Mat4>); 
         let vertices = layer.vertices(hash);
         let center = layer.center(hash);
         let corners = vertices.map(|c2| (get_relative(center, c2) * SCALE).as_vec2()); // I don't know where this 2 came from
-        let slice = &healpix::neighbors_list(depth)[(hash as usize * 8)..(hash as usize * 8 + 8)];
-        let neighbors = <[u64; 8]>::try_from(slice)
-            .unwrap()
-            .map(|i| (i, OnceLock::new()));
+        let mut neighbors = [const { (u64::MAX, OnceLock::new()) }; 8];
+        for (n, (i, _)) in healpix::neighbors(depth, hash, false)
+            .into_iter()
+            .zip(&mut neighbors)
+        {
+            *i = n;
+        }
         Ok::<_, Infallible>((corners, Arc::new(neighbors)))
     });
     res
@@ -669,7 +672,7 @@ fn load_cells(
         info!(%id, hash = center, "spawning cell");
         commands.run_system_with_input(systems.spawn_cell, (center, id));
     }
-    for &cell in base_layer.neighbors_slice(center) {
+    for &cell in &base_layer.neighbors_slice(center, false) {
         if set.contains(cell) {
             continue;
         }
