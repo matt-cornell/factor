@@ -15,6 +15,9 @@ quick_cache.workspace = true
 tinyset.workspace = true
 triomphe.workspace = true
 
+[dev-dependencies]
+rand.workspace = true
+
 [target.'cfg(target_family = "wasm")'.dependencies]
 ws_stream_wasm.workspace = true
 

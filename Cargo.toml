@@ -48,6 +48,7 @@ itertools = "0.13.0"
 once_map = "0.4.21"
 postcard = { version = "1.0.10", default-features = false, features = ["use-std"] }
 quick_cache = "0.6.9"
+rand = "0.8.5"
 serde = { version = "1.0.214", features = ["derive"] }
 thiserror = "2.0.3"
 thread_local = { version = "1.1.8", features = ["nightly"] }

@@ -77,7 +77,7 @@ pub fn get_relative(start: LonLat, end: LonLat) -> DVec2 {
     let azimuth = (dlosin * la2cos).atan2(la1cos * la2sin - la1sin * la2cos * dlocos);
     let a = (dla * 0.5).sin().powi(2) + la1cos * la2cos * (dlo * 0.5).sin().powi(2);
     let dist = a.sqrt().atan2((1.0 - a).sqrt());
-    DVec2::from_angle(azimuth) * dist
+    DVec2::from_angle(azimuth) * dist * 2.0
 }
 
 /// Get the ending point on a sphere given an offset and starting point.

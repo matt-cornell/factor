@@ -3,6 +3,7 @@
 
 use bevy::ecs::system::SystemId;
 use bevy::input::mouse::MouseMotion;
+use bevy::math::DVec2;
 use bevy::prelude::*;
 use bevy::render::render_asset::RenderAssetUsages;
 use bevy::render::render_resource::{
@@ -15,6 +16,7 @@ use bevy_egui::{egui, EguiContexts, EguiPlugin};
 use factor_common::coords::*;
 use factor_common::healpix;
 use itertools::Itertools;
+// use rand::prelude::*;
 use std::convert::Infallible;
 use std::f64::consts::{FRAC_PI_2, TAU};
 use std::sync::{LazyLock, OnceLock};
@@ -31,7 +33,7 @@ fn cache_slice(depth: u8, hash: u64) -> ([Vec2; 4], Arc<[(u64, OnceLock<Mat4>); 
         let layer = healpix::Layer::new(depth);
         let vertices = layer.vertices(hash);
         let center = layer.center(hash);
-        let corners = vertices.map(|c2| (get_relative(center, c2) * SCALE).as_vec2());
+        let corners = vertices.map(|c2| (get_relative(center, c2) * SCALE).as_vec2()); // I don't know where this 2 came from
         let slice = &healpix::neighbors_list(depth)[(hash as usize * 8)..(hash as usize * 8 + 8)];
         let neighbors = <[u64; 8]>::try_from(slice)
             .unwrap()
@@ -104,6 +106,9 @@ struct HealpixParams {
     delta: u8,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Resource)]
+struct ShowTestPoints(bool);
+
 fn main() {
     App::new()
         .add_plugins(DefaultPlugins.set(WindowPlugin {
@@ -117,7 +122,8 @@ fn main() {
         .add_plugins(EguiPlugin)
         .insert_resource(HealpixParams { depth: 5, delta: 0 })
         .insert_resource(LockedMouse(false))
-        .insert_resource(MovementSpeed(0.05))
+        .insert_resource(MovementSpeed(0.1))
+        .insert_resource(ShowTestPoints(false))
         .insert_resource(AmbientLight {
             color: Color::WHITE,
             brightness: 100.0,
@@ -140,6 +146,7 @@ fn main() {
             PostUpdate,
             (
                 nan_checks,
+                test_points.run_if(resource_equals(ShowTestPoints(true))),
                 render_axes.after(bevy::transform::TransformSystem::TransformPropagate),
             ),
         )
@@ -174,6 +181,7 @@ fn setup(mut commands: Commands) {
 
 fn handle_input(
     mut locked: ResMut<LockedMouse>,
+    mut tests: ResMut<ShowTestPoints>,
     speed: Res<MovementSpeed>,
     keys: Res<ButtonInput<KeyCode>>,
     mut mouse: EventReader<MouseMotion>,
@@ -229,12 +237,16 @@ fn handle_input(
             "infinite camera transform, before={before}, delta={delta}"
         );
     }
+    if keys.pressed(KeyCode::KeyC) {
+        tests.0 = !tests.0;
+    }
 }
 
 fn show_ui(
     mut contexts: EguiContexts,
     time: Res<Time>,
     locked: Res<LockedMouse>,
+    mut tests: ResMut<ShowTestPoints>,
     mut speed: ResMut<MovementSpeed>,
     mut params: ResMut<HealpixParams>,
     mut camera: Query<(&mut Transform, &mut OwningCell), With<Camera3d>>,
@@ -353,6 +365,12 @@ fn show_ui(
                 .changed()
             {
                 let _ = &mut *speed;
+            }
+            if ui
+                .checkbox(&mut tests.bypass_change_detection().0, "Test Points")
+                .changed()
+            {
+                let _ = &mut *tests;
             }
         });
         egui::Window::new("Cells").show(ctx, |ui| {
@@ -576,6 +594,15 @@ fn spawn_cell(
                 RenderLayers::layer(1),
             ));
             *translate += 10000.0;
+            // let scale = thread_rng().gen_range(0.1..=5.0);
+            let scale = 1.0;
+            commands.spawn(PbrBundle {
+                mesh: assets.add(Cuboid::new(scale, scale, scale).mesh().build()),
+                // transform: Transform::from_rotation(thread_rng().gen())
+                //     .with_translation(Vec3::Y * scale * 2.0),
+                transform: Transform::from_translation(Vec3::Y * scale * 2.0),
+                ..default()
+            });
         });
 }
 
@@ -675,8 +702,8 @@ fn render_axes(mut gizmos: Gizmos, camera: Query<&GlobalTransform, With<Camera3d
 fn despawn_system(mut commands: Commands, time: Res<Time>, query: Query<(Entity, &DespawnTime)>) {
     for (entity, despawn) in query.iter() {
         if despawn.0 > time.elapsed() {
-            debug!(%entity, "despawning entity");
-            commands.entity(entity).despawn();
+            info!(%entity, "despawning entity");
+            commands.entity(entity).despawn_recursive();
         }
     }
 }
@@ -693,5 +720,28 @@ fn nan_checks(query: Query<(Entity, &Transform)>) {
             trans.is_finite(),
             "entity {entity} has a non-finite transform!"
         );
+    }
+}
+
+fn test_points(
+    mut gizmos: Gizmos,
+    camera: Query<&OwningCell, With<Camera3d>>,
+    params: Res<HealpixParams>,
+) {
+    let &OwningCell(cell) = camera.single();
+    let layer = healpix::Layer::new(params.depth);
+    let center = layer.center(cell);
+    for dx in (-40..=40).map(|x| x as f64 * 0.5) {
+        for dy in (-40..=40).map(|x| x as f64 * 0.5) {
+            let coords = get_absolute(center, DVec2::new(dx, dy) / SCALE);
+            if layer.hash(coords) == cell {
+                gizmos.sphere(
+                    Vec3::new(dx as _, 1.0, dy as _),
+                    Quat::IDENTITY,
+                    0.01,
+                    Color::WHITE,
+                );
+            }
+        }
     }
 }
