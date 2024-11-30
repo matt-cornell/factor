@@ -117,7 +117,7 @@ fn main() {
         .add_plugins(EguiPlugin)
         .insert_resource(HealpixParams { depth: 5, delta: 0 })
         .insert_resource(LockedMouse(false))
-        .insert_resource(MovementSpeed(0.1))
+        .insert_resource(MovementSpeed(0.05))
         .insert_resource(AmbientLight {
             color: Color::WHITE,
             brightness: 100.0,
@@ -187,11 +187,15 @@ fn handle_input(
     }
     let mut camera = camera.single_mut();
     let mut velocity = Vec3::ZERO;
-    if keys.pressed(KeyCode::Space) {
-        velocity += Vec3::Y * speed.0;
+    let mut speed = speed.0;
+    if keys.pressed(KeyCode::ControlLeft) {
+        speed *= 10.0;
     }
-    if camera.translation.y > speed.0 && keys.pressed(KeyCode::ShiftLeft) {
-        velocity -= Vec3::Y * speed.0;
+    if keys.pressed(KeyCode::Space) {
+        velocity += Vec3::Y * speed;
+    }
+    if camera.translation.y > speed && keys.pressed(KeyCode::ShiftLeft) {
+        velocity -= Vec3::Y * speed;
     }
     let forward = camera
         .forward()
@@ -201,16 +205,16 @@ fn handle_input(
         .xzy();
     let right = camera.right();
     if keys.pressed(KeyCode::KeyW) {
-        velocity += forward * speed.0;
+        velocity += forward * speed;
     }
     if keys.pressed(KeyCode::KeyA) {
-        velocity -= right * speed.0;
+        velocity -= right * speed;
     }
     if keys.pressed(KeyCode::KeyS) {
-        velocity -= forward * speed.0;
+        velocity -= forward * speed;
     }
     if keys.pressed(KeyCode::KeyD) {
-        velocity += right * speed.0;
+        velocity += right * speed;
     }
     camera.translation += velocity;
     for &MouseMotion {
@@ -231,6 +235,7 @@ fn show_ui(
     mut contexts: EguiContexts,
     time: Res<Time>,
     locked: Res<LockedMouse>,
+    mut speed: ResMut<MovementSpeed>,
     mut params: ResMut<HealpixParams>,
     mut camera: Query<(&mut Transform, &mut OwningCell), With<Camera3d>>,
     cells: Query<
@@ -261,9 +266,20 @@ fn show_ui(
                 ), default(), ui.style().visuals.text_color(), 0.0));
             });
     } else {
-        let (mut trans, containing) = camera.single_mut();
+        let (mut trans, mut containing) = camera.single_mut();
         egui::Window::new("Position").show(ctx, |ui| {
-            ui.label(format!("Cell: {}", containing.0));
+            if ui
+                .add(
+                    egui::Slider::new(
+                        &mut containing.bypass_change_detection().0,
+                        0..=healpix::n_hash(params.depth),
+                    )
+                    .text("Cell"),
+                )
+                .changed()
+            {
+                let _ = &mut *containing;
+            }
             if ui
                 .add(
                     egui::Slider::new(
@@ -318,16 +334,7 @@ fn show_ui(
                 trans.translation.z = off.y;
             }
         });
-        egui::Window::new("Healpix").show(ctx, |ui| {
-            if ui
-                .add(
-                    egui::Slider::new(&mut params.bypass_change_detection().depth, 0..=29)
-                        .text("Healpix Depth"),
-                )
-                .changed()
-            {
-                let _ = &mut *params;
-            }
+        egui::Window::new("Misc").show(ctx, |ui| {
             if ui
                 .add(
                     egui::Slider::new(&mut params.bypass_change_detection().delta, 0..=5)
@@ -336,6 +343,16 @@ fn show_ui(
                 .changed()
             {
                 let _ = &mut *params;
+            }
+            if ui
+                .add(
+                    egui::Slider::new(&mut speed.bypass_change_detection().0, 0.0..=1000.0)
+                        .logarithmic(true)
+                        .text("Movement Speed"),
+                )
+                .changed()
+            {
+                let _ = &mut *speed;
             }
         });
         egui::Window::new("Cells").show(ctx, |ui| {
