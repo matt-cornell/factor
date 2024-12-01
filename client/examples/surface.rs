@@ -15,7 +15,6 @@ use bevy::window::WindowFocused;
 use bevy_egui::{egui, EguiContexts, EguiPlugin};
 use factor_common::coords::*;
 use factor_common::healpix;
-use itertools::Itertools;
 // use rand::prelude::*;
 use std::convert::Infallible;
 use std::f64::consts::{FRAC_PI_2, TAU};
@@ -26,9 +25,9 @@ use triomphe::Arc;
 const SCALE: f64 = 1000.0;
 
 static CACHE: [LazyLock<
-    quick_cache::sync::Cache<u64, ([Vec2; 4], Arc<[(u64, OnceLock<Mat4>); 8]>)>,
+    quick_cache::sync::Cache<u64, ([Vec2; 4], Arc<[(u64, OnceLock<Transform>); 8]>)>,
 >; 29] = [const { LazyLock::new(|| quick_cache::sync::Cache::new(65536)) }; 29];
-fn cache_slice(depth: u8, hash: u64) -> ([Vec2; 4], Arc<[(u64, OnceLock<Mat4>); 8]>) {
+fn cache_slice(depth: u8, hash: u64) -> ([Vec2; 4], Arc<[(u64, OnceLock<Transform>); 8]>) {
     let Ok(res) = CACHE[depth as usize].get_or_insert_with(&hash, || {
         let layer = healpix::Layer::new(depth);
         let vertices = layer.vertices(hash);
@@ -48,10 +47,10 @@ fn cache_slice(depth: u8, hash: u64) -> ([Vec2; 4], Arc<[(u64, OnceLock<Mat4>); 
 fn corners_of(depth: u8, hash: u64) -> [Vec2; 4] {
     cache_slice(depth, hash).0
 }
-fn transforms_for(depth: u8, base: u64, neighbor: u64) -> Mat4 {
-    let slice = cache_slice(depth, base);
+fn transforms_for(depth: u8, base: u64, neighbor: u64) -> Transform {
+    let (verts, slice) = cache_slice(depth, base);
+    let mut verts = verts.map(|v| v.extend(0.0).xzy());
     let Some(cell) = slice
-        .1
         .iter()
         .find_map(|(n, c)| (*n == neighbor).then_some(c))
     else {
@@ -62,22 +61,31 @@ fn transforms_for(depth: u8, base: u64, neighbor: u64) -> Mat4 {
     *cell.get_or_init(|| {
         let layer = healpix::Layer::new(depth);
         let vertices = layer.vertices(neighbor);
-        let min;
-        let mut to = {
+        let to = {
             let center = layer.center(base);
-            let verts = vertices.map(|c2| (get_relative(center, c2) * SCALE).as_vec2());
-            min = verts
-                .iter()
-                .position_max_by(|a, b| a.length_squared().total_cmp(&b.length_squared()))
-                .unwrap();
-            Mat4::from_cols_array_2d(&verts.map(|v| v.extend(0.0).xzy().extend(1.0).to_array()))
+            let mut trans_verts = vertices.map(|c2| {
+                (get_relative(center, c2) * SCALE)
+                    .as_vec2()
+                    .extend(0.0)
+                    .xzy()
+            });
+            let mut i = 0;
+            let mut sorted = trans_verts.map(|v| {
+                let res = (v, i, v.length_squared());
+                i += 1;
+                res
+            });
+            sorted.sort_by(|a, b| a.2.total_cmp(&b.2));
+            let nearest = sorted[0].1;
+            let farthest = sorted[3].1;
+            verts[farthest] = verts[nearest];
+            trans_verts[farthest] = trans_verts[nearest];
+            verts[nearest].y = 1.0;
+            trans_verts[nearest].y = 1.0;
+            Mat4::from_cols_slice(trans_verts.map(|v| v.extend(1.0).to_array()).as_flattened())
         };
-        let mut from = Mat4::from_cols_array_2d(
-            &corners_of(depth, neighbor).map(|v| v.extend(0.0).xzy().extend(1.0).to_array()),
-        );
-        from.col_mut(min).y = 1.0;
-        to.col_mut(min).y = 1.0;
-        to.mul_mat4(&from.inverse())
+        let from = Mat4::from_cols_slice(verts.map(|v| v.extend(1.0).to_array()).as_flattened());
+        Transform::from_matrix(to.mul_mat4(&from.inverse()))
     })
 }
 
@@ -652,13 +660,8 @@ fn load_cells(
         {
             commands.entity(entity).remove::<DespawnTime>();
             let mat = transforms_for(params.depth, center, *cell);
-            if mat.is_nan() {
-                warn!(%entity, cell, "despawning \"neighboring\" entity");
-                commands.entity(entity).despawn();
-            } else {
-                *vis = Visibility::Visible;
-                *trans = Transform::from_matrix(mat);
-            }
+            *vis = Visibility::Visible;
+            *trans = mat;
         } else {
             commands
                 .entity(entity)
