@@ -398,25 +398,35 @@ fn show_ui(
                                 }
                             }
                             ui.collapsing("Transform", |ui| {
-                                ui.label(format!("Translation: {:5.2}", trans.translation));
-                                ui.label(format!("Rotation: {:5.2}", trans.rotation));
-                                ui.label(format!("Scale: {:5.2}", trans.scale));
-                                let mat = trans.compute_matrix();
-                                ui.label(format!(
-                                    "Matrix:\n{:5.2}\n{:5.2}\n{}\n{:5.2}",
-                                    mat.x_axis, mat.y_axis, mat.z_axis, mat.w_axis
-                                ));
+                                let mat = trans.compute_matrix().transpose();
+                                ui.label(
+                                    egui::WidgetText::from(egui::text::LayoutJob::simple(
+                                        format!(
+                                            "Translation: {:10.6?}\nRotation:    {:10.6?}\nScale:       {:10.6?}\nMatrix:\n{:10.6?}\n{:10.6?}\n{:10.6?}\n{:10.6?}",
+                                            trans.translation.to_array(), trans.rotation.to_array(), trans.scale.to_array(),
+                                            mat.x_axis.to_array(), mat.y_axis.to_array(), mat.z_axis.to_array(), mat.w_axis.to_array()
+                                        ),
+                                        egui::FontId::monospace(ui.text_style_height(&egui::TextStyle::Small)),
+                                        ui.style().visuals.text_color(),
+                                        f32::INFINITY
+                                    )).into_galley(ui, Some(egui::TextWrapMode::Extend), 0.0, egui::FontSelection::Default)
+                                );
                             });
                             ui.collapsing("Global Transform", |ui| {
                                 let trans = gtrans.compute_transform();
-                                ui.label(format!("Translation: {:5.2}", trans.translation));
-                                ui.label(format!("Rotation: {:5.2}", trans.rotation));
-                                ui.label(format!("Scale: {:5.2}", trans.scale));
-                                let mat = trans.compute_matrix();
-                                ui.label(format!(
-                                    "Matrix:\n{:5.2}\n{:5.2}\n{}\n{:5.2}",
-                                    mat.x_axis, mat.y_axis, mat.z_axis, mat.w_axis
-                                ));
+                                let mat = trans.compute_matrix().transpose();
+                                ui.label(
+                                    egui::WidgetText::from(egui::text::LayoutJob::simple(
+                                        format!(
+                                            "Translation: {:10.6?}\nRotation:    {:10.6?}\nScale:       {:10.6?}\nMatrix:\n{:10.6?}\n{:10.6?}\n{:10.6?}\n{:10.6?}",
+                                            trans.translation.to_array(), trans.rotation.to_array(), trans.scale.to_array(),
+                                            mat.x_axis.to_array(), mat.y_axis.to_array(), mat.z_axis.to_array(), mat.w_axis.to_array()
+                                        ),
+                                        egui::FontId::monospace(ui.text_style_height(&egui::TextStyle::Small)),
+                                        ui.style().visuals.text_color(),
+                                        f32::INFINITY
+                                    )).into_galley(ui, Some(egui::TextWrapMode::Extend), 0.0, egui::FontSelection::Default)
+                                );
                             });
                         },
                     );
