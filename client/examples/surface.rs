@@ -4,6 +4,7 @@
 use bevy::ecs::system::SystemId;
 use bevy::input::mouse::MouseMotion;
 use bevy::math::DVec2;
+use bevy::pbr::wireframe::{WireframeConfig, WireframePlugin};
 use bevy::prelude::*;
 use bevy::render::render_asset::RenderAssetUsages;
 use bevy::render::render_resource::{
@@ -85,7 +86,10 @@ fn transforms_for(depth: u8, base: u64, neighbor: u64) -> Transform {
             Mat4::from_cols_slice(trans_verts.map(|v| v.extend(1.0).to_array()).as_flattened())
         };
         let from = Mat4::from_cols_slice(verts.map(|v| v.extend(1.0).to_array()).as_flattened());
-        Transform::from_matrix(to.mul_mat4(&from.inverse()))
+        let mat = to.mul_mat4(&from.inverse());
+        let bottom_row = mat.transpose().w_axis;
+        info!(depth, base, neighbor, row = %bottom_row, "bottom row");
+        Transform::from_matrix(mat)
     })
 }
 
@@ -131,6 +135,7 @@ fn main() {
             ..default()
         }))
         .add_plugins(EguiPlugin)
+        .add_plugins(WireframePlugin)
         .insert_resource(HealpixParams { depth: 5, delta: 0 })
         .insert_resource(LockedMouse(false))
         .insert_resource(MovementSpeed(0.1))
@@ -260,6 +265,7 @@ fn show_ui(
     mut tests: ResMut<ShowTestPoints>,
     mut speed: ResMut<MovementSpeed>,
     mut params: ResMut<HealpixParams>,
+    wireframe: Option<ResMut<WireframeConfig>>,
     mut camera: Query<(&mut Transform, &mut OwningCell), With<Camera3d>>,
     cells: Query<
         (
@@ -383,6 +389,11 @@ fn show_ui(
             {
                 let _ = &mut *tests;
             }
+            let mut fallback = false;
+            let enabled = wireframe.is_some();
+            let mref = wireframe.map_or(&mut fallback, |f| &mut f.into_inner().global);
+            ui.add_enabled(enabled, egui::Checkbox::new(mref, "Wireframes"))
+                .changed();
         });
         egui::Window::new("Cells").show(ctx, |ui| {
             ui.label(format!("{} cells loaded", cells.iter().len()));

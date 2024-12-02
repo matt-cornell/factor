@@ -51,14 +51,20 @@ pub fn neighbors(depth: u8, hash: u64, full: bool) -> CopyVec<u64, 8> {
         let slice = max_slice
             .split_once(|x| *x == u64::MAX)
             .map_or(max_slice, |x| x.0);
-        let mut vec = CopyVec::from_array(slice.try_into().unwrap());
+        let mut vec = slice.try_into().map_or_else(
+            |_| CopyVec::try_from_iter(slice.iter().copied()).unwrap(),
+            CopyVec::from_array,
+        );
         vec.retain(|i| *i != u64::MAX);
         vec
     } else if let Some(max_slice) = NEIGHBORS[depth as usize].get() {
         let slice = max_slice
             .split_once(|x| *x == u64::MAX)
             .map_or(&**max_slice, |x| x.0);
-        let mut vec = CopyVec::from_array(slice.try_into().unwrap());
+        let mut vec = slice.try_into().map_or_else(
+            |_| CopyVec::try_from_iter(slice.iter().copied()).unwrap(),
+            CopyVec::from_array,
+        );
         vec.retain(|i| *i != u64::MAX);
         vec
     } else {
