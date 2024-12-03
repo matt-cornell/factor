@@ -1,0 +1,63 @@
+[orbit]
+day-length = 360
+year-length = 864000
+obliquity = 0.0
+
+[climate]
+depth = 5
+intensity = 5000
+init-steps = 4000
+time-step = 100
+
+[tectonics]
+depth = 5
+steps = 100
+scale = 1.0
+
+[[noise.global]]
+gradient = false
+depth = 1
+shift = 0.0
+scale = 0.090
+
+[[noise.global]]
+gradient = true
+depth = 1
+shift = 0.100
+scale = 0.090
+
+[[noise.global]]
+gradient = false
+depth = 2
+shift = 0.200
+scale = 0.177
+
+[[noise.global]]
+gradient = false
+depth = 2
+shift = 0.300
+scale = 0.177
+
+[[noise.global]]
+gradient = false
+depth = 3
+shift = 0.5
+scale = 0.030
+
+[[noise.global]]
+gradient = true
+depth = 3
+shift = 0.700
+scale = 0.030
+
+[[noise.global]]
+gradient = true
+depth = 5
+shift = 0.0
+scale = 0.006
+
+[[noise.local]]
+gradient = true
+depth = 10
+shift = 0.0
+scale = 0.001

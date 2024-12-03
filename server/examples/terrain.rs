@@ -1,4 +1,4 @@
-#![allow(clippy::too_many_arguments, clippy::type_complexity)]
+#![allow(clippy::type_complexity)]
 #![feature(more_float_constants)]
 use bevy::input::mouse::*;
 use bevy::prelude::*;
@@ -6,9 +6,8 @@ use bevy::render::render_asset::RenderAssetUsages;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use bevy::window::PrimaryWindow;
 use bevy_egui::{egui, EguiContexts, EguiPlugin};
-use factor::terrain::climate::*;
-use factor::terrain::noise::*;
-use factor::terrain::tectonic::*;
+use factor_common::healpix;
+use factor_server::terrain::{climate::*, noise::*, tectonic::*};
 use itertools::Itertools;
 use rand::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -237,7 +236,7 @@ fn cell_noise(gradient: bool, depth: u8, shift: f32) -> Shifted<ValueOrGradient>
             hasher: thread_rng()
                 .sample_iter(rand_distr::UnitCircle)
                 .map(|[x, y]| Vec2::new(x, y))
-                .take(factor::healpix::n_hash(depth) as _)
+                .take(healpix::n_hash(depth) as _)
                 .collect::<Box<[Vec2]>>(),
             scale: linear,
         })
@@ -246,7 +245,7 @@ fn cell_noise(gradient: bool, depth: u8, shift: f32) -> Shifted<ValueOrGradient>
             depth,
             hasher: thread_rng()
                 .sample_iter(rand_distr::Standard)
-                .take(factor::healpix::n_hash(depth) as _)
+                .take(healpix::n_hash(depth) as _)
                 .collect::<Box<[f32]>>(),
             scale: linear,
         })
@@ -1587,7 +1586,7 @@ fn update_noise_terrain(
         terr.0
             .extend(noise.layers[start..].iter().map(NoiseSourceBuilder::build));
     }
-    let layer = factor::healpix::nested::get(noise.depth);
+    let layer = healpix::nested::get(noise.depth);
     for i in 0..layer.n_hash() {
         let (lon, lat) = layer.center(i);
         let height = terr.0.get_height(lon as _, lat as _);
@@ -1638,10 +1637,10 @@ fn setup_climate(
     let state = init_climate(
         depth.0,
         |hash| {
-            let (lon, lat) = factor::healpix::nested::center(depth.0, hash);
-            let noise_hash = factor::healpix::nested::hash(noise.1.depth, lon, lat);
+            let (lon, lat) = healpix::nested::center(depth.0, hash);
+            let noise_hash = healpix::nested::hash(noise.1.depth, lon, lat);
             let noise_height = noise.0 .0[noise_hash as usize];
-            let tect_hash = factor::healpix::nested::hash(tect.2 .0, lon, lat);
+            let tect_hash = healpix::nested::hash(tect.2 .0, lon, lat);
             let tect_height = tect.0 .0.cells()[tect_hash as usize]
                 .height
                 .mul_add(0.1, 0.2)
@@ -1804,42 +1803,46 @@ fn update_texture(
                         height,
                         temp: 20.0,
                         humidity: 0.0,
-                        ocean: height < oceans.depth,
                         heat_capacity: 0.0,
                         albedo: 0.0,
                         rainfall: 0.0,
                         wind: Vec2::ZERO,
+                        flags: if height < oceans.depth {
+                            ClimateFlags::OCEAN
+                        } else {
+                            ClimateFlags::NONE
+                        },
                     }
                 }
                 LayerFilter::Tectonics => ClimateCell {
                     height: cell.height.mul_add(0.1, 0.2).clamp(0.0, 1.0),
                     temp: 20.0,
                     humidity: 0.0,
-                    ocean: false,
                     heat_capacity: 0.0,
                     albedo: 0.0,
                     rainfall: 0.0,
                     wind: Vec2::ZERO,
+                    flags: ClimateFlags::NONE,
                 },
                 LayerFilter::AllNoise => ClimateCell {
                     height: noise.0 .0[noise.1 .0[n]],
                     temp: 20.0,
                     humidity: 0.0,
-                    ocean: false,
                     heat_capacity: 0.0,
                     albedo: 0.0,
                     rainfall: 0.0,
                     wind: Vec2::ZERO,
+                    flags: ClimateFlags::NONE,
                 },
                 LayerFilter::NoiseLayer(idx) => ClimateCell {
                     height: noise.2 .0[idx].get_height(x, y),
                     temp: 20.0,
                     humidity: 0.0,
-                    ocean: false,
                     heat_capacity: 0.0,
                     albedo: 0.0,
                     rainfall: 0.0,
                     wind: Vec2::ZERO,
+                    flags: ClimateFlags::NONE,
                 },
             },
             AppState::Climate { .. } => {
@@ -1881,7 +1884,7 @@ fn update_texture(
                 )
             }
             c @ (ColorKind::Height | ColorKind::Density) => {
-                if climate.ocean && oceans.show {
+                if climate.flags.contains(ClimateFlags::OCEAN) && oceans.show {
                     if climate.temp < 0.0 {
                         LinearRgba::WHITE
                     } else {

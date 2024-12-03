@@ -1,0 +1,18 @@
+[package]
+name = "factor-common"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+bevy.workspace = true
+cdshealpix.workspace = true
+copyvec = "0.2.1"
+futures-sink.workspace = true
+postcard.workspace = true
+quick_cache.workspace = true
+serde.workspace = true
+triomphe.workspace = true
+
+[lints]
+workspace = true

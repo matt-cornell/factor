@@ -1,0 +1,46 @@
+[package]
+name = "factor-server"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+bevy.workspace = true
+factor-common.workspace = true
+bytemuck.workspace = true
+cdshealpix.workspace = true
+hex.workspace = true
+rand.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+thread_local.workspace = true
+tinyset.workspace = true
+
+base64 = "0.22.1"
+bitflags = { version = "2.6.0", features = ["bytemuck"] }
+once_map = { version = "0.4.21", features = ["serde"] }
+ordered-float = "4.5.0"
+rand_distr = "0.4.3"
+rand_xoshiro = "0.6.0"
+redb = { version = "2.2.0", features = ["logging"] }
+toml = "0.8.19"
+
+[dev-dependencies]
+bevy_egui = { version = "0.30.0", default-features = false, features = ["default_fonts", "render"] }
+rfd = "0.15.0"
+itertools = "0.13.0"
+
+[target.'cfg(target_family = "wasm")'.dependencies]
+wasm-bindgen = "0.2.95"
+web-sys = { version = "0.3.72", features = ["Document", "Storage", "Window", "console"] }
+
+[target.'cfg(target_family = "wasm")'.dev-dependencies]
+web-time = "1.1.0"
+
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+etcetera = "0.8.0"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2.162"
+
+[lints]
+workspace = true

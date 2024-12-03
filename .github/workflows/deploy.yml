@@ -5,7 +5,8 @@ on:
     branches: ["main"]
 
 env:
-  examples: terrain
+  client-examples: surface
+  server-examples: terrain
   CARGO_TERM_COLOR: always
 
 jobs:
@@ -20,15 +21,25 @@ jobs:
         uses: Swatinem/rust-cache@v2
       - name: Install wasm-bindgen
         run: cargo install wasm-bindgen-cli
-      - name: Build examples
-        run: cargo build --target wasm32-unknown-unknown --release $(echo $examples | sed 's/[^ ]* */--example &/g')
+      - name: Build server examples
+        run: cargo build --target wasm32-unknown-unknown --release -p factor-server $(echo $server-examples | sed 's/[^ ]* */--example &/g')
+      - name: Build client examples
+        run: cargo build --target wasm32-unknown-unknown --release -p factor-client $(echo $server-examples | sed 's/[^ ]* */--example &/g')
+      - name: Build web demos
+        run: cargo build --target wasm32-unknown-unknown --release -p factor -p factor-client
       - name: Create bindings
         run: |
           mkdir -p static-deployment/examples/
-          for name in $examples; do
+          for name in $client-examples $server-examples; do
             wasm-bindgen --no-typescript --target no-modules --out-dir static-deployment/examples target/wasm32-unknown-unknown/release/examples/$name.wasm
             cp static-deployment/_base_example.html static-deployment/examples/$name.html
           done
+          mv target/wasm32-unknown-unknown/release/factor.wasm web-demo.wasm
+          mv target/wasm32-unknown-unknown/release/factor-client.wasm client.wasm
+          wasm-bindgen --no-typescript --target no-modules --out-dir static-deployment web-demo.wasm
+          wasm-bindgen --no-typescript --target no-modules --out-dir static-deployment client.wasm
+          cp static-deployment/_base_example.html static-deployment/web-demo.html
+          cp static-deployment/_base_example.html static-deployment/client.html
       - name: Upload pages artifact
         uses: actions/upload-pages-artifact@v3
         with:

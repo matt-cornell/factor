@@ -1,5 +1,23 @@
-#![feature(iter_array_chunks, slice_split_once, path_add_extension)]
+use bevy::prelude::*;
+use factor_client::core_ui::ClientState;
+use state::*;
 
-pub mod healpix;
-pub mod storage;
-pub mod terrain;
+pub mod render;
+pub mod state;
+
+#[derive(Debug, Clone, Copy)]
+pub struct CombinedPlugin;
+impl Plugin for CombinedPlugin {
+    fn build(&self, app: &mut App) {
+        app.insert_state(SingleplayerState::Base(ClientState::MainMenu))
+            .add_sub_state::<CreatingWorld>()
+            .add_systems(PreUpdate, link_states)
+            .add_systems(
+                Update,
+                (
+                    render::render_select_sp.run_if(in_state(ClientState::SPSelect)),
+                    render::render_create_world.run_if(in_state(CreatingWorld)),
+                ),
+            );
+    }
+}
