@@ -68,12 +68,14 @@ pub fn neighbors(depth: u8, hash: u64, full: bool) -> CopyVec<u64, 8> {
         vec.retain(|i| *i != u64::MAX);
         vec
     } else {
-        let cache = &SPARSE_NEIGHBORS[hash as usize - 6];
+        let cache = &SPARSE_NEIGHBORS[depth as usize - 6];
         let Ok(res) = cache.get_or_insert_with(&hash, || {
             let map = nested::neighbours(depth, hash, false);
             Ok::<_, Infallible>(
-                CopyVec::try_from_iter((0..9).map(|i| *map.get(MainWind::from_index(i)).unwrap()))
-                    .unwrap(),
+                CopyVec::try_from_iter(
+                    (0..9).filter_map(|i| map.get(MainWind::from_index(i)).copied()),
+                )
+                .unwrap(),
             )
         });
         res

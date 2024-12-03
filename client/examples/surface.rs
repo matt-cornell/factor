@@ -24,7 +24,7 @@ use std::sync::{LazyLock, OnceLock};
 use std::time::Duration;
 use triomphe::Arc;
 
-const SCALE: f64 = 1000.0;
+const SCALE: f64 = 100000.0;
 
 const NAN_TRANSFORM: Transform = Transform {
     translation: Vec3::NAN,
@@ -229,7 +229,10 @@ fn main() {
         }))
         .add_plugins(EguiPlugin)
         .add_plugins(WireframePlugin)
-        .insert_resource(HealpixParams { depth: 5, delta: 0 })
+        .insert_resource(HealpixParams {
+            depth: 12,
+            delta: 0,
+        })
         .insert_resource(LockedMouse(false))
         .insert_resource(MovementSpeed(0.1))
         .insert_resource(ShowTestPoints(false))
@@ -266,7 +269,7 @@ fn setup(mut commands: Commands) {
     let base = commands.spawn_empty().id();
     commands.spawn((
         Camera3dBundle {
-            transform: Transform::from_xyz(1.0, 50.0, -1.0).looking_at(Vec3::ZERO, Dir3::Y),
+            transform: Transform::from_xyz(1.0, 20.0, -1.0).looking_at(Vec3::ZERO, Dir3::Y),
             ..default()
         },
         RenderLayers::layer(0),
@@ -632,7 +635,16 @@ fn spawn_cell(
 ) {
     let (cell, entity) = cell.0;
     let corners = corners_of(params.depth, cell);
-    info!(hash = cell, ?corners, %entity, "initializing cell");
+    let area = -0.5
+        * ((corners[0].x * corners[1].y
+            + corners[1].x * corners[2].y
+            + corners[2].x * corners[3].y
+            + corners[3].x * corners[0].y)
+            - (corners[1].x * corners[0].y
+                + corners[2].x * corners[1].y
+                + corners[3].x * corners[2].y
+                + corners[0].x * corners[3].y));
+    info!(hash = cell, area, ?corners, %entity, "initializing cell");
     let (min_x, max_x, min_y, max_y) = corners.iter().fold(
         (
             f32::INFINITY,
