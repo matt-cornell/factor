@@ -59,17 +59,8 @@ fn transforms_for(depth: u8, base: u64, neighbor: u64) -> Transform {
         let _guard = info_span!("finding transforms", depth, base).entered();
         let layer = healpix::Layer::new(depth);
         let neighbors = layer.neighbors(base, false);
-        let mut has = 0u8;
         let mut out_verts = [[Vec2::NAN; 4]; 8]; // NW NE SE SW N E S W
         let mut out = [(u64::MAX, NAN_TRANSFORM); 8]; // same order
-        for (i, wind) in [MainWind::N, MainWind::E, MainWind::S, MainWind::W]
-            .into_iter()
-            .enumerate()
-        {
-            if neighbors.get(wind).is_some() {
-                has |= 1 << i;
-            }
-        }
         for (i, wind) in [MainWind::NW, MainWind::NE, MainWind::SE, MainWind::SW]
             .into_iter()
             .enumerate()
