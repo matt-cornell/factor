@@ -5,8 +5,8 @@ on:
     branches: ["main"]
 
 env:
-  client-examples: surface
-  server-examples: terrain
+  client_examples: surface
+  server_examples: terrain
   CARGO_TERM_COLOR: always
 
 jobs:
@@ -22,15 +22,15 @@ jobs:
       - name: Install wasm-bindgen
         run: cargo install wasm-bindgen-cli
       - name: Build server examples
-        run: cargo build --target wasm32-unknown-unknown --release -p factor-server $(echo $server-examples | sed 's/[^ ]* */--example &/g')
+        run: cargo build --target wasm32-unknown-unknown --release -p factor-server $(echo $server_examples | sed 's/[^ ]* */--example &/g')
       - name: Build client examples
-        run: cargo build --target wasm32-unknown-unknown --release -p factor-client $(echo $server-examples | sed 's/[^ ]* */--example &/g')
+        run: cargo build --target wasm32-unknown-unknown --release -p factor-client $(echo $client_examples | sed 's/[^ ]* */--example &/g')
       - name: Build web demos
         run: cargo build --target wasm32-unknown-unknown --release -p factor -p factor-client
       - name: Create bindings
         run: |
           mkdir -p static-deployment/examples/
-          for name in $client-examples $server-examples; do
+          for name in $client_examples $server_examples; do
             wasm-bindgen --no-typescript --target no-modules --out-dir static-deployment/examples target/wasm32-unknown-unknown/release/examples/$name.wasm
             cp static-deployment/_base_example.html static-deployment/examples/$name.html
           done
