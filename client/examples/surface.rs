@@ -3,7 +3,7 @@
 
 use bevy::ecs::system::SystemId;
 use bevy::input::mouse::MouseMotion;
-use bevy::math::DVec2;
+use bevy::math::{Affine2, DVec2};
 use bevy::pbr::wireframe::{WireframeConfig, WireframePlugin};
 use bevy::prelude::*;
 use bevy::render::render_asset::RenderAssetUsages;
@@ -16,6 +16,7 @@ use bevy::window::WindowFocused;
 use bevy_egui::{egui, EguiContexts, EguiPlugin};
 use factor_common::coords::*;
 use factor_common::healpix;
+use factor_common::healpix::cds::compass_point::MainWind;
 // use rand::prelude::*;
 use std::convert::Infallible;
 use std::f64::consts::{FRAC_PI_2, TAU};
@@ -25,72 +26,173 @@ use triomphe::Arc;
 
 const SCALE: f64 = 1000.0;
 
+const NAN_TRANSFORM: Transform = Transform {
+    translation: Vec3::NAN,
+    rotation: Quat::NAN,
+    scale: Vec3::NAN,
+};
+
+// const BASE_TRANSFORM: Transform =
+//     Transform::from_rotation(Quat::from_xyzw(0.0, FRAC_1_SQRT_2, 0.0, FRAC_1_SQRT_2));
+
+const BASE_TRANSFORM: Transform = Transform::IDENTITY;
+
 static CACHE: [LazyLock<
-    quick_cache::sync::Cache<u64, ([Vec2; 4], Arc<[(u64, OnceLock<Transform>); 8]>)>,
+    quick_cache::sync::Cache<u64, ([Vec2; 4], Arc<OnceLock<[(u64, Transform); 8]>>)>,
 >; 29] = [const { LazyLock::new(|| quick_cache::sync::Cache::new(65536)) }; 29];
-fn cache_slice(depth: u8, hash: u64) -> ([Vec2; 4], Arc<[(u64, OnceLock<Transform>); 8]>) {
+fn cache_data(depth: u8, hash: u64) -> ([Vec2; 4], Arc<OnceLock<[(u64, Transform); 8]>>) {
     let Ok(res) = CACHE[depth as usize].get_or_insert_with(&hash, || {
         let layer = healpix::Layer::new(depth);
         let vertices = layer.vertices(hash);
         let center = layer.center(hash);
         let corners = vertices.map(|c2| (get_relative(center, c2) * SCALE).as_vec2()); // I don't know where this 2 came from
-        let mut neighbors = [const { (u64::MAX, OnceLock::new()) }; 8];
-        for (n, (i, _)) in healpix::neighbors(depth, hash, false)
-            .into_iter()
-            .zip(&mut neighbors)
-        {
-            *i = n;
-        }
-        Ok::<_, Infallible>((corners, Arc::new(neighbors)))
+        Ok::<_, Infallible>((corners, Arc::new(OnceLock::new())))
     });
     res
 }
 fn corners_of(depth: u8, hash: u64) -> [Vec2; 4] {
-    cache_slice(depth, hash).0
+    cache_data(depth, hash).0
 }
 fn transforms_for(depth: u8, base: u64, neighbor: u64) -> Transform {
-    let (verts, slice) = cache_slice(depth, base);
-    let mut verts = verts.map(|v| v.extend(0.0).xzy());
-    let Some(cell) = slice
-        .iter()
-        .find_map(|(n, c)| (*n == neighbor).then_some(c))
-    else {
-        panic!("cell {neighbor} doesn't neighbor {base}");
-        // return Mat4::NAN;
-    };
-
-    *cell.get_or_init(|| {
+    let (verts, slice) = cache_data(depth, base); // verts: S E N W
+    let transforms = slice.get_or_init(|| {
+        let _guard = info_span!("finding transforms", depth, base).entered();
         let layer = healpix::Layer::new(depth);
-        let vertices = layer.vertices(neighbor);
-        let to = {
-            let center = layer.center(base);
-            let mut trans_verts = vertices.map(|c2| {
-                (get_relative(center, c2) * SCALE)
-                    .as_vec2()
-                    .extend(0.0)
-                    .xzy()
-            });
-            let mut i = 0;
-            let mut sorted = trans_verts.map(|v| {
-                let res = (v, i, v.length_squared());
-                i += 1;
-                res
-            });
-            sorted.sort_by(|a, b| a.2.total_cmp(&b.2));
-            let nearest = sorted[0].1;
-            let farthest = sorted[3].1;
-            verts[farthest] = verts[nearest];
-            trans_verts[farthest] = trans_verts[nearest];
-            verts[nearest].y = 1.0;
-            trans_verts[nearest].y = 1.0;
-            Mat4::from_cols_slice(trans_verts.map(|v| v.extend(1.0).to_array()).as_flattened())
-        };
-        let from = Mat4::from_cols_slice(verts.map(|v| v.extend(1.0).to_array()).as_flattened());
-        let mat = to.mul_mat4(&from.inverse());
-        let bottom_row = mat.transpose().w_axis;
-        info!(depth, base, neighbor, row = %bottom_row, "bottom row");
-        Transform::from_matrix(mat)
-    })
+        let neighbors = layer.neighbors(base, false);
+        let mut has = 0u8;
+        let mut out_verts = [[Vec2::NAN; 4]; 8]; // NW NE SE SW N E S W
+        let mut out = [(u64::MAX, NAN_TRANSFORM); 8]; // same order
+        for (i, wind) in [MainWind::N, MainWind::E, MainWind::S, MainWind::W]
+            .into_iter()
+            .enumerate()
+        {
+            if neighbors.get(wind).is_some() {
+                has |= 1 << i;
+            }
+        }
+        for (i, wind) in [MainWind::NW, MainWind::NE, MainWind::SE, MainWind::SW]
+            .into_iter()
+            .enumerate()
+        {
+            let cell = *neighbors.get(wind).unwrap();
+            let _guard = info_span!("ordinal transform", wind = ?[MainWind::NW, MainWind::NE, MainWind::SE, MainWind::SW][i], neighbor = cell).entered();
+            let mut new_verts = corners_of(depth, cell); // S E N W
+            // new_verts.rotate_left(1);
+            let [na, nb, ba, bb] = match i {
+                0 => [0, 1, 3, 2],
+                1 => [3, 0, 2, 1],
+                2 => [2, 3, 1, 0],
+                3 => [1, 2, 0, 3],
+                _ => unreachable!(),
+            };
+            let (v1, v2, nv1, nv2) = (verts[ba], verts[bb], new_verts[na], new_verts[nb]);
+            let ax1 = nv1 - nv2;
+            let ax2 = v1 - v2;
+            debug!(?verts, ?new_verts, "available points");
+            debug!(%v1, %v2, %nv1, %nv2, "got points");
+            debug!(%ax1, %ax2, "created axes");
+            let scale = (ax2.length_squared() / ax1.length_squared()).sqrt();
+            debug!(scale, "found scale");
+            out_verts[i][na] = verts[ba];
+            out_verts[i][nb] = verts[bb];
+            for v in &mut new_verts {
+                *v /= scale;
+            }
+            let angle = ax2.to_angle() - ax1.to_angle();
+            debug!(angle, "found angle");
+            let mat2 = Mat2::from_scale_angle(Vec2::splat(scale), angle);
+            let transformed = mat2.mul_mat2(&Mat2::from_cols(nv1, nv2));
+            let mv1 = transformed.x_axis;
+            let translate = v1 - mv1;
+            #[cfg(debug_assertions)]
+            {
+                let mv2 = transformed.y_axis;
+                let trans2 = v2 - mv2;
+                let len = (translate - trans2).length();
+                assert!(
+                    len < 0.01,
+                    "translations are significantly different: {} vs {}",
+                    translate,
+                    trans2
+                );
+            }
+            debug!(%translate, "found translation");
+            let nc = (na + 2) % 4;
+            let nd = (nb + 2) % 4;
+            let transformed = mat2.mul_mat2(&Mat2::from_cols(new_verts[nc], new_verts[nd]))
+                + Mat2::from_cols(translate, translate);
+            out_verts[i][nc] = transformed.x_axis;
+            out_verts[i][nd] = transformed.y_axis;
+            // out_verts[i].rotate_right(1);
+            out[i] = (
+                cell,
+                Transform {
+                    translation: translate.extend(0.0).xzy(),
+                    rotation: Quat::from_rotation_y(-angle),
+                    scale: Vec3::new(scale, 1.0, scale),
+                },
+            );
+        }
+        debug!(verts = ?out_verts[..4], "initial verticces");
+        for (i, wind) in [MainWind::N, MainWind::E, MainWind::S, MainWind::W]
+            .into_iter()
+            .enumerate()
+        {
+            let Some(&cell) = neighbors.get(wind) else {
+                continue;
+            };
+            let _guard = info_span!("cardinal transform", wind = ?[MainWind::N, MainWind::E, MainWind::S, MainWind::W][i], neighbor = cell).entered();
+            let prev = i % 4;
+            let next = (i + 1) % 4;
+            let new_verts = corners_of(depth, cell); // S E N W
+            let [other_v, to_base_v, to_prev_v, to_next_v] = match i {
+                0 => [2, 0, 3, 1],
+                1 => [1, 3, 2, 0],
+                2 => [0, 2, 1, 3],
+                3 => [3, 1, 0, 2],
+                _ => unreachable!(),
+            };
+            let to = Mat3::from_cols(
+                verts[other_v].extend(1.0),
+                out_verts[prev][other_v].extend(1.0),
+                out_verts[next][other_v].extend(1.0),
+            );
+            let from = Mat3::from_cols(
+                new_verts[to_base_v].extend(1.0),
+                new_verts[to_prev_v].extend(1.0),
+                new_verts[to_next_v].extend(1.0),
+            );
+            debug!(%from, %to, "computing transform");
+            let mat3 = to.mul_mat3(&from.inverse());
+            #[cfg(debug_assertions)]
+            {
+                let bottom = mat3.transpose().z_axis;
+                assert!((bottom - Vec3::Z).length() < 0.001, "transform isn't affine, bottom row = {bottom}");
+            }
+            debug!(mat = %mat3, "found transformation");
+            let (scale, angle, trans) = Affine2::from_mat3(mat3).to_scale_angle_translation();
+            debug!(%scale, angle, %trans, "decomposed matrix");
+            out[i + 4] = (
+                cell,
+                Transform {
+                    translation: trans.extend(0.0).xzy(),
+                    rotation: Quat::from_rotation_y(-angle),
+                    scale: scale.extend(1.0).xzy(),
+                },
+            );
+        }
+        out
+    });
+    transforms
+        .iter()
+        .find_map(|&(n, t)| (n == neighbor).then_some(t))
+        .unwrap_or_else(|| {
+            error!(
+                depth,
+                base, neighbor, "attempted to find transform for non-neighboring cell"
+            );
+            NAN_TRANSFORM
+        })
 }
 
 /// Which cell
@@ -173,7 +275,7 @@ fn setup(mut commands: Commands) {
     let base = commands.spawn_empty().id();
     commands.spawn((
         Camera3dBundle {
-            transform: Transform::from_xyz(1.0, 10.0, -1.0).looking_at(Vec3::ZERO, Dir3::Y),
+            transform: Transform::from_xyz(1.0, 50.0, -1.0).looking_at(Vec3::ZERO, Dir3::Y),
             ..default()
         },
         RenderLayers::layer(0),
@@ -664,7 +766,7 @@ fn load_cells(
         if *cell == center {
             commands.entity(entity).remove::<DespawnTime>();
             *vis = Visibility::Visible;
-            *trans = Transform::IDENTITY;
+            *trans = BASE_TRANSFORM;
         } else if base_layer
             .external_edge(*cell, params.delta)
             .contains(&delta_hash)

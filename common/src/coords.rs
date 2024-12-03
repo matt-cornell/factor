@@ -1,4 +1,4 @@
-use bevy::math::DVec2;
+use bevy::math::{DVec2, Vec2Swizzles};
 use std::f64::consts::{FRAC_PI_2, TAU};
 
 /// A longitude-latitude pair of coordinates. Normalizes and handles conversions between `f32` and `f64`.
@@ -77,13 +77,13 @@ pub fn get_relative(start: LonLat, end: LonLat) -> DVec2 {
     let azimuth = (dlosin * la2cos).atan2(la1cos * la2sin - la1sin * la2cos * dlocos);
     let a = (dla * 0.5).sin().powi(2) + la1cos * la2cos * (dlo * 0.5).sin().powi(2);
     let dist = a.sqrt().atan2((1.0 - a).sqrt());
-    DVec2::from_angle(azimuth) * dist * 2.0
+    DVec2::from_angle(-azimuth).yx() * dist * 2.0
 }
 
 /// Get the ending point on a sphere given an offset and starting point.
 pub fn get_absolute(start: LonLat, offset: DVec2) -> LonLat {
     let LonLat { lon: lo1, lat: la1 } = start;
-    let azimuth = offset.to_angle();
+    let azimuth = -offset.yx().to_angle();
     let dist = offset.length();
     let (lasin, lacos) = la1.sin_cos();
     let (azsin, azcos) = azimuth.sin_cos();
