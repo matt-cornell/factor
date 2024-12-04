@@ -397,7 +397,7 @@ fn show_ui(
                 .add(
                     egui::Slider::new(
                         &mut containing.bypass_change_detection().0,
-                        0..=healpix::n_hash(params.depth),
+                        0..=(healpix::n_hash(params.depth) - 1),
                     )
                     .text("Cell"),
                 )
@@ -486,9 +486,10 @@ fn show_ui(
                 let _ = &mut *tests;
             }
             let mut fallback = false;
-            let enabled = wireframe.is_some();
+            let enabled = !cfg!(target_family = "wasm") && wireframe.is_some();
             let mref = wireframe.map_or(&mut fallback, |f| &mut f.into_inner().global);
             ui.add_enabled(enabled, egui::Checkbox::new(mref, "Wireframes"))
+                .on_disabled_hover_text("Wireframes are disabled here!")
                 .changed();
         });
         egui::Window::new("Cells").show(ctx, |ui| {
