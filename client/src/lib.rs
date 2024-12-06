@@ -5,8 +5,10 @@ use bevy_egui::{egui, EguiPlugin};
 use core_ui::*;
 use std::sync::{Arc, OnceLock};
 
+pub mod cell;
 pub mod core_ui;
 pub mod net;
+pub mod utils;
 
 #[derive(Debug, Clone, Resource)]
 pub struct ClientPlugin {

@@ -52,9 +52,11 @@ rand = "0.8.5"
 serde = { version = "1.0.214", features = ["derive"] }
 thiserror = "2.0.3"
 thread_local = { version = "1.1.8", features = ["nightly"] }
-triomphe = "0.1.14"
+triomphe = { version = "0.1.14", features = ["unsize"] }
 tinyset = "0.5.1"
+unsize = "1.1.0"
 ws_stream_wasm = "0.7.4"
 
 [workspace.lints.clippy]
+type-complexity = "allow"
 too-many-arguments = "deny"

@@ -3,4 +3,5 @@
 pub mod coords;
 pub mod glue;
 pub mod healpix;
+pub mod rcu;
 pub mod util;

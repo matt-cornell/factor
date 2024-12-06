@@ -12,8 +12,10 @@ futures-sink.workspace = true
 futures-util.workspace = true
 itertools.workspace = true
 quick_cache.workspace = true
+thiserror.workspace = true
 tinyset.workspace = true
 triomphe.workspace = true
+unsize.workspace = true
 
 [dev-dependencies]
 rand.workspace = true
