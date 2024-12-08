@@ -1,14 +1,24 @@
 use bevy::prelude::*;
 use bevy::render::render_asset::RenderAssetUsages;
-use factor_common::glue::ClientSide;
 use std::cmp::Ordering;
 use std::future::Future;
-use std::ops::Deref;
 use std::pin::Pin;
-use std::sync::{Arc, OnceLock}; // I'd rather use triomphe's Arc but it doesn't support downcasting or coercion
+use std::sync::OnceLock;
 use std::task::{Context, Poll};
 
-pub fn mesh_quad(corners: [Vec2; 4], depth: usize, mut height: impl FnMut(Vec2) -> f32) -> Mesh {
+/// A point to be given to
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MeshPoint {
+    pub abs: Vec2,
+    pub i: usize,
+    pub j: usize,
+}
+
+pub fn mesh_quad(
+    corners: [Vec2; 4],
+    depth: usize,
+    mut height: impl FnMut(MeshPoint) -> f32,
+) -> Mesh {
     let len = depth + 1;
     let nverts = len * len;
     let (min_x, max_x, min_y, max_y) = corners.iter().fold(
@@ -62,7 +72,7 @@ pub fn mesh_quad(corners: [Vec2; 4], depth: usize, mut height: impl FnMut(Vec2) 
             };
             let b_basis = vb * scale * i.min(j) as f32;
             let vert = b_basis + basis + v0;
-            verts[idx] = vert.extend(height(vert)).xzy();
+            verts[idx] = vert.extend(height(MeshPoint { abs: vert, i, j })).xzy();
             uv[idx] = (vert + uv_add) * uv_scale;
         }
     }
@@ -99,26 +109,5 @@ impl<'a, T> Future for GetOnceLock<'a, T> {
             cx.waker().wake_by_ref();
             Poll::Pending
         }
-    }
-}
-
-#[derive(Clone, Resource)]
-pub struct ClientData {
-    inner: Arc<dyn ClientSide>,
-}
-impl ClientData {
-    #[inline(always)]
-    pub const fn new(inner: Arc<dyn ClientSide>) -> Self {
-        Self { inner }
-    }
-    pub fn into_arc(self) -> Arc<dyn ClientSide> {
-        self.inner
-    }
-}
-impl Deref for ClientData {
-    type Target = Arc<dyn ClientSide>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.inner
     }
 }

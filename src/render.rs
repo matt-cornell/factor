@@ -55,7 +55,7 @@ pub fn render_select_sp(
                     ui.heading("Singleplayer");
                 });
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
-                    if ui.button("Exit").clicked() {
+                    if ui.button("Back").clicked() {
                         next_state.set(SingleplayerState::Base(ClientState::MainMenu));
                     }
                     if ui.button("New World").clicked() {

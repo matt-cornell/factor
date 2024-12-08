@@ -67,8 +67,21 @@ impl redb::Value for ClimateCell {
         Self: 'a,
         Self: 'b,
     {
-        let mut out = [0u8; size_of::<ClimateCell>()];
+        let mut out = [0u8; 9 * 4];
+        #[cfg(target_endian = "little")]
         out.copy_from_slice(bytes_of(value));
+        #[cfg(target_endian = "big")]
+        {
+            out[0..4].copy_from_slice(&value.height.to_le_bytes());
+            out[4..8].copy_from_slice(&value.temp.to_le_bytes());
+            out[8..12].copy_from_slice(&value.humidity.to_le_bytes());
+            out[12..16].copy_from_slice(&value.heat_capacity.to_le_bytes());
+            out[16..20].copy_from_slice(&value.albedo.to_le_bytes());
+            out[20..24].copy_from_slice(&value.rainfall.to_le_bytes());
+            out[24..28].copy_from_slice(&value.wind.x.to_le_bytes());
+            out[28..32].copy_from_slice(&value.wind.y.to_le_bytes());
+            out[32..36].copy_from_slice(&value.flags.0 .0.to_le_bytes());
+        }
         out
     }
     fn from_bytes<'a>(data: &'a [u8]) -> Self::SelfType<'a>
@@ -76,11 +89,28 @@ impl redb::Value for ClimateCell {
         Self: 'a,
     {
         let mut this = Self::zeroed();
+        #[cfg(target_endian = "little")]
         bytes_of_mut(&mut this).copy_from_slice(&data[..size_of::<ClimateCell>()]);
+        #[cfg(target_endian = "big")]
+        {
+            for (&bytes, field) in data.array_chunks().zip([
+                &mut this.height,
+                &mut this.temp,
+                &mut this.humidity,
+                &mut this.heat_capacity,
+                &mut this.albedo,
+                &mut this.rainfall,
+                &mut this.wind.x,
+                &mut this.wind.y,
+            ]) {
+                *field = f32::from_le_bytes(bytes);
+            }
+            this.flags.0 .0 = u32::from_le_bytes(data[32..36].try_into().unwrap());
+        }
         this
     }
     fn fixed_width() -> Option<usize> {
-        Some(size_of::<ClimateCell>())
+        Some(36)
     }
     fn type_name() -> redb::TypeName {
         redb::TypeName::new("factor::ClimateCell")

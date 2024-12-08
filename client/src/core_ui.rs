@@ -44,8 +44,12 @@ impl Deref for LastState {
     }
 }
 
-pub fn track_state_changes(state: Res<State<ClientState>>, mut last_state: ResMut<LastState>) {
-    last_state.0 = **state;
+pub fn track_state_changes(
+    state: Res<State<ClientState>>,
+    mut last_state: ResMut<LastState>,
+    mut last: Local<ClientState>,
+) {
+    last_state.0 = std::mem::replace(&mut *last, **state);
 }
 
 pub fn render_main_menu(
@@ -75,11 +79,8 @@ pub fn render_main_menu(
                     next_state.set(ClientState::SPSelect);
                 }
                     if ui
-                        .add_enabled(false, 
+                        .add(
                             egui::Button::new(egui::RichText::new("Multiplayer").text_style(egui::TextStyle::Button)).min_size(egui::vec2(ui.max_rect().width(), 0.0))
-                        )
-                        .on_disabled_hover_text(
-                            "Multiplayer is planned, but not implemented yet :(",
                         )
                         .clicked()
                     {
@@ -95,6 +96,38 @@ pub fn render_main_menu(
                     ).clicked() {
                         exit.send_default();
                     }
+                });
+            });
+        });
+}
+
+pub fn render_mp_select(
+    mut contexts: EguiContexts,
+    mut next_state: ResMut<NextState<ClientState>>,
+    config: Res<crate::ClientPlugin>,
+    mut server: Local<String>,
+) {
+    egui::Area::new(egui::Id::new("Main Menu"))
+        .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+        .show(contexts.ctx_mut(), |ui| {
+            ui.set_style(config.egui_style.clone());
+            egui::Frame::window(ui.style()).show(ui, |ui| {
+                ui.set_width(500.0);
+                if ui.input(|input| input.key_pressed(egui::Key::Escape)) {
+                    next_state.set(ClientState::MainMenu);
+                }
+                ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
+                    ui.heading("Multiplayer");
+                });
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+                    if ui.button("Back").clicked() {
+                        next_state.set(ClientState::MainMenu);
+                    }
+                    if ui.button("Connect").clicked() {
+                        let _uri = std::mem::take(&mut *server);
+                        next_state.set(ClientState::WorldLoading);
+                    }
+                    ui.add(egui::TextEdit::singleline(&mut *server).desired_width(f32::INFINITY));
                 });
             });
         });

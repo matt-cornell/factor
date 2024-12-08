@@ -1,11 +1,12 @@
-#![feature(iter_array_chunks, path_add_extension)]
+#![feature(array_chunks, iter_array_chunks, path_add_extension, try_blocks)]
 use bevy::ecs::system::SystemId;
 use bevy::prelude::*;
+use bevy::time::common_conditions::on_timer;
+use terrain::bevy::*;
 
 pub mod config;
 pub mod orbit;
 pub mod player;
-pub mod state;
 pub mod storage;
 pub mod tables;
 pub mod terrain;
@@ -13,14 +14,28 @@ pub mod utils;
 
 #[derive(Debug, Clone, Copy, Resource)]
 pub struct ServerSystems {
-    pub new_player: SystemId<(), player::PlayerDataExt>,
+    pub setup_terrain: SystemId<(), ()>,
+    pub load_terrain: SystemId<(), ()>,
 }
 
 pub struct ServerPlugin;
 impl Plugin for ServerPlugin {
     fn build(&self, app: &mut App) {
-        let new_player = app.register_system(player::new_player);
+        let setup_terrain = app.register_system(setup_terrain);
+        let load_terrain = app.register_system(load_terrain);
         app.init_asset_loader::<config::WorldConfigLoader>()
-            .insert_resource(ServerSystems { new_player });
+            .insert_resource(ClimateRunning(false))
+            .insert_resource(ServerSystems {
+                setup_terrain,
+                load_terrain,
+            })
+            .add_systems(
+                Update,
+                update_climate.run_if(
+                    resource_exists::<ClimateData>
+                        .and_then(resource_equals(ClimateRunning(true)))
+                        .and_then(on_timer(std::time::Duration::from_secs(5))),
+                ),
+            );
     }
 }

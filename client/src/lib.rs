@@ -6,9 +6,16 @@ use core_ui::*;
 use std::sync::{Arc, OnceLock};
 
 pub mod cell;
+pub mod chunks;
 pub mod core_ui;
 pub mod net;
+pub mod player;
 pub mod utils;
+
+#[derive(Debug, Clone, Resource)]
+pub struct ClientSettings {
+    pub render_distance: f64,
+}
 
 #[derive(Debug, Clone, Resource)]
 pub struct ClientPlugin {
@@ -26,7 +33,10 @@ impl Plugin for ClientPlugin {
                 (
                     track_state_changes.run_if(state_changed::<ClientState>),
                     render_main_menu.run_if(in_state(ClientState::MainMenu)),
+                    render_mp_select.run_if(in_state(ClientState::MPSelect)),
                     render_settings.run_if(in_state(ClientState::Settings)),
+                    (chunks::update_interest, chunks::render_chunks)
+                        .run_if(in_state(ClientState::Running)),
                 ),
             );
     }

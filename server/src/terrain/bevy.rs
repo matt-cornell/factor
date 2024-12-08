@@ -3,13 +3,12 @@ use super::noise::*;
 use super::tectonic::*;
 use crate::config::*;
 use crate::orbit::*;
+use crate::tables::TERRAIN;
 use crate::utils::database::*;
 use bevy::prelude::*;
 use factor_common::healpix;
 use rand::prelude::*;
 use rand_xoshiro::Xoshiro256PlusPlus as RandSource;
-
-const TERRAIN_TABLE: TableDefinition<u64, ClimateCell> = TableDefinition::new("terrain");
 
 #[derive(Debug, Clone)]
 enum ValueOrGradient {
@@ -38,6 +37,9 @@ pub struct ClimateData {
     pub max_rain: f32,
     pub avg_rain: f32,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Resource)]
+pub struct ClimateRunning(pub bool);
 
 /// Set up the terrain according to the parameters.
 pub fn setup_terrain(
@@ -86,12 +88,16 @@ pub fn setup_terrain(
         })
         .collect::<Vec<_>>();
     let climate_depth = config.climate.depth;
+    let height = ValueCellNoise {
+        depth: config.tectonics.depth,
+        scale: Identity,
+        hasher: |cell: usize| tect_state.cells()[cell].height,
+    };
     let mut climate = init_climate(
         climate_depth,
         |cell| {
             let (lon, lat) = healpix::nested::center(climate_depth, cell);
-            let tect_cell = healpix::nested::hash(config.tectonics.depth, lon, lat);
-            tect_state.cells()[tect_cell as usize].height * config.tectonics.scale
+            height.get_height(lon as _, lat as _) * config.tectonics.scale
                 + noise.get_height(lon as _, lat as _)
         },
         0.7,
@@ -144,36 +150,37 @@ pub fn setup_terrain(
     let avg_rain = tot_rain / l as f32;
     let avg_wind = tot_wind / l as f32;
     if let Some(db) = database {
-        match db.begin_write() {
-            Ok(txn) => {
-                let erred = match txn.open_table(TERRAIN_TABLE) {
-                    Ok(mut table) => 'save: {
-                        for (n, cell) in cells.iter().enumerate() {
-                            if let Err(err) = table.insert(n as u64, cell) {
-                                error!(%err, hash = n, "Error saving cell to table");
-                                break 'save true;
-                            }
+        'save: {
+            let Ok(txn) = db
+                .begin_write()
+                .inspect_err(|err| error!(%err, "Error starting transaction"))
+            else {
+                break 'save;
+            };
+            let erred = match txn.open_table(TERRAIN) {
+                Ok(mut table) => 'cells: {
+                    for (n, cell) in cells.iter().enumerate() {
+                        if let Err(err) = table.insert(n as u64, cell) {
+                            error!(%err, hash = n, "Error saving cell to table");
+                            break 'cells true;
                         }
-                        false
                     }
-                    Err(err) => {
-                        error!(%err, "Error opening terrain table");
-                        true
-                    }
-                };
-                #[allow(clippy::collapsible_else_if)]
-                if erred {
-                    if let Err(err) = txn.abort() {
-                        error!(%err, "Subsequent error on rollback");
-                    }
-                } else {
-                    if let Err(err) = txn.commit() {
-                        error!(%err, "Error committing save");
-                    }
+                    false
                 }
-            }
-            Err(err) => {
-                error!(%err, "Error starting transaction");
+                Err(err) => {
+                    error!(%err, "Error opening terrain table");
+                    true
+                }
+            };
+            #[allow(clippy::collapsible_else_if)]
+            if erred {
+                if let Err(err) = txn.abort() {
+                    error!(%err, "Subsequent error on rollback");
+                }
+            } else {
+                if let Err(err) = txn.commit() {
+                    error!(%err, "Error committing save");
+                }
             }
         }
     }
@@ -191,12 +198,75 @@ pub fn setup_terrain(
     });
 }
 
+pub fn load_terrain(mut commands: Commands, db: Res<Database>) {
+    let res: Result<_, redb::Error> = try {
+        let txn = db.begin_read()?;
+        let table = txn.open_table(TERRAIN)?;
+        let len = table.len()?;
+        let mut cells = Vec::with_capacity(len as _);
+        for (n, res) in table.iter()?.enumerate() {
+            let (k, v) = res.inspect_err(|err| error!(n, %err, "Error loading cell"))?;
+            if k.value() != n as u64 {
+                error!(cell = n, "Missing cell value");
+                return;
+            }
+            cells.push(v.value());
+        }
+        let depth = {
+            let per_square = cells.len() as u32 / 12;
+            if per_square.count_ones() != 1 {
+                error!(len = cells.len(), "Invalid number of healpix cells");
+                return;
+            }
+            per_square.trailing_zeros() as u8 / 2
+        };
+        let cells = cells.into_boxed_slice();
+        let mut buffer = cells.clone();
+        buffer.sort_by(|a, b| a.temp.total_cmp(&b.temp));
+        let l = buffer.len();
+        let min_temp = buffer[0].temp;
+        let max_temp = buffer[l - 1].temp;
+        let med_temp = buffer[l / 2].temp;
+        let [max_rain, max_wind, tot_temp, tot_rain, tot_wind] = buffer.iter().fold(
+            [0.0f32; 5],
+            |[max_rain, max_wind, tot_temp, tot_rain, tot_wind], cell| {
+                let wind = cell.wind.length();
+                [
+                    max_rain.max(cell.rainfall),
+                    max_wind.max(wind),
+                    tot_temp + cell.temp,
+                    tot_rain + cell.rainfall,
+                    tot_wind + wind,
+                ]
+            },
+        );
+        let avg_temp = tot_temp / l as f32;
+        let avg_rain = tot_rain / l as f32;
+        let avg_wind = tot_wind / l as f32;
+        commands.insert_resource(ClimateData {
+            depth,
+            cells,
+            min_temp,
+            max_temp,
+            med_temp,
+            avg_temp,
+            max_wind,
+            avg_wind,
+            max_rain,
+            avg_rain,
+        });
+    };
+    if let Err(err) = res {
+        error!(%err, "Error loading table");
+    }
+}
+
 pub fn update_climate(
     database: Option<Res<Database>>,
     mut climate: ResMut<ClimateData>,
     config: Res<WorldConfig>,
     planet: Query<&GlobalTransform, With<PlanetSurface>>,
-    time_step: Time<Virtual>,
+    time_step: Res<Time<Virtual>>,
 ) {
     let planet_transform = planet.single();
     step_climate(
@@ -238,7 +308,7 @@ pub fn update_climate(
     if let Some(db) = database {
         match db.begin_write() {
             Ok(txn) => {
-                let erred = match txn.open_table(TERRAIN_TABLE) {
+                let erred = match txn.open_table(TERRAIN) {
                     Ok(mut table) => 'save: {
                         for (n, cell) in climate.cells.iter().enumerate() {
                             if let Err(err) = table.insert(n as u64, cell) {
