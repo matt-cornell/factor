@@ -1,4 +1,6 @@
+use bevy::ecs::world::{Command, World};
 use bevy::log::*;
+use bevy::state::state::StateTransition;
 use bevy::tasks::futures_lite::Stream;
 use futures_sink::Sink;
 use serde::de::DeserializeOwned;
@@ -142,5 +144,13 @@ impl<T: ?Sized + Ord> Ord for MaybeArc<'_, T> {
 impl<T: ?Sized + Hash> Hash for MaybeArc<'_, T> {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         (**self).hash(state);
+    }
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+pub struct UpdateStates;
+impl Command for UpdateStates {
+    fn apply(self, world: &mut World) {
+        let _ = world.try_run_schedule(StateTransition);
     }
 }

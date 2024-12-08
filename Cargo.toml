@@ -17,6 +17,8 @@ factor-common.workspace = true
 factor-client.path = "client/"
 factor-server.path = "server/"
 hex.workspace = true
+triomphe.workspace = true
+unsize.workspace = true
 
 [profile.dev.package.'*']
 opt-level = 3

@@ -1,6 +1,5 @@
-use bevy::prelude::*;
-
 use crate::config::WorldConfig;
+use bevy::prelude::*;
 
 /// Marker component for the center of the planet.
 ///
@@ -15,6 +14,9 @@ pub struct PlanetCenter;
 pub struct PlanetSurface {
     pub last_tilt: f32,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Resource)]
+pub struct OrbitRunning(pub bool);
 
 /// System to update the transforms of the planets.
 pub fn update_planet_transforms(
@@ -65,9 +67,11 @@ impl Plugin for OrbitPlugin {
                 ))
                 .add_child(surface);
         }
-        app.add_systems(
+        app.insert_resource(OrbitRunning(false)).add_systems(
             Update,
-            (|time: Res<Time<Virtual>>| time.delta_seconds()).pipe(update_planet_transforms),
+            (|time: Res<Time<Virtual>>| time.delta_seconds())
+                .pipe(update_planet_transforms)
+                .run_if(resource_equals(OrbitRunning(true))),
         );
     }
 }

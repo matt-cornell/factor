@@ -26,6 +26,7 @@ impl Plugin for ClientPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(EguiPlugin)
             .init_state::<ClientState>()
+            .add_sub_state::<LoadingFailed>()
             .insert_resource(LastState(ClientState::MainMenu))
             .insert_resource(self.clone())
             .add_systems(
@@ -35,6 +36,7 @@ impl Plugin for ClientPlugin {
                     render_main_menu.run_if(in_state(ClientState::MainMenu)),
                     render_mp_select.run_if(in_state(ClientState::MPSelect)),
                     render_settings.run_if(in_state(ClientState::Settings)),
+                    render_loading_failed.run_if(in_state(LoadingFailed)),
                     (chunks::update_interest, chunks::render_chunks)
                         .run_if(in_state(ClientState::Running)),
                 ),

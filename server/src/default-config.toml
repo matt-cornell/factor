@@ -6,8 +6,8 @@ obliquity = 0.0
 [climate]
 depth = 5
 intensity = 5000
-init-steps = 4000
-time-step = 100
+init-steps = 250
+time-step = 0.01
 
 [tectonics]
 depth = 5
