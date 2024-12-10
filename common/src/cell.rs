@@ -1,8 +1,8 @@
+use crate::coords::*;
+use crate::healpix;
+use crate::healpix::cds::compass_point::MainWind;
 use bevy::math::Affine2;
 use bevy::prelude::*;
-use factor_common::coords::*;
-use factor_common::healpix;
-use factor_common::healpix::cds::compass_point::MainWind;
 use std::convert::Infallible;
 use std::sync::{LazyLock, OnceLock};
 use triomphe::Arc;

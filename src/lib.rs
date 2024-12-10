@@ -1,3 +1,4 @@
+#![feature(try_blocks)]
 use bevy::ecs::system::SystemId;
 use bevy::prelude::*;
 use factor_client::core_ui::ClientState;

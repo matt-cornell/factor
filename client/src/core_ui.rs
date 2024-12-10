@@ -4,6 +4,7 @@ use bevy_egui::{egui, EguiContexts};
 use std::error::Error;
 use std::hash::{Hash, Hasher};
 use std::ops::Deref;
+use std::time::Duration;
 use triomphe::Arc;
 
 #[derive(Debug, Default, Clone, States)]
@@ -257,5 +258,30 @@ pub fn render_loading_failed(
                     }
                 });
             });
+        });
+}
+
+pub fn render_loading(
+    mut contexts: EguiContexts,
+    config: Res<ClientPlugin>,
+    time: Res<Time>,
+    mut dots: Local<u32>,
+    mut timer: Local<Option<Timer>>,
+) {
+    let ticks = timer
+        .get_or_insert_with(|| Timer::new(Duration::from_secs(1), TimerMode::Repeating))
+        .tick(time.elapsed())
+        .times_finished_this_tick();
+    *dots += ticks;
+    *dots %= 4;
+    egui::Area::new(egui::Id::new("Loading Failed"))
+        .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+        .show(contexts.ctx_mut(), |ui| {
+            ui.set_style(config.egui_style.clone());
+            let mut msg = "Loading".to_string();
+            for _ in 0..*dots {
+                msg.push('.');
+            }
+            ui.label(msg);
         });
 }

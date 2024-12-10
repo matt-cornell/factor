@@ -4,16 +4,18 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-async-trait.workspace = true
 bevy.workspace = true
 bevy_egui.workspace = true
 factor-common.workspace = true
 futures-sink.workspace = true
 futures-util.workspace = true
+hex.workspace = true
 itertools.workspace = true
 quick_cache.workspace = true
+serde.workspace = true
 thiserror.workspace = true
 tinyset.workspace = true
+toml.workspace = true
 triomphe.workspace = true
 unsize.workspace = true
 
@@ -24,6 +26,7 @@ rand.workspace = true
 ws_stream_wasm.workspace = true
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
+etcetera = "0.8.0"
 async-net.workspace = true
 async-tungstenite.workspace = true
 

@@ -12,7 +12,7 @@ use bevy::render::view::RenderLayers;
 use bevy::window::CursorGrabMode;
 use bevy::window::WindowFocused;
 use bevy_egui::{egui, EguiContexts, EguiPlugin};
-use factor_client::cell::*;
+use factor_common::cell::*;
 use factor_common::coords::*;
 use factor_common::healpix;
 use std::f64::consts::{FRAC_PI_2, TAU};

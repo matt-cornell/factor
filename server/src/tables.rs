@@ -1,9 +1,9 @@
-use crate::player::PlayerData;
+use crate::player::{PlayerData, PlayerIdKey};
 use crate::terrain::climate::ClimateCell;
 use crate::utils::db_value::{ErasedValue, PostcardValue};
 use redb::{Key, TableDefinition, Value};
 
-pub const PLAYERS: TableDefinition<String, PostcardValue<Option<PlayerData>>> =
+pub const PLAYERS: TableDefinition<PlayerIdKey, PostcardValue<Option<PlayerData>>> =
     TableDefinition::new("players");
 
 pub const MISC_DATA: TableDefinition<DataEntry, ErasedValue> = TableDefinition::new("misc");

@@ -1,8 +1,8 @@
-use crate::cell::{corners_of, transforms_for};
 use crate::player::PlayerPos;
+use crate::settings::ClientSettings;
 use crate::utils::{mesh_quad, MeshPoint};
-use crate::ClientSettings;
 use bevy::prelude::*;
+use factor_common::cell::{corners_of, transforms_for};
 use factor_common::coords::get_absolute;
 use factor_common::{healpix, PLANET_RADIUS};
 use quick_cache::sync::Cache;

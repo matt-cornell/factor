@@ -3,10 +3,10 @@ use bevy::tasks::futures_lite::{future, StreamExt};
 use factor_common::glue::{ClientToServerMessage, ServerToClientMessage};
 use factor_common::util::Translator;
 use futures_util::lock::{Mutex, MutexGuard};
+use futures_util::SinkExt;
 
 #[cfg(target_family = "wasm")]
 mod wasm;
-use futures_util::SinkExt;
 #[cfg(target_family = "wasm")]
 pub use wasm::*;
 

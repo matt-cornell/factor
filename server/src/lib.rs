@@ -33,6 +33,8 @@ impl Plugin for ServerPlugin {
             .add_sub_state::<SetupTectonics>()
             .add_sub_state::<RunningTectonics>()
             .add_sub_state::<RunningClimate>()
+            .add_event::<player::PlayerRequest>()
+            .add_event::<player::PlayerLoaded>()
             .insert_resource(ClimateRunning(false))
             .insert_resource(ServerSystems {
                 setup_terrain,
@@ -53,6 +55,7 @@ impl Plugin for ServerPlugin {
             )
             .add_systems(OnEnter(ClimatePhase::NoiseSetup), setup_noise)
             .add_systems(OnEnter(ClimatePhase::ClimateSetup), setup_climate)
-            .add_systems(OnEnter(ClimatePhase::Finalize), finalize);
+            .add_systems(OnEnter(ClimatePhase::Finalize), finalize)
+            .observe(player::load_player);
     }
 }
