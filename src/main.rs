@@ -6,7 +6,7 @@ use factor_server::ServerPlugin;
 fn main() {
     App::new()
         .add_plugins(DefaultPlugins)
-        .add_plugins(ServerPlugin)
+        .add_plugins(ServerPlugin::default())
         .add_plugins(ClientPlugin {
             can_use_singleplayer: true,
             egui_style: default_style(),

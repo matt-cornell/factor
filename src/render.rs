@@ -1,12 +1,16 @@
 use crate::state::SingleplayerState;
+use crate::ComboSystems;
 use bevy::prelude::*;
 use bevy::utils::hashbrown::HashMap;
 use bevy_egui::{egui, EguiContexts};
 use factor_client::core_ui::ClientState;
 use factor_client::ClientPlugin;
+use factor_common::util::UpdateStates;
 use factor_server::config::WorldConfig;
 use factor_server::storage::PersistentBackend;
+use factor_server::terrain::bevy::{ClimateData, ClimatePhase};
 use factor_server::utils::database::{Database, DatabaseError, StorageError};
+use factor_server::ServerSystems;
 use std::time::Duration;
 
 pub fn render_select_sp(
@@ -17,6 +21,8 @@ pub fn render_select_sp(
     mut available: Local<Vec<(String, Option<DatabaseError>)>>,
     mut search: Local<String>,
     time: Res<Time>,
+    server: Res<ServerSystems>,
+    systems: Res<ComboSystems>,
     mut last_run: Local<Option<Duration>>,
     mut needs_tick: Local<bool>,
 ) {
@@ -55,7 +61,7 @@ pub fn render_select_sp(
                     ui.heading("Singleplayer");
                 });
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
-                    if ui.button("Exit").clicked() {
+                    if ui.button("Back").clicked() {
                         next_state.set(SingleplayerState::Base(ClientState::MainMenu));
                     }
                     if ui.button("New World").clicked() {
@@ -169,6 +175,7 @@ pub fn render_select_sp(
                             match Database::persistent(world.clone()) {
                                 Ok(db) => {
                                     commands.insert_resource(db);
+                                    commands.run_system_with_input(server.load_terrain, systems.after_loaded);
                                     next_state.set(SingleplayerState::Base(ClientState::WorldLoading));
                                 }
                                 Err(err) => {
@@ -192,6 +199,8 @@ pub fn render_create_world(
     config: Res<ClientPlugin>,
     state: Res<State<SingleplayerState>>,
     mut next_state: ResMut<NextState<SingleplayerState>>,
+    server: Res<ServerSystems>,
+    systems: Res<ComboSystems>,
     mut name_edit: Local<Option<String>>,
     mut seed_edit: Local<String>,
     mut config_wip: Local<Option<WorldConfig>>,
@@ -281,8 +290,9 @@ pub fn render_create_world(
                         }
 
                         commands.insert_resource(config_wip.take().unwrap());
-
-                        next_state.set(SingleplayerState::Base(ClientState::WorldLoading));
+                        next_state.set(SingleplayerState::CreatingWorld);
+                        commands.push(UpdateStates);
+                        commands.run_system_with_input(server.setup_terrain, systems.after_loaded);
                     }
                     if ui.button("Cancel").clicked() {
                         seed_edit.clear();
@@ -290,6 +300,139 @@ pub fn render_create_world(
                         *config_wip = None;
                         next_state.set(SingleplayerState::Base(ClientState::SPSelect));
                     }
+                });
+            });
+        });
+}
+
+pub fn render_creating_world(
+    mut contexts: EguiContexts,
+    state: Res<State<ClimatePhase>>,
+    config: Res<ClientPlugin>,
+    world_cfg: Res<WorldConfig>,
+    data: Option<Res<ClimateData>>,
+) {
+    let state = **state;
+    egui::Area::new(egui::Id::new("Create world"))
+        .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+        .show(contexts.ctx_mut(), |ui| {
+            egui::Frame::window(ui.style()).show(ui, |ui| {
+                ui.set_style(config.egui_style.clone());
+                ui.set_width(500.0);
+                ui.horizontal(|ui| {
+                    match state {
+                        ClimatePhase::NoiseSetup => ui.add(egui::Spinner::new()),
+                        _ => ui.add_enabled(
+                            false,
+                            egui::Checkbox::new(&mut (state != ClimatePhase::None), ""),
+                        ),
+                    };
+                    ui.label("Generate initial noise");
+                });
+                ui.horizontal(|ui| {
+                    match state {
+                        ClimatePhase::None | ClimatePhase::NoiseSetup => {
+                            ui.add_enabled(false, egui::Checkbox::new(&mut false, ""));
+                            ui.label("Tectonics setup 0/?");
+                        }
+                        ClimatePhase::TectSetup(step) => {
+                            ui.add(egui::Spinner::new());
+                            ui.label(format!("Tectonics setup {step}/?"));
+                        }
+                        _ => {
+                            ui.add_enabled(false, egui::Checkbox::new(&mut true, ""));
+                            ui.label("Tectonics setup");
+                        }
+                    };
+                });
+                ui.horizontal(|ui| {
+                    let max = world_cfg.tectonics.steps;
+                    match state {
+                        ClimatePhase::None
+                        | ClimatePhase::NoiseSetup
+                        | ClimatePhase::TectSetup(_) => {
+                            ui.add_enabled(false, egui::Checkbox::new(&mut false, ""));
+                            ui.label(format!("Tectonics simulation 0/{max}"));
+                        }
+                        ClimatePhase::TectStep(step) => {
+                            ui.add(egui::Spinner::new());
+                            ui.label(format!("Tectonics simulation {step}/{max}"));
+                        }
+                        _ => {
+                            ui.add_enabled(false, egui::Checkbox::new(&mut true, ""));
+                            ui.label(format!("Tectonics simulation {max}/{max}"));
+                        }
+                    };
+                });
+                ui.horizontal(|ui| {
+                    match state {
+                        ClimatePhase::ClimateSetup => ui.add(egui::Spinner::new()),
+                        _ => ui.add_enabled(
+                            false,
+                            egui::Checkbox::new(&mut (state > ClimatePhase::ClimateSetup), ""),
+                        ),
+                    };
+                    ui.label("Set up initial climate");
+                });
+                ui.horizontal(|ui| {
+                    let max = world_cfg.climate.init_steps;
+                    match state {
+                        ClimatePhase::None
+                        | ClimatePhase::NoiseSetup
+                        | ClimatePhase::TectSetup(_)
+                        | ClimatePhase::TectStep(_)
+                        | ClimatePhase::ClimateSetup => {
+                            ui.add_enabled(false, egui::Checkbox::new(&mut false, ""));
+                            ui.label(format!("Climate simulation 0/{max}"));
+                        }
+                        ClimatePhase::ClimateStep(step) => {
+                            ui.add(egui::Spinner::new());
+                            ui.label(format!("Climate simulation {step}/{max}"));
+                        }
+                        _ => {
+                            ui.add_enabled(false, egui::Checkbox::new(&mut true, ""));
+                            ui.label(format!("Climate simulation {max}/{max}"));
+                        }
+                    };
+                    let popup_id = egui::Id::new("climate-popup");
+                    let button =
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            let res = ui.button("stats");
+                            if res.clicked() {
+                                ui.memory_mut(|mem| mem.open_popup(popup_id));
+                            }
+                            res
+                        });
+                    egui::popup_above_or_below_widget(
+                        ui,
+                        popup_id,
+                        &button.inner,
+                        egui::AboveOrBelow::Below,
+                        egui::PopupCloseBehavior::CloseOnClickOutside,
+                        |ui| {
+                            if let Some(data) = data {
+                                ui.set_min_width(200.0);
+                                ui.label(format!("Min. Temp: {}", data.min_temp));
+                                ui.label(format!("Max. Temp: {}", data.max_temp));
+                                ui.label(format!("Med. Temp: {}", data.med_temp));
+                                ui.label(format!("Avg. Temp: {}", data.avg_temp));
+                                ui.label(format!("Max. Wind: {}", data.max_wind));
+                                ui.label(format!("Avg. Wind: {}", data.avg_wind));
+                                ui.label(format!("Max. Rain: {}", data.max_rain));
+                                ui.label(format!("Avg. Rain: {}", data.avg_rain));
+                            } else {
+                                ui.set_min_width(100.0);
+                                ui.label("No climate data");
+                            }
+                        },
+                    );
+                });
+                ui.horizontal(|ui| {
+                    match state {
+                        ClimatePhase::Finalize => ui.add(egui::Spinner::new()),
+                        _ => ui.add_enabled(false, egui::Checkbox::new(&mut false, "")),
+                    };
+                    ui.label("Finalizing");
                 });
             });
         });

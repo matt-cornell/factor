@@ -31,10 +31,8 @@ impl PersistentBackend {
     /// Never fails in the web.
     pub fn new(name: String) -> Result<Self, DatabaseError> {
         let _ = info_span!("Creating persistent backend", name).entered();
-        let mut saves = Self::data_dir().map_err(|_| {
-            error!("Couldn't find a home directory");
-            io::Error::new(io::ErrorKind::Other, "Couldn't find a home directory")
-        })?;
+        let mut saves = Self::data_dir()
+            .map_err(|_| io::Error::new(io::ErrorKind::Other, "Couldn't find a home directory"))?;
         saves.push("saves");
         info!(dir = %saves.display(), "Found save directory");
         if !saves.exists() {

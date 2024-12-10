@@ -92,3 +92,16 @@ pub fn get_absolute(start: LonLat, offset: DVec2) -> LonLat {
     let lo2 = lo1 + (azsin * dsin * lacos).atan2(dcos - lasin * la2.sin());
     LonLat::from_f64(lo2, la2)
 }
+
+/// Get the distance between two points. Same as `get_relative(start, end).length()` but faster.
+pub fn get_dist(start: LonLat, end: LonLat) -> f64 {
+    let LonLat { lon: lo1, lat: la1 } = start;
+    let LonLat { lon: lo2, lat: la2 } = end;
+    let dlo = lo2 - lo1;
+    let dla = la2 - la1;
+    let la1cos = la1.cos();
+    let la2cos = la2.cos();
+    let a = (dla * 0.5).sin().powi(2) + la1cos * la2cos * (dlo * 0.5).sin().powi(2);
+    let dist = a.sqrt().atan2((1.0 - a).sqrt());
+    dist * 2.0
+}

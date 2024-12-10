@@ -1,9 +1,6 @@
+use crate::healpix;
 use bevy::math::Vec2;
-use bevy::utils::HashMap;
-use factor_common::healpix;
-use ordered_float::OrderedFloat;
 use std::f64::consts::{FRAC_PI_2, TAU};
-use std::sync::{Mutex, PoisonError};
 
 fn circle_dist(a: Vec2, b: Vec2) -> Vec2 {
     use std::f32::consts::*;
@@ -60,35 +57,9 @@ impl<O, F: Fn(f32, f32) -> O> ValueHash<(f32, f32), O> for F {
         self(lon, lat)
     }
 }
-
-/// An oracle is a "hash" function that generates random values and stores them in a lookup table
-#[derive(Debug)]
-pub struct PosOracle<F, V> {
-    rand: F,
-    lookup: Mutex<HashMap<[OrderedFloat<f32>; 2], V>>,
-}
-impl<F, V> PosOracle<F, V> {
-    pub fn new(rand: F) -> Self {
-        Self {
-            rand,
-            lookup: Mutex::new(HashMap::new()),
-        }
-    }
-}
-impl<F: Fn() -> V, V: Copy> PosOracle<F, V> {
-    pub fn get(&self, lon: f32, lat: f32) -> V {
-        let mut lock = self.lookup.lock().unwrap_or_else(PoisonError::into_inner);
-        *lock
-            .entry([
-                OrderedFloat((lon * 100.0).round()),
-                OrderedFloat((lat * 100.0).round()),
-            ])
-            .or_insert_with(&self.rand)
-    }
-}
-impl<F: Fn() -> O, O: Copy> ValueHash<(f32, f32), O> for PosOracle<F, O> {
-    fn hash(&self, (lon, lat): (f32, f32)) -> O {
-        self.get(lon, lat)
+impl<O, F: Fn(usize) -> O> ValueHash<usize, O> for F {
+    fn hash(&self, input: usize) -> O {
+        self(input)
     }
 }
 

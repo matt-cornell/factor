@@ -8,6 +8,8 @@ pub enum SingleplayerState {
     ///
     /// If this is `None`, then we're using a temporary world.
     WorldCreation(Option<String>),
+    /// This is the state that we enter when creating a world.
+    CreatingWorld,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Hash, SubStates)]
@@ -31,21 +33,21 @@ pub fn link_states(
     old_sp: Res<State<SingleplayerState>>,
 ) {
     for evt in base_evt.read() {
-        if let Some(st) = evt.entered {
-            let next = SingleplayerState::Base(st);
-            if st != ClientState::Other("sp") && **old_sp != next {
+        if let Some(st) = &evt.entered {
+            let next = SingleplayerState::Base(st.clone());
+            if *st != ClientState::Other("sp") && **old_sp != next {
                 next_sp.set(next);
             }
         }
     }
     for evt in sp_evt.read() {
         if let Some(st) = &evt.entered {
-            let next = if let &SingleplayerState::Base(next) = st {
-                next
+            let next = if let SingleplayerState::Base(next) = st {
+                next.clone()
             } else {
                 ClientState::Other("sp")
             };
-            if **old_base != next {
+            if *old_base != next {
                 next_base.set(next);
             }
         }

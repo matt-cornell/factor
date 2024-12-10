@@ -470,25 +470,32 @@ fn step_terrain_impl<R: Rng + ?Sized>(
     }
 }
 
-pub fn init_terrain<R: Rng + ?Sized>(depth: u8, rng: &mut R) -> TectonicState {
+pub fn try_init_terrain<R: Rng + ?Sized>(depth: u8, rng: &mut R) -> Option<TectonicState> {
     let scale = 1 << depth;
-    loop {
-        let mut state = init_terrain_impl(depth, rng);
-        let mut metrics = QualityMetrics::default();
-        step_terrain_impl(&mut state, rng, &mut metrics);
-        bevy::log::debug!(
-            converge = metrics.converge / scale,
-            diverge = metrics.diverge / scale,
-            "sampling terrain"
-        );
-        if metrics.converge / scale > 35
-            && metrics.diverge / scale > 15
-            && (metrics.converge + metrics.diverge) / scale > 60
-            && metrics.bits.count_ones() > 6
-        {
-            return state;
-        }
+    let mut state = init_terrain_impl(depth, rng);
+    let mut metrics = QualityMetrics::default();
+    step_terrain_impl(&mut state, rng, &mut metrics);
+    bevy::log::debug!(
+        converge = metrics.converge / scale,
+        diverge = metrics.diverge / scale,
+        "sampling terrain"
+    );
+    if metrics.converge / scale > 30
+        && metrics.diverge / scale > 15
+        && (metrics.converge + metrics.diverge) / scale > 60
+        && metrics.bits.count_ones() > 6
+    {
+        Some(state)
+    } else {
+        None
     }
+}
+pub fn init_terrain<R: Rng + ?Sized>(depth: u8, rng: &mut R) -> TectonicState {
+    // gacha strats-- just keep rerolling until we get something lol
+    // TODO: I should probably make this guaranteed to terminate
+    std::iter::repeat_with(|| try_init_terrain(depth, rng))
+        .find_map(|x| x)
+        .unwrap()
 }
 
 pub fn step_terrain<R: Rng + ?Sized>(state: &mut TectonicState, rng: &mut R) {

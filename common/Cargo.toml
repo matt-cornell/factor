@@ -4,11 +4,12 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-async-trait.workspace = true
 bevy.workspace = true
 cdshealpix.workspace = true
 copyvec = "0.2.1"
 futures-sink.workspace = true
+hex.workspace = true
+hmac-sha256 = "1.1.7"
 postcard.workspace = true
 quick_cache.workspace = true
 serde.workspace = true

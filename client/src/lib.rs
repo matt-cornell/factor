@@ -1,12 +1,16 @@
-#![feature(trait_upcasting)]
+#![feature(trait_upcasting, try_blocks)]
 
 use bevy::prelude::*;
 use bevy_egui::{egui, EguiPlugin};
 use core_ui::*;
 use std::sync::{Arc, OnceLock};
 
+pub mod chunks;
 pub mod core_ui;
 pub mod net;
+pub mod player;
+pub mod settings;
+pub mod utils;
 
 #[derive(Debug, Clone, Resource)]
 pub struct ClientPlugin {
@@ -17,14 +21,21 @@ impl Plugin for ClientPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(EguiPlugin)
             .init_state::<ClientState>()
+            .add_sub_state::<LoadingFailed>()
+            .add_event::<chunks::ReloadTerrain>()
             .insert_resource(LastState(ClientState::MainMenu))
             .insert_resource(self.clone())
+            .insert_resource(settings::ClientSettings::load())
             .add_systems(
                 Update,
                 (
                     track_state_changes.run_if(state_changed::<ClientState>),
                     render_main_menu.run_if(in_state(ClientState::MainMenu)),
+                    render_mp_select.run_if(in_state(ClientState::MPSelect)),
                     render_settings.run_if(in_state(ClientState::Settings)),
+                    render_loading_failed.run_if(in_state(LoadingFailed)),
+                    (chunks::update_interest, chunks::render_chunks)
+                        .run_if(in_state(ClientState::Running)),
                 ),
             );
     }

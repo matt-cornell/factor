@@ -17,6 +17,8 @@ factor-common.workspace = true
 factor-client.path = "client/"
 factor-server.path = "server/"
 hex.workspace = true
+triomphe.workspace = true
+unsize.workspace = true
 
 [profile.dev.package.'*']
 opt-level = 3
@@ -36,7 +38,6 @@ factor-common.path = "common/"
 
 async-net = "2.0.0"
 async-tungstenite = { version = "0.28.0", features = ["async-tls"] }
-async-trait = "0.1.83"
 bevy = "0.14.2"
 bevy_egui = { version = "0.30.0", default-features = false, features = ["default_fonts", "render"] }
 bytemuck = { version = "1.19.0", features = ["derive", "extern_crate_std"] }
@@ -52,9 +53,11 @@ rand = "0.8.5"
 serde = { version = "1.0.214", features = ["derive"] }
 thiserror = "2.0.3"
 thread_local = { version = "1.1.8", features = ["nightly"] }
-triomphe = "0.1.14"
+toml = "0.8.19"
+triomphe = { version = "0.1.14", features = ["unsize"] }
 tinyset = "0.5.1"
-ws_stream_wasm = "0.7.4"
+unsize = "1.1.0"
 
 [workspace.lints.clippy]
+type-complexity = "allow"
 too-many-arguments = "deny"

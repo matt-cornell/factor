@@ -3,9 +3,16 @@ use bevy::tasks::futures_lite::Stream;
 use futures_sink::Sink;
 use std::pin::Pin;
 use std::task::{Context, Poll};
+use thiserror::Error;
 use ws_stream_wasm::{WsErr, WsMessage, WsMeta, WsStream};
 
-pub type ConnectError = WsErr;
+#[derive(Debug, Error)]
+pub enum ConnectError {
+    #[error(transparent)]
+    Ws(#[from] WsErr),
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
+}
 
 #[derive(Debug)]
 pub struct WebSocket {
@@ -16,12 +23,13 @@ impl WebSocket {
     pub async fn connect(
         uri: &str,
         additional: impl IntoIterator<Item = &str>,
-    ) -> Result<Self, WsErr> {
+    ) -> Result<Self, ConnectError> {
         info!(%uri, "Connecting to server");
         WsMeta::connect(uri, additional.into_iter().collect::<Vec<_>>())
             .await
             .inspect_err(|err| error!(%err, "Error connecting to server"))
             .map(|(meta, inner)| Self { meta, inner })
+            .map_err(ConnectError::Ws)
     }
     pub async fn close(&mut self) -> Result<(), WsErr> {
         self.meta.close().await.map(drop)
