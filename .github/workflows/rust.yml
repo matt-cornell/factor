@@ -13,8 +13,8 @@ jobs:
   native:
     runs-on: ubuntu-latest
     steps:
-      # - name: Install system libraries
-      #   run: sudo apt install -y libasound2-dev libudev-dev libwayland-dev
+      - name: Install system libraries
+        run: sudo apt install -y libasound2-dev libudev-dev libwayland-dev
       - uses: actions/checkout@v4
       # - name: Run tests
       #   run: cargo test
