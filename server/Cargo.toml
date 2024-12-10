@@ -15,7 +15,6 @@ postcard.workspace = true
 rand.workspace = true
 serde.workspace = true
 thiserror.workspace = true
-thread_local.workspace = true
 tinyset.workspace = true
 toml.workspace = true
 triomphe.workspace = true
