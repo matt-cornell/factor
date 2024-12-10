@@ -23,7 +23,7 @@ unsize.workspace = true
 rand.workspace = true
 
 [target.'cfg(target_family = "wasm")'.dependencies]
-ws_stream_wasm.workspace = true
+ws_stream_wasm = "0.7.4"
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 etcetera = "0.8.0"

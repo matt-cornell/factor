@@ -3,9 +3,10 @@ use bevy::tasks::futures_lite::Stream;
 use futures_sink::Sink;
 use std::pin::Pin;
 use std::task::{Context, Poll};
+use thiserror::Error;
 use ws_stream_wasm::{WsErr, WsMessage, WsMeta, WsStream};
 
-#[derive(Debug, Clone, Error)]
+#[derive(Debug, Error)]
 pub enum ConnectError {
     #[error(transparent)]
     Ws(#[from] WsErr),
