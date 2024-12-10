@@ -164,7 +164,8 @@ pub fn setup_terrain(
     mut next_state: ResMut<NextState<ClimatePhase>>,
 ) {
     info!("Beginning terrain setup");
-    debug_assert_eq!(
+    #[cfg(debug_assertions)]
+    assert_eq!(
         **state,
         ClimatePhase::None,
         "attempted to run multiple climate simulations at once!"
