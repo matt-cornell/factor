@@ -291,7 +291,7 @@ pub fn render_create_world(
 
                         commands.insert_resource(config_wip.take().unwrap());
                         next_state.set(SingleplayerState::CreatingWorld);
-                        commands.push(UpdateStates);
+                        commands.queue(UpdateStates);
                         commands.run_system_with_input(server.setup_terrain, systems.after_loaded);
                     }
                     if ui.button("Cancel").clicked() {

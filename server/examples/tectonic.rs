@@ -106,8 +106,8 @@ fn main() {
         .add_systems(
             PreUpdate,
             (
-                recolor_plates.run_if(on_event::<RecolorPlates>()),
-                update_healpix.run_if(on_event::<DepthChanged>()),
+                recolor_plates.run_if(on_event::<RecolorPlates>),
+                update_healpix.run_if(on_event::<DepthChanged>),
             ),
         )
         .add_systems(
@@ -116,10 +116,10 @@ fn main() {
                 update_map_camera,
                 handle_keypresses,
                 update_colors.run_if(
-                    resource_exists::<TerrainData>.and_then(
+                    resource_exists::<TerrainData>.and(
                         resource_changed::<TerrainData>
-                            .or_else(resource_changed::<ColorKind>)
-                            .or_else(resource_changed::<ShowBorders>),
+                            .or(resource_changed::<ColorKind>)
+                            .or(resource_changed::<ShowBorders>),
                     ),
                 ),
                 rotate_sphere.run_if(resource_equals(Rotating(true))),
@@ -134,7 +134,7 @@ fn main() {
         .add_systems(
             PostUpdate,
             update_texture
-                .run_if(resource_changed::<HealpixPixels>.or_else(resource_changed::<ShowCenters>)),
+                .run_if(resource_changed::<HealpixPixels>.or(resource_changed::<ShowCenters>)),
         )
         .add_systems(
             OnEnter(AppState::Simulate {
@@ -154,21 +154,18 @@ fn setup(
 ) {
     let map_layer = RenderLayers::layer(1);
 
-    commands.spawn(Camera3dBundle {
-        transform: Transform::from_xyz(0.0, 8.0, 16.0)
-            .looking_at(Vec3::new(0.0, 0.0, 0.0), Vec3::Y),
-        ..default()
-    });
     commands.spawn((
-        Camera2dBundle {
-            camera: Camera {
-                viewport: Some(Viewport {
-                    physical_size: UVec2::new(VIEW_WIDTH, VIEW_HEIGHT),
-                    ..default()
-                }),
-                order: 1,
+        Camera3d::default(),
+        Transform::from_xyz(0.0, 8.0, 16.0).looking_at(Vec3::new(0.0, 0.0, 0.0), Vec3::Y),
+    ));
+    commands.spawn((
+        Camera2d,
+        Camera {
+            viewport: Some(Viewport {
+                physical_size: UVec2::new(VIEW_WIDTH, VIEW_HEIGHT),
                 ..default()
-            },
+            }),
+            order: 1,
             ..default()
         },
         map_layer.clone(),
@@ -187,40 +184,35 @@ fn setup(
     ));
 
     commands.spawn((
-        PbrBundle {
-            mesh: meshes.add(Sphere::new(5.0).mesh().uv(32, 18)),
-            material: materials.add(StandardMaterial {
-                base_color_texture: Some(image.clone()),
-                ..default()
-            }),
-            transform: Transform::from_xyz(0.0, 0.0, 0.0)
-                .with_rotation(Quat::from_rotation_x(-FRAC_PI_2)),
+        Mesh3d(meshes.add(Sphere::new(5.0).mesh().uv(32, 18))),
+        MeshMaterial3d(materials.add(StandardMaterial {
+            base_color_texture: Some(image.clone()),
             ..default()
-        },
+        })),
+        Transform::from_xyz(0.0, 0.0, 0.0).with_rotation(Quat::from_rotation_x(-FRAC_PI_2)),
         Planet,
     ));
-    commands.spawn(PointLightBundle {
-        point_light: PointLight {
+    commands.spawn((
+        PointLight {
             shadows_enabled: true,
             intensity: 10_000_000.,
             range: 100.0,
             shadow_depth_bias: 0.2,
             ..default()
         },
-        transform: Transform::from_xyz(8.0, 16.0, 8.0),
-        ..default()
-    });
+        Transform::from_xyz(8.0, 16.0, 8.0),
+    ));
 
     commands.spawn((
-        SpriteBundle {
-            texture: image.clone(),
-            transform: Transform::from_scale(Vec3::new(
-                VIEW_WIDTH as f32 / WIDTH as f32,
-                VIEW_HEIGHT as f32 / HEIGHT as f32,
-                1.0,
-            )),
+        Sprite {
+            image: image.clone(),
             ..default()
         },
+        Transform::from_scale(Vec3::new(
+            VIEW_WIDTH as f32 / WIDTH as f32,
+            VIEW_HEIGHT as f32 / HEIGHT as f32,
+            1.0,
+        )),
         map_layer,
         MiniMap,
     ));
@@ -422,8 +414,8 @@ fn update_texture(
     data: Res<HealpixPixels>,
     mut images: ResMut<Assets<Image>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
-    mut planet: Query<&mut Handle<StandardMaterial>, With<Planet>>,
-    mut minimap: Query<&mut Handle<Image>, With<MiniMap>>,
+    mut planet: Query<&mut MeshMaterial3d<StandardMaterial>, With<Planet>>,
+    mut minimap: Query<&mut Sprite, With<MiniMap>>,
     terrain: Option<Res<TerrainData>>,
     show_centers: Res<ShowCenters>,
 ) {
@@ -466,14 +458,14 @@ fn update_texture(
         *d = data.0[map.0[n]].as_u32();
     }
     let image = images.add(img);
-    *planet.single_mut() = materials.add(StandardMaterial {
+    planet.single_mut().0 = materials.add(StandardMaterial {
         base_color_texture: Some(image.clone()),
         ..default()
     });
-    *minimap.single_mut() = image;
+    minimap.single_mut().image = image;
 }
 
 fn rotate_sphere(mut query: Query<&mut Transform, With<Planet>>, time: Res<Time>) {
     let mut trans = query.single_mut();
-    trans.rotate_y(time.delta_seconds() / 2.0);
+    trans.rotate_y(time.delta_secs() / 2.0);
 }

@@ -129,11 +129,9 @@ pub fn render_chunks(
                     bilinear(i as f32 / 32.0, j as f32 / 32.0, chunk.corner_heights)
                     // TODO: high octave noise
                 });
-                commands.entity(id).insert(PbrBundle {
-                    mesh: assets.add(mesh),
-                    transform,
-                    ..default()
-                });
+                commands
+                    .entity(id)
+                    .insert((Mesh3d(assets.add(mesh)), transform));
             }
         } else {
             commands.entity(id).despawn_recursive();

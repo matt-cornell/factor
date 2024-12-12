@@ -15,8 +15,8 @@ pub mod utils;
 
 #[derive(Debug, Clone, Copy, Resource)]
 pub struct ServerSystems {
-    pub setup_terrain: SystemId<SystemId<Result<(), redb::Error>>>,
-    pub load_terrain: SystemId<SystemId<Result<(), redb::Error>>>,
+    pub setup_terrain: SystemId<In<SystemId<In<Result<(), redb::Error>>>>>,
+    pub load_terrain: SystemId<In<SystemId<In<Result<(), redb::Error>>>>>,
 }
 
 #[derive(Debug, Default)]
@@ -45,8 +45,8 @@ impl Plugin for ServerPlugin {
                 (
                     update_climate.run_if(
                         resource_exists::<ClimateData>
-                            .and_then(resource_equals(ClimateRunning(true)))
-                            .and_then(on_timer(std::time::Duration::from_secs(5))),
+                            .and(resource_equals(ClimateRunning(true)))
+                            .and(on_timer(std::time::Duration::from_secs(5))),
                     ),
                     setup_tect.run_if(in_state(SetupTectonics)),
                     run_tect.run_if(in_state(RunningTectonics)),
@@ -56,6 +56,6 @@ impl Plugin for ServerPlugin {
             .add_systems(OnEnter(ClimatePhase::NoiseSetup), setup_noise)
             .add_systems(OnEnter(ClimatePhase::ClimateSetup), setup_climate)
             .add_systems(OnEnter(ClimatePhase::Finalize), finalize)
-            .observe(player::load_player);
+            .add_observer(player::load_player);
     }
 }
