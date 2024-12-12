@@ -38,7 +38,7 @@ factor-common.path = "common/"
 
 async-net = "2.0.0"
 async-tungstenite = { version = "0.28.1", features = ["async-tls"] }
-bevy = { version = "0.15.0", default-features = false, features = ["bevy_color", "bevy_state", "multi_threaded", "png", "trace", "trace_chrome", "trace_tracy_memory"] }
+bevy = { version = "0.15.0", default-features = false, features = ["bevy_color", "bevy_state", "multi_threaded", "trace", "trace_chrome"] }
 bevy_egui = { version = "0.31.1", default-features = false, features = ["default_fonts", "render"] }
 bytemuck = { version = "1.20.0", features = ["derive", "extern_crate_std"] }
 cdshealpix = "0.7.3"

@@ -519,6 +519,7 @@ fn setup(
             Mesh3d(meshes.add(Sphere::new(radius).mesh().ico(10).unwrap())),
             MeshMaterial3d(materials.add(StandardMaterial {
                 unlit: true,
+                base_color: Color::WHITE,
                 ..default()
             })),
             Transform::from_xyz(0.0, 0.0, 0.0).with_rotation(Quat::from_rotation_x(-FRAC_PI_2)),

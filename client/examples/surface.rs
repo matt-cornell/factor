@@ -15,6 +15,7 @@ use bevy_egui::{egui, EguiContexts, EguiPlugin};
 use factor_common::cell::*;
 use factor_common::coords::*;
 use factor_common::healpix;
+use rand::Rng;
 use std::f64::consts::{FRAC_PI_2, TAU};
 use std::time::Duration;
 
@@ -531,12 +532,14 @@ fn spawn_cell(
                 RenderLayers::layer(1),
             ));
             *translate += 10000.0;
-            // let scale = thread_rng().gen_range(0.1..=5.0);
             let scale = 1.0;
             commands.spawn((
                 Mesh3d(assets.add(Cuboid::new(scale, scale, scale).mesh().build())),
-                // Transform::from_rotation(thread_rng().gen())
-                //     .with_translation(Vec3::Y * scale * 2.0),
+                MeshMaterial3d(assets.add(StandardMaterial {
+                    base_color: Color::hsv(rand::thread_rng().gen_range(0.0..=360.0), 1.0, 1.0),
+                    unlit: true,
+                    ..default()
+                })),
                 Transform::from_translation(Vec3::Y * scale * 2.0),
             ));
         });
