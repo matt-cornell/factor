@@ -11,7 +11,7 @@ pub mod state;
 
 #[derive(Debug, Clone, Copy, Resource)]
 pub struct ComboSystems {
-    pub after_loaded: SystemId<Result<(), redb::Error>>,
+    pub after_loaded: SystemId<In<Result<(), redb::Error>>>,
 }
 
 #[derive(Debug, Clone, Copy)]

@@ -37,11 +37,11 @@ workspace = true
 factor-common.path = "common/"
 
 async-net = "2.0.0"
-async-tungstenite = { version = "0.28.0", features = ["async-tls"] }
-bevy = "0.14.2"
-bevy_egui = { version = "0.30.0", default-features = false, features = ["default_fonts", "render"] }
-bytemuck = { version = "1.19.0", features = ["derive", "extern_crate_std"] }
-cdshealpix = "0.7.0"
+async-tungstenite = { version = "0.28.1", features = ["async-tls"] }
+bevy = { version = "0.15.0", default-features = false, features = ["bevy_color", "bevy_state", "multi_threaded", "trace", "trace_chrome"] }
+bevy_egui = { version = "0.31.1", default-features = false, features = ["default_fonts", "render"] }
+bytemuck = { version = "1.20.0", features = ["derive", "extern_crate_std"] }
+cdshealpix = "0.7.3"
 futures-util = "0.3.31"
 futures-sink = "0.3.31"
 hex = { version = "0.4.3", features = ["serde"] }
@@ -50,9 +50,8 @@ once_map = "0.4.21"
 postcard = { version = "1.0.10", default-features = false, features = ["use-std"] }
 quick_cache = "0.6.9"
 rand = "0.8.5"
-serde = { version = "1.0.214", features = ["derive"] }
-thiserror = "2.0.3"
-thread_local = { version = "1.1.8", features = ["nightly"] }
+serde = { version = "1.0.215", features = ["derive"] }
+thiserror = "2.0.6"
 toml = "0.8.19"
 triomphe = { version = "0.1.14", features = ["unsize"] }
 tinyset = "0.5.1"

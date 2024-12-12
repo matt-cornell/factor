@@ -48,8 +48,10 @@ struct DockedMap(bool);
 #[derive(Component)]
 struct Planet;
 
-#[derive(Component)]
-struct MiniMap;
+#[derive(Resource)]
+struct MiniMap {
+    image: Handle<Image>,
+}
 
 #[derive(Event)]
 struct ReloadTerrain;
@@ -190,12 +192,12 @@ fn main() {
                 rotate_sphere.run_if(resource_equals(Rotating(true))),
                 update_texture.run_if(
                     state_changed::<AppState>
-                        .or_else(resource_changed::<NoiseTerrain>)
-                        .or_else(resource_changed::<ShowOceans>)
-                        .or_else(resource_changed::<LayerFilter>),
+                        .or(resource_changed::<NoiseTerrain>)
+                        .or(resource_changed::<ShowOceans>)
+                        .or(resource_changed::<LayerFilter>),
                 ),
                 update_noise_terrain.run_if(resource_exists_and_changed::<NoiseSourceRes>),
-                reload_terrain.run_if(on_event::<ReloadTerrain>()),
+                reload_terrain.run_if(on_event::<ReloadTerrain>),
             ),
         )
         .add_systems(OnEnter(AppState::Heights), reload_terrain)
@@ -226,11 +228,10 @@ fn setup(
         commands.insert_resource(data);
     });
 
-    commands.spawn(Camera3dBundle {
-        transform: Transform::from_xyz(0.0, 8.0, 16.0)
-            .looking_at(Vec3::new(0.0, 0.0, 0.0), Vec3::Y),
-        ..default()
-    });
+    commands.spawn((
+        Camera3d::default(),
+        Transform::from_xyz(0.0, 8.0, 16.0).looking_at(Vec3::new(0.0, 0.0, 0.0), Vec3::Y),
+    ));
 
     let image = images.add(Image::new(
         Extent3d {
@@ -245,31 +246,26 @@ fn setup(
     ));
 
     commands.spawn((
-        PbrBundle {
-            mesh: meshes.add(Sphere::new(5.0).mesh().uv(32, 18)),
-            material: materials.add(StandardMaterial {
-                base_color_texture: Some(image.clone()),
-                ..default()
-            }),
-            transform: Transform::from_xyz(0.0, 0.0, 0.0)
-                .with_rotation(Quat::from_rotation_x(-FRAC_PI_2)),
+        Mesh3d(meshes.add(Sphere::new(5.0).mesh().uv(32, 18))),
+        MeshMaterial3d(materials.add(StandardMaterial {
+            base_color_texture: Some(image.clone()),
             ..default()
-        },
+        })),
+        Transform::from_xyz(0.0, 0.0, 0.0).with_rotation(Quat::from_rotation_x(-FRAC_PI_2)),
         Planet,
     ));
-    commands.spawn(PointLightBundle {
-        point_light: PointLight {
+    commands.spawn((
+        PointLight {
             shadows_enabled: true,
             intensity: 10_000_000.,
             range: 100.0,
             shadow_depth_bias: 0.2,
             ..default()
         },
-        transform: Transform::from_xyz(8.0, 16.0, 8.0),
-        ..default()
-    });
+        Transform::from_xyz(8.0, 16.0, 8.0),
+    ));
 
-    commands.spawn((image, MiniMap));
+    commands.insert_resource(MiniMap { image });
 }
 
 fn handle_keypresses(
@@ -317,11 +313,11 @@ fn update_ui(
     mut wip_layer: Local<Option<NoiseSourceBuilder>>,
     mut code_editing: Local<Option<String>>,
     primary: Query<Entity, With<PrimaryWindow>>,
-    minimap: Query<&Handle<Image>, With<MiniMap>>,
+    minimap: Res<MiniMap>,
 ) {
     let ctrl_docked = docked_controls.0;
     let map_docked = docked_map.0;
-    let image = contexts.add_image(minimap.single().clone());
+    let image = contexts.add_image(minimap.image.clone());
     let render_controls = |ui: &mut egui::Ui| {
         ui.set_min_width(165.0);
         ui.horizontal(|ui| {
@@ -616,8 +612,8 @@ fn update_texture(
     filter: Res<LayerFilter>,
     mut images: ResMut<Assets<Image>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
-    mut planet: Query<&mut Handle<StandardMaterial>, With<Planet>>,
-    mut minimap: Query<&mut Handle<Image>, With<MiniMap>>,
+    mut planet: Query<&mut MeshMaterial3d<StandardMaterial>, With<Planet>>,
+    mut minimap: ResMut<MiniMap>,
 ) {
     let mut img = Image::new(
         Extent3d {
@@ -654,14 +650,14 @@ fn update_texture(
         }
     }
     let image = images.add(img);
-    *planet.single_mut() = materials.add(StandardMaterial {
+    planet.single_mut().0 = materials.add(StandardMaterial {
         base_color_texture: Some(image.clone()),
         ..default()
     });
-    *minimap.single_mut() = image;
+    minimap.image = image;
 }
 
 fn rotate_sphere(mut query: Query<&mut Transform, With<Planet>>, time: Res<Time>) {
     let mut trans = query.single_mut();
-    trans.rotate_y(time.delta_seconds() / 2.0);
+    trans.rotate_y(time.delta_secs() / 2.0);
 }

@@ -100,11 +100,11 @@ impl AssetLoader for WorldConfigLoader {
     fn extensions(&self) -> &[&str] {
         &["toml"]
     }
-    fn load<'a>(
-        &'a self,
-        reader: &'a mut io::Reader,
-        _settings: &'a Self::Settings,
-        _load_context: &'a mut LoadContext,
+    fn load(
+        &self,
+        reader: &mut dyn io::Reader,
+        _settings: &Self::Settings,
+        _load_context: &mut LoadContext,
     ) -> impl bevy::utils::ConditionalSendFuture<Output = Result<Self::Asset, Self::Error>> {
         async move {
             let mut buf = Vec::new();

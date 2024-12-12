@@ -145,7 +145,7 @@ pub struct RunningClimate;
 #[derive(Debug, Resource)]
 pub(crate) struct ClimateInit {
     rng: RandSource,
-    then: SystemId<Result<(), redb::Error>>,
+    then: SystemId<In<Result<(), redb::Error>>>,
 }
 
 #[derive(Debug, Resource)]
@@ -157,7 +157,7 @@ pub(crate) struct TectonicData {
 }
 
 pub fn setup_terrain(
-    then: In<SystemId<Result<(), redb::Error>>>,
+    then: In<SystemId<In<Result<(), redb::Error>>>>,
     mut commands: Commands,
     mut config: ResMut<WorldConfig>,
     #[cfg(debug_assertions)] state: Res<State<ClimatePhase>>,
@@ -383,13 +383,13 @@ pub(crate) fn finalize(
         Ok(())
     };
     commands.remove_resource::<ClimateInit>();
-    commands.push(UpdateStates);
+    commands.queue(UpdateStates);
     commands.run_system_with_input(init.then, res);
     next_state.set(ClimatePhase::None);
 }
 
 pub fn load_terrain(
-    then: In<SystemId<Result<(), redb::Error>>>,
+    then: In<SystemId<In<Result<(), redb::Error>>>>,
     mut commands: Commands,
     db: Res<Database>,
 ) {
@@ -450,7 +450,7 @@ pub fn update_climate(
             let (_, rot, trans) = planet_transform.to_scale_rotation_translation();
             config.climate.intensity * rot.mul_vec3(point).dot(-trans.normalize_or_zero()).max(0.0)
         },
-        config.climate.time_step * time_step.delta_seconds(),
+        config.climate.time_step * time_step.delta_secs(),
         &mut thread_rng(),
     );
     let mut buffer = climate.cells.clone();

@@ -191,8 +191,10 @@ struct OrbitParams {
 #[derive(Component)]
 struct Planet;
 
-#[derive(Component)]
-struct MiniMap;
+#[derive(Resource)]
+struct MiniMap {
+    image: Handle<Image>,
+}
 
 #[derive(Component)]
 struct PlanetCenter;
@@ -411,7 +413,7 @@ fn main() {
             PreUpdate,
             (
                 setup_tectonics.run_if(resource_changed::<TectonicDepth>),
-                setup_climate.run_if(on_event::<ResetClimate>()),
+                setup_climate.run_if(on_event::<ResetClimate>),
             ),
         )
         .add_systems(
@@ -423,18 +425,18 @@ fn main() {
                 update_positions,
                 update_texture.run_if(
                     resource_changed::<NoiseTerrain>
-                        .or_else(resource_changed::<TerrainData>)
-                        .or_else(resource_changed::<ShowOceans>)
-                        .or_else(resource_changed::<LayerFilter>)
-                        .or_else(resource_changed::<ColorKind>)
-                        .or_else(resource_changed::<ShowFeatures>)
-                        .or_else(resource_changed::<State<AppState>>)
-                        .or_else(resource_equals(ColorKind::Intensity)),
+                        .or(resource_changed::<TerrainData>)
+                        .or(resource_changed::<ShowOceans>)
+                        .or(resource_changed::<LayerFilter>)
+                        .or(resource_changed::<ColorKind>)
+                        .or(resource_changed::<ShowFeatures>)
+                        .or(resource_changed::<State<AppState>>)
+                        .or(resource_equals(ColorKind::Intensity)),
                 ),
                 update_noise_terrain
                     .after(reload_noise)
                     .run_if(resource_exists_and_changed::<NoiseSourceRes>),
-                reload_noise.run_if(on_event::<ReloadTerrain>()),
+                reload_noise.run_if(on_event::<ReloadTerrain>),
                 reparent_camera.run_if(resource_changed::<CameraFocus>),
             ),
         )
@@ -494,48 +496,37 @@ fn setup(
     ));
 
     commands
-        .spawn((
-            TransformBundle {
-                local: Transform::from_xyz(params.distance, 0.0, 0.0),
-                ..default()
-            },
-            PlanetCenter,
-        ))
+        .spawn((Transform::from_xyz(params.distance, 0.0, 0.0), PlanetCenter))
         .with_children(|commands| {
             commands.spawn((
-                PbrBundle {
-                    mesh: meshes.add(Sphere::new(5.0).mesh().uv(32, 18)),
-                    material: materials.add(StandardMaterial {
-                        base_color_texture: Some(image.clone()),
-                        ..default()
-                    }),
-                    transform: Transform::from_xyz(0.0, 0.0, 0.0),
-                    // .with_rotation(Quat::from_rotation_x(-FRAC_PI_2)),
+                Mesh3d(meshes.add(Sphere::new(5.0).mesh().uv(32, 18))),
+                MeshMaterial3d(materials.add(StandardMaterial {
+                    base_color_texture: Some(image.clone()),
                     ..default()
-                },
+                })),
+                Transform::from_xyz(0.0, 0.0, 0.0),
                 Planet,
             ));
-            commands.spawn(Camera3dBundle {
-                transform: Transform::from_xyz(20.0, 20.0, 10.0).looking_at(Vec3::ZERO, Vec3::Z),
-                ..default()
-            });
+            commands.spawn((
+                Camera3d::default(),
+                Transform::from_xyz(20.0, 20.0, 10.0).looking_at(Vec3::ZERO, Vec3::Z),
+            ));
         });
 
     let radius = 20.0;
     commands
-        .spawn(PbrBundle {
-            mesh: meshes.add(Sphere::new(radius).mesh().ico(10).unwrap()),
-            material: materials.add(StandardMaterial {
+        .spawn((
+            Mesh3d(meshes.add(Sphere::new(radius).mesh().ico(10).unwrap())),
+            MeshMaterial3d(materials.add(StandardMaterial {
                 unlit: true,
+                base_color: Color::WHITE,
                 ..default()
-            }),
-            transform: Transform::from_xyz(0.0, 0.0, 0.0)
-                .with_rotation(Quat::from_rotation_x(-FRAC_PI_2)),
-            ..default()
-        })
+            })),
+            Transform::from_xyz(0.0, 0.0, 0.0).with_rotation(Quat::from_rotation_x(-FRAC_PI_2)),
+        ))
         .with_children(|commands| {
-            commands.spawn(PointLightBundle {
-                point_light: PointLight {
+            commands.spawn((
+                PointLight {
                     shadows_enabled: true,
                     intensity: 500000000.,
                     range: 1000.0,
@@ -543,12 +534,11 @@ fn setup(
                     radius,
                     ..default()
                 },
-                transform: Transform::from_xyz(0.0, 0.0, 0.0),
-                ..default()
-            });
+                Transform::from_xyz(0.0, 0.0, 0.0),
+            ));
         });
 
-    commands.spawn((image, MiniMap));
+    commands.insert_resource(MiniMap { image });
 }
 
 fn handle_keypresses(
@@ -654,10 +644,7 @@ fn update_ui(
         Local<LayerFilter>,
         Local<Arc<OnceLock<String>>>,
     ),
-    (primary, minimap): (
-        Query<Entity, With<PrimaryWindow>>,
-        Query<&Handle<Image>, With<MiniMap>>,
-    ),
+    (primary, minimap): (Query<Entity, With<PrimaryWindow>>, Res<MiniMap>),
     mut reset_climate: EventWriter<ResetClimate>,
 ) {
     if let Some(input) = file_load.get() {
@@ -715,7 +702,7 @@ fn update_ui(
         editor: dock_editor,
     } = &mut *docked_controls;
     let map_docked = docked_map.0;
-    let image = contexts.add_image(minimap.single().clone());
+    let image = contexts.add_image(minimap.image.clone());
     let context = contexts.ctx_for_entity_mut(primary.single());
     let render_display = {
         let docked = *dock_display;
@@ -1740,8 +1727,8 @@ fn update_texture(
     features: Res<ShowFeatures>,
     mut images: ResMut<Assets<Image>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
-    mut planet: Query<(&mut Handle<StandardMaterial>, &GlobalTransform), With<Planet>>,
-    mut minimap: Query<&mut Handle<Image>, With<MiniMap>>,
+    mut planet: Query<(&mut MeshMaterial3d<StandardMaterial>, &GlobalTransform), With<Planet>>,
+    mut minimap: ResMut<MiniMap>,
     terrain: Option<Res<TerrainData>>,
 ) {
     let mut img = Image::new(
@@ -1946,11 +1933,11 @@ fn update_texture(
         .as_u32();
     }
     let image = images.add(img);
-    *planet_material = materials.add(StandardMaterial {
+    planet_material.0 = materials.add(StandardMaterial {
         base_color_texture: Some(image.clone()),
         ..default()
     });
-    *minimap.single_mut() = image;
+    minimap.image = image;
 }
 
 fn update_positions(
@@ -1961,7 +1948,7 @@ fn update_positions(
     params: Res<OrbitParams>,
     mut last_tilt: Local<f32>,
 ) {
-    let delta = time.delta_seconds();
+    let delta = time.delta_secs();
     let mut center = center.single_mut();
     let mut angle = center.translation.xy().to_angle();
     let diff = delta / params.year_length * TAU * scale.0;

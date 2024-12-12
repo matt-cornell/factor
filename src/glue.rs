@@ -19,20 +19,19 @@ pub fn after_loaded(
             return_to_sp: true,
         });
     } else {
-        commands.observe(player_loaded);
+        commands.add_observer(player_loaded);
         commands.trigger(PlayerRequest(PlayerId::DEFAULT));
         next_state.set(ClientState::WorldLoading);
     }
 }
 pub fn player_loaded(
     trigger: Trigger<PlayerLoaded>,
-    observer: Query<Entity, With<Observer<PlayerLoaded, ()>>>,
     player: Query<&PlayerState>,
     mut commands: Commands,
     mut next_state: ResMut<NextState<ClientState>>,
 ) {
     debug_assert_eq!(trigger.event().id, PlayerId::DEFAULT);
-    commands.entity(observer.single()).despawn();
+    commands.entity(trigger.observer()).despawn();
     if let Err(err) = &trigger.event().res {
         next_state.set(ClientState::LoadingFailed {
             cause: err.clone(),

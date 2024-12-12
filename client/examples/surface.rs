@@ -15,6 +15,7 @@ use bevy_egui::{egui, EguiContexts, EguiPlugin};
 use factor_common::cell::*;
 use factor_common::coords::*;
 use factor_common::healpix;
+use rand::Rng;
 use std::f64::consts::{FRAC_PI_2, TAU};
 use std::time::Duration;
 
@@ -39,7 +40,7 @@ struct MovementSpeed(f32);
 
 #[derive(Debug, Clone, Copy, PartialEq, Resource)]
 struct Systems {
-    spawn_cell: SystemId<(u64, Entity), ()>,
+    spawn_cell: SystemId<In<(u64, Entity)>, ()>,
 }
 
 #[derive(Debug, Clone, Copy, Resource)]
@@ -102,25 +103,22 @@ fn main() {
 fn setup(mut commands: Commands) {
     let base = commands.spawn_empty().id();
     commands.spawn((
-        Camera3dBundle {
-            transform: Transform::from_xyz(1.0, 20.0, -1.0).looking_at(Vec3::ZERO, Dir3::Y),
-            ..default()
-        },
+        Camera3d::default(),
+        Transform::from_xyz(1.0, 20.0, -1.0).looking_at(Vec3::ZERO, Dir3::Y),
         RenderLayers::layer(0),
         OwningCell(0),
     ));
-    commands.spawn(PointLightBundle {
-        point_light: PointLight {
+    commands.spawn((
+        PointLight {
             intensity: 400.0,
             range: 2000.0,
             radius: 10.0,
             shadows_enabled: true,
             ..default()
         },
-        transform: Transform::from_xyz(0.0, 30.0, 0.0),
-        ..default()
-    });
-    let spawn_cell = commands.register_one_shot_system(spawn_cell);
+        Transform::from_xyz(0.0, 30.0, 0.0),
+    ));
+    let spawn_cell = commands.register_system(spawn_cell);
     commands.run_system_with_input(spawn_cell, (0, base));
     commands.insert_resource(Systems { spawn_cell });
 }
@@ -451,12 +449,12 @@ fn grab_mouse(mut window: Query<&mut Window>, locked: Res<LockedMouse>) {
     for mut window in window.iter_mut() {
         if locked.0 {
             info!("grabbing mouse");
-            window.cursor.grab_mode = CursorGrabMode::Confined;
-            window.cursor.visible = false;
+            window.cursor_options.grab_mode = CursorGrabMode::Confined;
+            window.cursor_options.visible = false;
         } else {
             info!("releasing mouse");
-            window.cursor.grab_mode = CursorGrabMode::None;
-            window.cursor.visible = true;
+            window.cursor_options.grab_mode = CursorGrabMode::None;
+            window.cursor_options.visible = true;
         }
     }
 }
@@ -508,49 +506,42 @@ fn spawn_cell(
     commands
         .entity(entity)
         .insert((
-            PbrBundle {
-                mesh: assets.add(mesh),
-                material: assets.add(StandardMaterial {
-                    base_color: Color::LinearRgba(LinearRgba::WHITE),
-                    base_color_texture: Some(handle.clone()),
-                    ..default()
-                }),
+            Mesh3d(assets.add(mesh)),
+            MeshMaterial3d(assets.add(StandardMaterial {
+                base_color: Color::LinearRgba(LinearRgba::WHITE),
+                base_color_texture: Some(handle.clone()),
                 ..default()
-            },
+            })),
             RenderLayers::layer(0),
             OwningCell(cell),
             CellCenter,
         ))
         .with_children(|commands| {
             commands.spawn((
-                Camera2dBundle {
-                    camera: Camera {
-                        target: bevy::render::camera::RenderTarget::Image(handle.clone()),
-                        ..default()
-                    },
-                    transform: Transform::from_xyz(*translate, 0.0, 0.0),
+                Camera2d,
+                Camera {
+                    target: bevy::render::camera::RenderTarget::Image(handle.clone()),
                     ..default()
                 },
+                Transform::from_xyz(*translate, 0.0, 0.0),
                 RenderLayers::layer(1),
             ));
             commands.spawn((
-                Text2dBundle {
-                    text: Text::from_section(cell.to_string(), default()),
-                    transform: Transform::from_xyz(*translate, 0.0, 0.0),
-                    ..default()
-                },
+                Text2d(cell.to_string()),
+                Transform::from_xyz(*translate, 0.0, 0.0),
                 RenderLayers::layer(1),
             ));
             *translate += 10000.0;
-            // let scale = thread_rng().gen_range(0.1..=5.0);
             let scale = 1.0;
-            commands.spawn(PbrBundle {
-                mesh: assets.add(Cuboid::new(scale, scale, scale).mesh().build()),
-                // transform: Transform::from_rotation(thread_rng().gen())
-                //     .with_translation(Vec3::Y * scale * 2.0),
-                transform: Transform::from_translation(Vec3::Y * scale * 2.0),
-                ..default()
-            });
+            commands.spawn((
+                Mesh3d(assets.add(Cuboid::new(scale, scale, scale).mesh().build())),
+                MeshMaterial3d(assets.add(StandardMaterial {
+                    base_color: Color::hsv(rand::thread_rng().gen_range(0.0..=360.0), 1.0, 1.0),
+                    unlit: true,
+                    ..default()
+                })),
+                Transform::from_translation(Vec3::Y * scale * 2.0),
+            ));
         });
 }
 
@@ -592,7 +583,7 @@ fn load_cells(
         } else {
             commands
                 .entity(entity)
-                .add(move |mut entity: EntityWorldMut| {
+                .queue(move |mut entity: EntityWorldMut| {
                     if !entity.contains::<DespawnTime>() {
                         entity.insert(DespawnTime(elapsed + Duration::from_secs(5)));
                     }
@@ -679,8 +670,7 @@ fn test_points(
             let coords = get_absolute(center, DVec2::new(dx, dy) / SCALE);
             if layer.hash(coords) == cell {
                 gizmos.sphere(
-                    Vec3::new(dx as _, 1.0, dy as _),
-                    Quat::IDENTITY,
+                    Isometry3d::from_xyz(dx as _, 1.0, dy as _),
                     0.01,
                     Color::WHITE,
                 );

@@ -55,21 +55,15 @@ impl Plugin for OrbitPlugin {
         if let Some(dist) = self.setup_planets {
             let surface = app
                 .world_mut()
-                .spawn((TransformBundle::default(), PlanetSurface::default()))
+                .spawn((Transform::default(), PlanetSurface::default()))
                 .id();
             app.world_mut()
-                .spawn((
-                    TransformBundle {
-                        local: Transform::from_xyz(dist, 0.0, 0.0),
-                        ..default()
-                    },
-                    PlanetCenter,
-                ))
+                .spawn((Transform::from_xyz(dist, 0.0, 0.0), PlanetCenter))
                 .add_child(surface);
         }
         app.insert_resource(OrbitRunning(false)).add_systems(
             Update,
-            (|time: Res<Time<Virtual>>| time.delta_seconds())
+            (|time: Res<Time<Virtual>>| time.delta_secs())
                 .pipe(update_planet_transforms)
                 .run_if(resource_equals(OrbitRunning(true))),
         );
