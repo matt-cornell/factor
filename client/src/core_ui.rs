@@ -305,7 +305,6 @@ pub fn render_paused(
     config: Res<ClientPlugin>,
     mut next_state: ResMut<NextState<ClientState>>,
 ) {
-    println!("paused");
     egui::Area::new(egui::Id::new("Paused"))
         .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
         .show(contexts.ctx_mut(), |ui| {
@@ -316,7 +315,7 @@ pub fn render_paused(
             ui.set_style(config.egui_style.clone());
             egui::Frame::window(ui.style()).show(ui, |ui| {
                 ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
-                    ui.set_width(500.0);
+                    ui.set_width(250.0);
                     ui.heading("Paused");
                     if ui
                         .add(

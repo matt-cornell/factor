@@ -20,7 +20,7 @@ pub fn handle_keypresses(
     mut next_state: ResMut<NextState<ClientState>>,
     mut attempted: ResMut<AttemptedMotion>,
 ) {
-    if input.pressed(KeyCode::Escape) {
+    if input.just_pressed(KeyCode::Escape) {
         info!("Pausing");
         next_state.set(ClientState::Paused);
     }

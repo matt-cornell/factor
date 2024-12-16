@@ -15,8 +15,8 @@ pub mod utils;
 
 #[derive(Debug, Clone, Copy, Resource)]
 pub struct ServerSystems {
-    pub setup_terrain: SystemId<In<SystemId<In<Result<(), redb::Error>>>>>,
-    pub load_terrain: SystemId<In<SystemId<In<Result<(), redb::Error>>>>>,
+    pub setup_terrain: SystemId,
+    pub load_terrain: SystemId,
 }
 
 #[derive(Debug, Default)]

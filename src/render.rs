@@ -1,5 +1,4 @@
 use crate::state::SingleplayerState;
-use crate::ComboSystems;
 use bevy::prelude::*;
 use bevy::utils::hashbrown::HashMap;
 use bevy_egui::{egui, EguiContexts};
@@ -22,7 +21,6 @@ pub fn render_select_sp(
     mut search: Local<String>,
     time: Res<Time>,
     server: Res<ServerSystems>,
-    systems: Res<ComboSystems>,
     mut last_run: Local<Option<Duration>>,
     mut needs_tick: Local<bool>,
 ) {
@@ -175,7 +173,7 @@ pub fn render_select_sp(
                             match Database::persistent(world.clone()) {
                                 Ok(db) => {
                                     commands.insert_resource(db);
-                                    commands.run_system_with_input(server.load_terrain, systems.after_loaded);
+                                    commands.run_system(server.load_terrain);
                                     next_state.set(SingleplayerState::Base(ClientState::WorldLoading));
                                 }
                                 Err(err) => {
@@ -200,7 +198,6 @@ pub fn render_create_world(
     state: Res<State<SingleplayerState>>,
     mut next_state: ResMut<NextState<SingleplayerState>>,
     server: Res<ServerSystems>,
-    systems: Res<ComboSystems>,
     mut name_edit: Local<Option<String>>,
     mut seed_edit: Local<String>,
     mut config_wip: Local<Option<WorldConfig>>,
@@ -297,7 +294,7 @@ pub fn render_create_world(
                         commands.insert_resource(config_wip.take().unwrap());
                         next_state.set(SingleplayerState::CreatingWorld);
                         commands.queue(UpdateStates);
-                        commands.run_system_with_input(server.setup_terrain, systems.after_loaded);
+                        commands.run_system(server.setup_terrain);
                     }
                     if ui.button("Cancel").clicked() {
                         seed_edit.clear();

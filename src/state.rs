@@ -38,7 +38,7 @@ pub fn link_states(
         };
         let next = SingleplayerState::Base(st.clone());
         if *st != ClientState::Other("sp") && **old_sp != next {
-            info!(?next, "setting sp state");
+            debug!(?next, "setting sp state");
             next_sp.set(next);
         }
         sp_evt.clear();
@@ -52,7 +52,7 @@ pub fn link_states(
             ClientState::Other("sp")
         };
         if *old_base != next {
-            info!(?next, "setting client state");
+            debug!(?next, "setting client state");
             next_base.set(next);
         }
         base_evt.clear();

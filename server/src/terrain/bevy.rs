@@ -5,7 +5,6 @@ use crate::config::*;
 use crate::orbit::*;
 use crate::tables::TERRAIN;
 use crate::utils::database::*;
-use bevy::ecs::system::SystemId;
 use bevy::prelude::*;
 use factor_common::healpix;
 use factor_common::util::UpdateStates;
@@ -145,7 +144,6 @@ pub struct RunningClimate;
 #[derive(Debug, Resource)]
 pub(crate) struct ClimateInit {
     rng: RandSource,
-    then: SystemId<In<Result<(), redb::Error>>>,
 }
 
 #[derive(Debug, Resource)]
@@ -156,8 +154,12 @@ pub(crate) struct TectonicData {
     state: TectonicState,
 }
 
+#[derive(Debug, Event)]
+pub struct TerrainReady {
+    pub res: Result<(), redb::Error>,
+}
+
 pub fn setup_terrain(
-    then: In<SystemId<In<Result<(), redb::Error>>>>,
     mut commands: Commands,
     mut config: ResMut<WorldConfig>,
     #[cfg(debug_assertions)] state: Res<State<ClimatePhase>>,
@@ -173,7 +175,7 @@ pub fn setup_terrain(
     let seed = *config.seed.get_or_insert_with(|| thread_rng().gen());
     let rng = RandSource::from_seed(seed);
     next_state.set(ClimatePhase::NoiseSetup);
-    commands.insert_resource(ClimateInit { rng, then: then.0 });
+    commands.insert_resource(ClimateInit { rng });
 }
 
 pub(crate) fn setup_noise(
@@ -340,7 +342,6 @@ pub(crate) fn run_climate(
 }
 
 pub(crate) fn finalize(
-    init: Res<ClimateInit>,
     climate: Res<ClimateData>,
     mut commands: Commands,
     database: Option<Res<Database>>,
@@ -384,15 +385,11 @@ pub(crate) fn finalize(
     };
     commands.remove_resource::<ClimateInit>();
     commands.queue(UpdateStates);
-    commands.run_system_with_input(init.then, res);
+    commands.trigger(TerrainReady { res });
     next_state.set(ClimatePhase::None);
 }
 
-pub fn load_terrain(
-    then: In<SystemId<In<Result<(), redb::Error>>>>,
-    mut commands: Commands,
-    db: Res<Database>,
-) {
+pub fn load_terrain(mut commands: Commands, db: Res<Database>) {
     let res: Result<(), redb::Error> = try {
         let txn = db.begin_read()?;
         let table = txn.open_table(TERRAIN)?;
@@ -402,13 +399,12 @@ pub fn load_terrain(
             let (k, v) = res.inspect_err(|err| error!(n, %err, "Error loading cell"))?;
             if k.value() != n as u64 {
                 error!(cell = n, "Missing cell value");
-                commands.run_system_with_input(
-                    then.0,
-                    Err(redb::Error::Io(io::Error::new(
+                commands.trigger(TerrainReady {
+                    res: Err(redb::Error::Io(io::Error::new(
                         io::ErrorKind::InvalidData,
                         "Missing cell value",
                     ))),
-                );
+                });
                 return;
             }
             cells.push(v.value());
@@ -416,13 +412,12 @@ pub fn load_terrain(
         let per_square = cells.len() as u32 / 12;
         if per_square.count_ones() != 1 {
             error!(len = cells.len(), "Invalid number of healpix cells");
-            commands.run_system_with_input(
-                then.0,
-                Err(redb::Error::Io(io::Error::new(
+            commands.trigger(TerrainReady {
+                res: Err(redb::Error::Io(io::Error::new(
                     io::ErrorKind::InvalidData,
                     "Invalid number of healpix cells",
                 ))),
-            );
+            });
             return;
         }
         commands.insert_resource(ClimateData::new(cells.into_boxed_slice()));
@@ -430,7 +425,7 @@ pub fn load_terrain(
     if let Err(err) = &res {
         error!(%err, "Error loading table");
     }
-    commands.run_system_with_input(then.0, res);
+    commands.trigger(TerrainReady { res });
 }
 
 pub fn update_climate(
