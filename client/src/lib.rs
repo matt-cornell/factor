@@ -5,10 +5,12 @@ use bevy_egui::{egui, EguiPlugin};
 use core_ui::*;
 use std::sync::{Arc, OnceLock};
 
+pub mod action;
 pub mod chunks;
 pub mod core_ui;
 pub mod net;
 pub mod player;
+pub mod render;
 pub mod settings;
 pub mod utils;
 
@@ -19,13 +21,29 @@ pub struct ClientPlugin {
 }
 impl Plugin for ClientPlugin {
     fn build(&self, app: &mut App) {
+        fn setup_target_fps(
+            settings: Res<settings::ClientSettings>,
+            mut fps: ResMut<settings::TargetFps>,
+        ) {
+            *fps = settings.target_fps.into();
+        }
+        fn limit_target_fps(mut fps: ResMut<settings::TargetFps>) {
+            *fps = settings::TargetFps::Limit(10.0);
+        }
+        fn clear_motion(mut attempt: ResMut<player::AttemptedMotion>) {
+            *attempt = default();
+        }
         app.add_plugins(EguiPlugin)
+            .add_plugins(leafwing_input_manager::plugin::InputManagerPlugin::<
+                action::Action,
+            >::default())
             .init_state::<ClientState>()
+            .init_state::<WorldLoaded>()
             .add_sub_state::<LoadingFailed>()
             .add_event::<chunks::ReloadTerrain>()
             .insert_resource(LastState(ClientState::MainMenu))
             .insert_resource(self.clone())
-            .insert_resource(settings::ClientSettings::load())
+            .add_systems(PreStartup, settings::load_config)
             .add_systems(
                 Update,
                 (
@@ -34,9 +52,22 @@ impl Plugin for ClientPlugin {
                     render_mp_select.run_if(in_state(ClientState::MPSelect)),
                     render_settings.run_if(in_state(ClientState::Settings)),
                     render_loading_failed.run_if(in_state(LoadingFailed)),
-                    (chunks::update_interest, chunks::render_chunks)
-                        .run_if(in_state(ClientState::Running)),
+                    render_paused.run_if(in_state(ClientState::Paused)),
+                    render::handle_keypresses.run_if(in_state(ClientState::Running)),
+                    (
+                        chunks::update_interest,
+                        chunks::render_chunks,
+                        render::local_reflect_attempts,
+                    )
+                        .before(render_paused)
+                        .run_if(in_state(RenderGame).and(settings::with_fps)),
                 ),
+            )
+            .add_systems(OnEnter(WorldLoaded(true)), render::setup_world_render)
+            .add_systems(OnEnter(ClientState::Running), setup_target_fps)
+            .add_systems(
+                OnExit(ClientState::Running),
+                (limit_target_fps, clear_motion),
             );
     }
 }

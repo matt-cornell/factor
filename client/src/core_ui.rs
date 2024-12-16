@@ -95,6 +95,13 @@ impl Hash for ClientState {
 #[source(ClientState = ClientState::LoadingFailed { .. })]
 pub struct LoadingFailed;
 
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, SubStates)]
+#[source(ClientState = ClientState::Running | ClientState::Paused)]
+pub struct RenderGame;
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, States)]
+pub struct WorldLoaded(pub bool);
+
 /// Stores the last state for the `ClientState`.
 ///
 /// This is useful for "back" buttons.
@@ -110,9 +117,16 @@ impl Deref for LastState {
 
 pub fn track_state_changes(
     state: Res<State<ClientState>>,
+    world: Res<State<WorldLoaded>>,
+    mut next_world: ResMut<NextState<WorldLoaded>>,
     mut last_state: ResMut<LastState>,
     mut last: Local<ClientState>,
 ) {
+    match (&**state, world.0) {
+        (ClientState::Running | ClientState::Paused, false) => next_world.set(WorldLoaded(true)),
+        (ClientState::MainMenu, true) => next_world.set(WorldLoaded(false)),
+        _ => {}
+    }
     last_state.0 = std::mem::replace(&mut *last, state.clone());
 }
 
@@ -283,5 +297,63 @@ pub fn render_loading(
                 msg.push('.');
             }
             ui.label(msg);
+        });
+}
+
+pub fn render_paused(
+    mut contexts: EguiContexts,
+    config: Res<ClientPlugin>,
+    mut next_state: ResMut<NextState<ClientState>>,
+) {
+    println!("paused");
+    egui::Area::new(egui::Id::new("Paused"))
+        .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+        .show(contexts.ctx_mut(), |ui| {
+            if ui.input(|input| input.key_pressed(egui::Key::Escape)) {
+                info!("Returing to game");
+                next_state.set(ClientState::Running);
+            }
+            ui.set_style(config.egui_style.clone());
+            egui::Frame::window(ui.style()).show(ui, |ui| {
+                ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
+                    ui.set_width(500.0);
+                    ui.heading("Paused");
+                    if ui
+                        .add(
+                            egui::Button::new(
+                                egui::RichText::new("Back to Game")
+                                    .text_style(egui::TextStyle::Button),
+                            )
+                            .min_size(egui::vec2(ui.max_rect().width(), 0.0)),
+                        )
+                        .clicked()
+                    {
+                        next_state.set(ClientState::Running);
+                    }
+                    if ui
+                        .add(
+                            egui::Button::new(
+                                egui::RichText::new("Settings").text_style(egui::TextStyle::Button),
+                            )
+                            .min_size(egui::vec2(ui.max_rect().width(), 0.0)),
+                        )
+                        .clicked()
+                    {
+                        next_state.set(ClientState::Settings);
+                    }
+                    if ui
+                        .add(
+                            egui::Button::new(
+                                egui::RichText::new("Quit to Title")
+                                    .text_style(egui::TextStyle::Button),
+                            )
+                            .min_size(egui::vec2(ui.max_rect().width(), 0.0)),
+                        )
+                        .clicked()
+                    {
+                        next_state.set(ClientState::MainMenu);
+                    }
+                });
+            });
         });
 }

@@ -45,6 +45,7 @@ pub fn player_loaded(
         commands.insert_resource(PlayerPos {
             chunk: player.data.chunk,
             position: player.data.pos,
+            rotation: player.data.rot,
         });
         next_state.set(ClientState::Running);
     }

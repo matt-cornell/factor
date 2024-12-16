@@ -237,7 +237,12 @@ pub fn render_create_world(
                                     .background_color(ui.style().visuals.extreme_bg_color),
                             );
                             false
-                        } else if PersistentBackend::list_saves().any(|save| save == *name) {
+                        } else if tracing::subscriber::with_default(
+                            tracing::subscriber::NoSubscriber::new(),
+                            PersistentBackend::list_saves,
+                        )
+                        .any(|save| save == *name)
+                        {
                             ui.label(
                                 egui::RichText::new("A save with this name already exists")
                                     .small()
