@@ -32,24 +32,29 @@ pub fn link_states(
     old_base: Res<State<ClientState>>,
     old_sp: Res<State<SingleplayerState>>,
 ) {
-    for evt in base_evt.read() {
-        if let Some(st) = &evt.entered {
-            let next = SingleplayerState::Base(st.clone());
-            if *st != ClientState::Other("sp") && **old_sp != next {
-                next_sp.set(next);
-            }
+    if let Some(evt) = base_evt.read().filter(|evt| evt.entered.is_some()).last() {
+        let Some(st) = &evt.entered else {
+            unreachable!()
+        };
+        let next = SingleplayerState::Base(st.clone());
+        if *st != ClientState::Other("sp") && **old_sp != next {
+            debug!(?next, "setting sp state");
+            next_sp.set(next);
         }
-    }
-    for evt in sp_evt.read() {
-        if let Some(st) = &evt.entered {
-            let next = if let SingleplayerState::Base(next) = st {
-                next.clone()
-            } else {
-                ClientState::Other("sp")
-            };
-            if *old_base != next {
-                next_base.set(next);
-            }
+        sp_evt.clear();
+    } else if let Some(evt) = sp_evt.read().filter(|evt| evt.entered.is_some()).last() {
+        let Some(st) = &evt.entered else {
+            unreachable!()
+        };
+        let next = if let SingleplayerState::Base(next) = st {
+            next.clone()
+        } else {
+            ClientState::Other("sp")
+        };
+        if *old_base != next {
+            debug!(?next, "setting client state");
+            next_base.set(next);
         }
+        base_evt.clear();
     }
 }

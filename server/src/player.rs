@@ -9,6 +9,7 @@ use itertools::Itertools;
 use rand::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::error::Error;
+use std::f32::consts::TAU;
 use triomphe::Arc;
 use unsize::*;
 
@@ -49,6 +50,7 @@ impl redb::Key for PlayerIdKey {
 pub struct PlayerData {
     pub chunk: u64,
     pub pos: Vec3,
+    pub rot: Quat,
 }
 
 /// State for a player, with their data and actual
@@ -114,6 +116,7 @@ pub fn load_player(
             let data = PlayerData {
                 chunk,
                 pos: coords.extend(0.0).xzy(),
+                rot: Quat::from_rotation_y(rng.gen_range(0.0..=TAU)),
             };
             let opt = Some(data);
             table.insert(id, &opt)?;
