@@ -3,6 +3,10 @@ use crate::terrain::climate::ClimateFlags;
 use crate::utils::database::{self as redb, Database};
 use crate::utils::random_point_in_quadrilateral;
 use crate::ClimateData;
+use bevy::ecs::archetype::Archetype;
+use bevy::ecs::component::{ComponentId, Components, Tick};
+use bevy::ecs::query::{FilteredAccess, QueryFilter, WorldQuery};
+use bevy::ecs::storage::{Table, TableRow};
 use bevy::prelude::*;
 use factor_common::PlayerId;
 use itertools::Itertools;
@@ -120,7 +124,6 @@ pub fn load_player(
             };
             let opt = Some(data);
             table.insert(id, &opt)?;
-            #[allow(clippy::unnecessary_literal_unwrap)]
             opt.unwrap()
         }
     };
@@ -139,4 +142,80 @@ pub fn load_player(
         Err(err) => Err(Arc::new(err).unsize(Coercion!(to dyn Error + Send + Sync))),
     };
     commands.trigger(PlayerLoaded { id, res });
+}
+
+type PSRef = &'static PlayerState;
+
+/// `QueryFilter` to only allow the default player's data
+#[derive(Debug, Default, Clone, Copy)]
+pub struct DefaultPlayer;
+unsafe impl WorldQuery for DefaultPlayer {
+    type Fetch<'a> = <PSRef as WorldQuery>::Fetch<'a>;
+    type Item<'a> = ();
+    type State = <PSRef as WorldQuery>::State;
+
+    const IS_DENSE: bool = false;
+
+    fn shrink<'wlong: 'wshort, 'wshort>(_item: Self::Item<'wlong>) -> Self::Item<'wshort> {}
+    fn shrink_fetch<'wlong: 'wshort, 'wshort>(fetch: Self::Fetch<'wlong>) -> Self::Fetch<'wshort> {
+        PSRef::shrink_fetch(fetch)
+    }
+    fn matches_component_set(
+        state: &Self::State,
+        set_contains_id: &impl Fn(ComponentId) -> bool,
+    ) -> bool {
+        PSRef::matches_component_set(state, set_contains_id)
+    }
+    unsafe fn set_archetype<'w>(
+        fetch: &mut Self::Fetch<'w>,
+        state: &Self::State,
+        archetype: &'w Archetype,
+        table: &'w Table,
+    ) {
+        PSRef::set_archetype(fetch, state, archetype, table);
+    }
+    fn set_access(state: &mut Self::State, access: &FilteredAccess<ComponentId>) {
+        PSRef::set_access(state, access);
+    }
+    unsafe fn set_table<'w>(fetch: &mut Self::Fetch<'w>, state: &Self::State, table: &'w Table) {
+        PSRef::set_table(fetch, state, table);
+    }
+    fn update_component_access(state: &Self::State, access: &mut FilteredAccess<ComponentId>) {
+        PSRef::update_component_access(state, access);
+    }
+
+    unsafe fn init_fetch<'w>(
+        world: bevy::ecs::world::unsafe_world_cell::UnsafeWorldCell<'w>,
+        state: &Self::State,
+        last_run: Tick,
+        this_run: Tick,
+    ) -> Self::Fetch<'w> {
+        PSRef::init_fetch(world, state, last_run, this_run)
+    }
+
+    fn init_state(world: &mut World) -> Self::State {
+        PSRef::init_state(world)
+    }
+
+    fn get_state(components: &Components) -> Option<Self::State> {
+        PSRef::get_state(components)
+    }
+
+    unsafe fn fetch<'w>(
+        fetch: &mut Self::Fetch<'w>,
+        entity: Entity,
+        table_row: TableRow,
+    ) -> Self::Item<'w> {
+        PSRef::fetch(fetch, entity, table_row);
+    }
+}
+unsafe impl QueryFilter for DefaultPlayer {
+    const IS_ARCHETYPAL: bool = false;
+    unsafe fn filter_fetch(
+        fetch: &mut Self::Fetch<'_>,
+        entity: Entity,
+        table_row: TableRow,
+    ) -> bool {
+        PSRef::fetch(fetch, entity, table_row).id == PlayerId::DEFAULT
+    }
 }

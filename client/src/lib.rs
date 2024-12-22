@@ -54,11 +54,7 @@ impl Plugin for ClientPlugin {
                     render_loading_failed.run_if(in_state(LoadingFailed)),
                     render_paused.run_if(in_state(ClientState::Paused)),
                     render::handle_keypresses.run_if(in_state(ClientState::Running)),
-                    (
-                        chunks::update_interest,
-                        chunks::render_chunks,
-                        render::local_reflect_attempts,
-                    )
+                    (chunks::update_interest, render::local_reflect_attempts)
                         .before(render_paused)
                         .run_if(in_state(RenderGame).and(settings::with_fps)),
                 ),

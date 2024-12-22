@@ -16,6 +16,7 @@ use factor_common::cell::*;
 use factor_common::coords::*;
 use factor_common::healpix;
 use rand::Rng;
+use std::cmp::Ordering;
 use std::f64::consts::{FRAC_PI_2, TAU};
 use std::time::Duration;
 
@@ -51,6 +52,64 @@ struct HealpixParams {
 
 #[derive(Debug, Clone, Copy, PartialEq, Resource)]
 struct ShowTestPoints(bool);
+
+fn mesh_quad(corners: [Vec2; 4], depth: usize) -> Mesh {
+    let len = depth + 1;
+    let nverts = len * len;
+    let (min_x, max_x, min_y, max_y) = corners.iter().fold(
+        (
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+        ),
+        |(ix, ax, iy, ay), &Vec2 { x, y }| (ix.min(x), ax.max(x), iy.min(y), ay.max(y)),
+    );
+    let scale_x = (max_x - min_x).recip();
+    let scale_y = (max_y - min_y).recip();
+    let uv_add = Vec2::new(-min_x, -min_y);
+    let uv_scale = Vec2::new(scale_x, scale_y);
+    let mut vertices = vec![Vec3::NAN; nverts];
+    let mut uv = vec![Vec2::NAN; nverts];
+    let mut triangles = Vec::with_capacity(2 * nverts);
+    let [v0, v1, v2, v3] = corners;
+    let va = v1 - v0;
+    let vb = v2 - v0;
+    let vc = v3 - v0;
+    let scale = (depth as f32).recip();
+    for i in 0..len {
+        for j in 0..len {
+            let idx = i * len + j;
+            let basis = match i.cmp(&j) {
+                Ordering::Less => {
+                    triangles.extend_from_slice(&[
+                        [idx as u32, (idx - 1) as u32, (idx + len) as u32],
+                        [(idx - 1) as u32, (idx + len - 1) as u32, (idx + len) as u32],
+                    ]);
+                    va * scale * i.abs_diff(j) as f32
+                }
+                Ordering::Greater => {
+                    triangles.extend_from_slice(&[
+                        [idx as u32, (idx + 1) as u32, (idx - len) as u32],
+                        [(idx + 1) as u32, (idx - len + 1) as u32, (idx - len) as u32],
+                    ]);
+                    vc * scale * i.abs_diff(j) as f32
+                }
+                Ordering::Equal => Vec2::ZERO,
+            };
+            let b_basis = vb * scale * i.min(j) as f32;
+            let vert = b_basis + basis + v0;
+            vertices[idx] = vert.extend(0.0).xzy();
+            uv[idx] = (vert + uv_add) * uv_scale;
+        }
+    }
+    factor_common::mesh::MeshData {
+        vertices,
+        triangles,
+        uv,
+    }
+    .build_bevy()
+}
 
 fn main() {
     App::new()
@@ -480,7 +539,7 @@ fn spawn_cell(
                 + corners[0].x * corners[3].y));
     info!(hash = cell, area, ?corners, %entity, "initializing cell");
 
-    let mesh = factor_client::utils::mesh_quad(corners, 1, |_| 0.0).with_computed_normals();
+    let mesh = mesh_quad(corners, 1).with_computed_normals();
     let size = Extent3d {
         width: 512,
         height: 512,

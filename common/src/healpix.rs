@@ -20,7 +20,6 @@ static NEIGHBORS: [OnceLock<Box<[u64]>>; 29] = [const { OnceLock::new() }; 29];
 static SPARSE_NEIGHBORS: [LazyLock<Cache<u64, CopyVec<u64, 8>>>; 23] =
     [const { LazyLock::new(|| Cache::new(65536)) }; 23];
 
-#[allow(clippy::type_complexity)]
 static FAR_NEIGHBORS: [OnceLock<Box<[OnceLock<Box<[u64]>>]>>; 29] = [const { OnceLock::new() }; 29]; // TODO: precompute and save to a file
 static SPARSE_FAR_NEIGHBORS: [LazyLock<Cache<u64, Arc<[u64]>>>; 23] =
     [const { LazyLock::new(|| Cache::new(65536)) }; 23];

@@ -1,10 +1,17 @@
-#![feature(array_chunks, iter_array_chunks, path_add_extension, try_blocks)]
+#![feature(
+    array_chunks,
+    array_try_map,
+    iter_array_chunks,
+    path_add_extension,
+    try_blocks
+)]
 use bevy::ecs::system::SystemId;
 use bevy::prelude::*;
 use bevy::time::common_conditions::on_timer;
 use orbit::OrbitPlugin;
 use terrain::bevy::*;
 
+pub mod chunk;
 pub mod config;
 pub mod orbit;
 pub mod player;

@@ -3,6 +3,7 @@ use rand::Rng;
 
 pub mod database;
 pub mod db_value;
+pub mod mesh;
 pub mod option_bytes;
 
 pub fn random_point_in_quadrilateral<R: Rng + ?Sized>(points: [Vec2; 4], rng: &mut R) -> Vec2 {

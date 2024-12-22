@@ -61,3 +61,4 @@ unsize = "1.1.0"
 [workspace.lints.clippy]
 type-complexity = "allow"
 too-many-arguments = "deny"
+unnecessary-literal-unwrap = "allow"

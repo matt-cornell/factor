@@ -1,4 +1,3 @@
-#![allow(clippy::type_complexity)]
 #![feature(more_float_constants)]
 use bevy::input::mouse::*;
 use bevy::prelude::*;

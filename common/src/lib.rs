@@ -6,7 +6,7 @@ pub mod cell;
 pub mod coords;
 pub mod glue;
 pub mod healpix;
-pub mod noise;
+pub mod mesh;
 pub mod rcu;
 pub mod util;
 

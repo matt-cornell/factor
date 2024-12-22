@@ -5,6 +5,7 @@ edition.workspace = true
 
 [dependencies]
 bevy.workspace = true
+bytemuck.workspace = true
 cdshealpix.workspace = true
 copyvec = "0.2.1"
 futures-sink.workspace = true
