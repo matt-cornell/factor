@@ -4,7 +4,7 @@ use crate::terrain::climate::ClimateCell;
 use crate::utils::database::Database;
 use crate::utils::mesh::*;
 use bevy::prelude::*;
-use factor_common::cell::{corners_of, transforms_for};
+use factor_common::cell::{corners_of, ChunkId};
 use factor_common::coords::{get_absolute, get_relative, LonLat};
 use factor_common::healpix;
 use rand::prelude::*;
@@ -16,12 +16,6 @@ use std::ops::{Add, Mul};
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ChunkData {
     pub surface: MeshData,
-}
-
-#[derive(Debug, Component)]
-pub struct ChunkState {
-    pub id: u64,
-    pub data: ChunkData,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Event)]
@@ -37,11 +31,7 @@ impl ChunkRequest {
 #[derive(Debug, Clone, Copy, PartialEq, Event)]
 pub struct ChunkLoaded {
     pub id: u64,
-}
-impl ChunkLoaded {
-    pub const fn new(id: u64) -> Self {
-        Self { id }
-    }
+    pub entity: Entity,
 }
 
 pub fn load_chunk(
@@ -57,8 +47,8 @@ pub fn load_chunk(
             Ok(table) => {
                 if let Some(chunk) = table.get(id)? {
                     if let Some(data) = chunk.value() {
-                        commands.spawn(ChunkState { id, data });
-                        commands.trigger(ChunkLoaded::new(id));
+                        let entity = commands.spawn((ChunkId(id), data.surface)).id();
+                        commands.trigger(ChunkLoaded { id, entity });
                         txn.close()?;
                         return;
                     }
@@ -70,18 +60,19 @@ pub fn load_chunk(
         txn.close()?;
         let txn = db.begin_write()?;
         let mut table = txn.open_table(CHUNKS)?;
-        let (mut state, trans) = setup_chunk(
+        let surface = setup_chunk(
             &cfg,
             id,
             &mut txn.open_table(TERRAIN)?,
             &mut txn.open_table(HIGH_VALUE_NOISE)?,
             &mut txn.open_table(HIGH_GRAD_NOISE)?,
         )?;
-        let opt_data = Some(state.data);
+        let opt_data = Some(ChunkData { surface });
         table.insert(id, &opt_data)?;
-        state.data = opt_data.unwrap();
-        commands.spawn((state, trans));
-        commands.trigger(ChunkLoaded::new(id));
+        let entity = commands
+            .spawn((ChunkId(id), opt_data.unwrap().surface))
+            .id();
+        commands.trigger(ChunkLoaded { id, entity });
     };
     if let Err(err) = res {
         error!(id, %err, "Error loading chunk");
@@ -196,12 +187,11 @@ fn setup_chunk(
     terrain: &mut Table<u64, ClimateCell>,
     high_value: &mut Table<NoiseLocation, f32>,
     high_grad: &mut Table<NoiseLocation, [f32; 2]>,
-) -> Result<(ChunkState, Transform), redb::Error> {
+) -> Result<MeshData, redb::Error> {
     use factor_common::healpix::nested::zordercurve::*;
     let zoc = get_zoc(4);
     let base_hash = hash >> 8;
     let base_corners = corners_of(12, base_hash); // SENW
-    let transform = transforms_for(12, base_hash, hash >> 8);
     let ij = zoc.h2ij(hash & 0xff);
     let i = zoc.ij2i(ij);
     let j = zoc.ij2j(ij);
@@ -227,14 +217,9 @@ fn setup_chunk(
             high_grad,
         )
     })?;
-    Ok((
-        ChunkState {
-            id: hash,
-            data: ChunkData { surface },
-        },
-        transform,
-    ))
+    Ok(surface)
 }
+
 fn bilinear<T: Mul<f32, Output = T> + Add<Output = T>>(i: f32, j: f32, verts: [T; 4]) -> T {
     let [s, e, n, w] = verts;
     let se = e * i + s * (1.0 - i);

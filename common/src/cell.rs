@@ -164,3 +164,6 @@ pub fn transforms_for(depth: u8, base: u64, neighbor: u64) -> Transform {
             NAN_TRANSFORM
         })
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Component)]
+pub struct ChunkId(pub u64);
