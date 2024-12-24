@@ -3,8 +3,9 @@ use super::noise::*;
 use super::tectonic::*;
 use crate::config::*;
 use crate::orbit::*;
-use crate::tables::TERRAIN;
+use crate::tables::{DataEntry, MISC_DATA, TERRAIN};
 use crate::utils::database::*;
+use crate::utils::db_value::ErasedValue;
 use bevy::prelude::*;
 use factor_common::healpix;
 use factor_common::util::UpdateStates;
@@ -342,6 +343,7 @@ pub(crate) fn run_climate(
 }
 
 pub(crate) fn finalize(
+    config: Res<WorldConfig>,
     climate: Res<ClimateData>,
     mut commands: Commands,
     database: Option<Res<Database>>,
@@ -362,6 +364,12 @@ pub(crate) fn finalize(
                             |err| error!(%err, hash = n, "Error saving cell to table"),
                         )?;
                     }
+                    let mut table = txn
+                        .open_table(MISC_DATA)
+                        .inspect_err(|err| error!(%err, "Error opening misc data table"))?;
+                    table
+                        .insert(DataEntry::WorldConfig, ErasedValue::new(&*config))
+                        .inspect_err(|err| error!(%err, "Error saving world config"))?;
                 };
                 #[allow(clippy::collapsible_else_if)]
                 if let Err(err) = erred {
@@ -392,6 +400,19 @@ pub(crate) fn finalize(
 pub fn load_terrain(mut commands: Commands, db: Res<Database>) {
     let res: Result<(), redb::Error> = try {
         let txn = db.begin_read()?;
+        let config = txn.open_table(MISC_DATA)?;
+        let config = config.get(DataEntry::WorldConfig)?.ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                "World config not present in database",
+            )
+        })?;
+        commands.insert_resource(
+            config
+                .value()
+                .get::<WorldConfig>()
+                .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?,
+        );
         let table = txn.open_table(TERRAIN)?;
         let len = table.len()?;
         let mut cells = Vec::with_capacity(len as _);

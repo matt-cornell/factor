@@ -15,7 +15,8 @@ mod native;
 pub use native::*;
 
 /// Target framerate as a resource.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Resource)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Serialize, Deserialize, Resource)]
+#[serde(untagged)]
 pub enum TargetFps {
     #[default]
     Unlimited,
@@ -44,7 +45,7 @@ pub fn with_fps(fps: Option<Res<TargetFps>>, time: Res<Time>, mut last: Local<Du
 #[derive(Default, Deserialize)]
 struct PartialClientSettings {
     render_distance: Option<f64>,
-    target_fps: Option<Option<f32>>,
+    target_fps: Option<TargetFps>,
     mouse_sensitivity: Option<f32>,
 }
 impl PartialClientSettings {
@@ -59,14 +60,14 @@ impl PartialClientSettings {
 #[serde(from = "PartialClientSettings")]
 pub struct ClientSettings {
     pub render_distance: f64,
-    pub target_fps: Option<f32>,
+    pub target_fps: TargetFps,
     pub mouse_sensitivity: f32,
 }
 impl Default for ClientSettings {
     fn default() -> Self {
         Self {
             render_distance: 1000.0,
-            target_fps: None,
+            target_fps: TargetFps::Limit(120.0),
             mouse_sensitivity: 0.01,
         }
     }
@@ -75,7 +76,7 @@ impl From<PartialClientSettings> for ClientSettings {
     fn from(value: PartialClientSettings) -> Self {
         Self {
             render_distance: value.render_distance.unwrap_or(1000.0),
-            target_fps: value.target_fps.flatten(),
+            target_fps: value.target_fps.unwrap_or(TargetFps::Limit(120.0)),
             mouse_sensitivity: value.mouse_sensitivity.unwrap_or(0.01),
         }
     }
@@ -94,14 +95,18 @@ struct DeserializeShim {
 }
 
 pub fn fill_keybinds(map: &mut InputMap<Action>) -> bool {
+    let mut needs_write = false;
     if map.get_dual_axislike(&Action::Move).is_none() {
         map.insert_dual_axis(Action::Move, VirtualDPad::wasd());
+        needs_write = true;
     }
     if map.get_dual_axislike(&Action::Look).is_none() {
         map.insert_dual_axis(Action::Look, MouseMove::default());
+        needs_write = true;
     }
     if map.get_buttonlike(&Action::Jump).is_none() {
         map.insert(Action::Jump, KeyCode::Space);
+        needs_write = true;
     }
-    false
+    needs_write
 }

@@ -81,7 +81,7 @@ pub fn load_config(mut commands: Commands) {
             map
         })
     });
-    commands.insert_resource(TargetFps::from(settings.target_fps));
+    commands.insert_resource(settings.target_fps);
     commands.insert_resource(settings);
     commands.insert_resource(input);
     commands.init_resource::<ActionState<Action>>();

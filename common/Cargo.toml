@@ -14,6 +14,7 @@ hmac-sha256 = "1.1.7"
 postcard.workspace = true
 quick_cache.workspace = true
 serde.workspace = true
+tinyset.workspace = true
 triomphe.workspace = true
 
 [lints]

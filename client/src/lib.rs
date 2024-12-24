@@ -25,7 +25,7 @@ impl Plugin for ClientPlugin {
             settings: Res<settings::ClientSettings>,
             mut fps: ResMut<settings::TargetFps>,
         ) {
-            *fps = settings.target_fps.into();
+            *fps = settings.target_fps;
         }
         fn limit_target_fps(mut fps: ResMut<settings::TargetFps>) {
             *fps = settings::TargetFps::Limit(10.0);
@@ -40,6 +40,7 @@ impl Plugin for ClientPlugin {
             .init_state::<ClientState>()
             .init_state::<WorldLoaded>()
             .add_sub_state::<LoadingFailed>()
+            .add_sub_state::<RenderGame>()
             .add_event::<chunks::ReloadTerrain>()
             .insert_resource(LastState(ClientState::MainMenu))
             .insert_resource(self.clone())
@@ -54,16 +55,21 @@ impl Plugin for ClientPlugin {
                     render_loading_failed.run_if(in_state(LoadingFailed)),
                     render_paused.run_if(in_state(ClientState::Paused)),
                     render::handle_keypresses.run_if(in_state(ClientState::Running)),
-                    (chunks::update_interest, render::local_reflect_attempts)
+                    (chunks::update_interest,)
                         .before(render_paused)
                         .run_if(in_state(RenderGame).and(settings::with_fps)),
                 ),
             )
             .add_systems(OnEnter(WorldLoaded(true)), render::setup_world_render)
-            .add_systems(OnEnter(ClientState::Running), setup_target_fps)
+            .add_systems(OnExit(WorldLoaded(true)), render::cleanup_world_render)
+            .add_systems(
+                OnEnter(ClientState::Running),
+                (setup_target_fps, render::resume_world_render),
+            )
             .add_systems(
                 OnExit(ClientState::Running),
-                (limit_target_fps, clear_motion),
+                (limit_target_fps, clear_motion, render::pause_world_render)
+                    .before(render::cleanup_world_render),
             );
     }
 }

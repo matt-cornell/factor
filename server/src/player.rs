@@ -3,12 +3,8 @@ use crate::terrain::climate::ClimateFlags;
 use crate::utils::database::{self as redb, Database};
 use crate::utils::random_point_in_quadrilateral;
 use crate::ClimateData;
-use bevy::ecs::archetype::Archetype;
-use bevy::ecs::component::{ComponentId, Components, Tick};
-use bevy::ecs::query::{FilteredAccess, QueryFilter, WorldQuery};
-use bevy::ecs::storage::{Table, TableRow};
 use bevy::prelude::*;
-use factor_common::PlayerId;
+use factor_common::data::{ChunkInterest, PlayerId, Position};
 use itertools::Itertools;
 use rand::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -49,20 +45,16 @@ impl redb::Key for PlayerIdKey {
     }
 }
 
-/// Data about the player that gets serialized and deserialzied.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlayerData {
-    pub chunk: u64,
-    pub pos: Vec3,
-    pub rot: Quat,
+    pos: Position,
 }
 
-/// State for a player, with their data and actual
-#[derive(Debug, Clone, Component)]
-pub struct PlayerState {
+#[derive(Debug, Default, Clone, Bundle)]
+pub struct PlayerBundle {
     pub id: PlayerId,
-    pub interest: tinyset::SetU64,
-    pub data: PlayerData,
+    pub pos: Position,
+    pub interest: ChunkInterest,
 }
 
 /// A request for a player to be loaded.
@@ -73,7 +65,7 @@ pub struct PlayerRequest(pub PlayerId);
 #[derive(Debug, Clone, Event)]
 pub struct PlayerLoaded {
     pub id: PlayerId,
-    pub res: Result<(), Arc<dyn Error + Send + Sync>>,
+    pub res: Result<Entity, Arc<dyn Error + Send + Sync>>,
 }
 
 pub fn load_player(
@@ -117,13 +109,16 @@ pub fn load_player(
             };
             let coords =
                 random_point_in_quadrilateral(factor_common::cell::corners_of(16, chunk), &mut rng);
-            let data = PlayerData {
+            let pos = Position {
                 chunk,
                 pos: coords.extend(0.0).xzy(),
                 rot: Quat::from_rotation_y(rng.gen_range(0.0..=TAU)),
             };
+            let data = PlayerData { pos };
             let opt = Some(data);
             table.insert(id, &opt)?;
+            drop(table);
+            txn.commit()?;
             opt.unwrap()
         }
     };
@@ -132,90 +127,16 @@ pub fn load_player(
     }
     let res = match res {
         Ok(data) => {
-            commands.spawn(PlayerState {
-                id,
-                data,
-                interest: tinyset::SetU64::new(),
-            });
-            Ok(())
+            let id = commands
+                .spawn(PlayerBundle {
+                    id,
+                    pos: data.pos,
+                    ..default()
+                })
+                .id();
+            Ok(id)
         }
         Err(err) => Err(Arc::new(err).unsize(Coercion!(to dyn Error + Send + Sync))),
     };
     commands.trigger(PlayerLoaded { id, res });
-}
-
-type PSRef = &'static PlayerState;
-
-/// `QueryFilter` to only allow the default player's data
-#[derive(Debug, Default, Clone, Copy)]
-pub struct DefaultPlayer;
-unsafe impl WorldQuery for DefaultPlayer {
-    type Fetch<'a> = <PSRef as WorldQuery>::Fetch<'a>;
-    type Item<'a> = ();
-    type State = <PSRef as WorldQuery>::State;
-
-    const IS_DENSE: bool = false;
-
-    fn shrink<'wlong: 'wshort, 'wshort>(_item: Self::Item<'wlong>) -> Self::Item<'wshort> {}
-    fn shrink_fetch<'wlong: 'wshort, 'wshort>(fetch: Self::Fetch<'wlong>) -> Self::Fetch<'wshort> {
-        PSRef::shrink_fetch(fetch)
-    }
-    fn matches_component_set(
-        state: &Self::State,
-        set_contains_id: &impl Fn(ComponentId) -> bool,
-    ) -> bool {
-        PSRef::matches_component_set(state, set_contains_id)
-    }
-    unsafe fn set_archetype<'w>(
-        fetch: &mut Self::Fetch<'w>,
-        state: &Self::State,
-        archetype: &'w Archetype,
-        table: &'w Table,
-    ) {
-        PSRef::set_archetype(fetch, state, archetype, table);
-    }
-    fn set_access(state: &mut Self::State, access: &FilteredAccess<ComponentId>) {
-        PSRef::set_access(state, access);
-    }
-    unsafe fn set_table<'w>(fetch: &mut Self::Fetch<'w>, state: &Self::State, table: &'w Table) {
-        PSRef::set_table(fetch, state, table);
-    }
-    fn update_component_access(state: &Self::State, access: &mut FilteredAccess<ComponentId>) {
-        PSRef::update_component_access(state, access);
-    }
-
-    unsafe fn init_fetch<'w>(
-        world: bevy::ecs::world::unsafe_world_cell::UnsafeWorldCell<'w>,
-        state: &Self::State,
-        last_run: Tick,
-        this_run: Tick,
-    ) -> Self::Fetch<'w> {
-        PSRef::init_fetch(world, state, last_run, this_run)
-    }
-
-    fn init_state(world: &mut World) -> Self::State {
-        PSRef::init_state(world)
-    }
-
-    fn get_state(components: &Components) -> Option<Self::State> {
-        PSRef::get_state(components)
-    }
-
-    unsafe fn fetch<'w>(
-        fetch: &mut Self::Fetch<'w>,
-        entity: Entity,
-        table_row: TableRow,
-    ) -> Self::Item<'w> {
-        PSRef::fetch(fetch, entity, table_row);
-    }
-}
-unsafe impl QueryFilter for DefaultPlayer {
-    const IS_ARCHETYPAL: bool = false;
-    unsafe fn filter_fetch(
-        fetch: &mut Self::Fetch<'_>,
-        entity: Entity,
-        table_row: TableRow,
-    ) -> bool {
-        PSRef::fetch(fetch, entity, table_row).id == PlayerId::DEFAULT
-    }
 }

@@ -1,6 +1,7 @@
 #![feature(try_blocks)]
 use bevy::prelude::*;
 use factor_client::core_ui::ClientState;
+use factor_server::ServerState;
 use state::*;
 
 pub mod glue;
@@ -22,6 +23,16 @@ impl Plugin for CombinedPlugin {
                     render::render_creating_world
                         .run_if(in_state(SingleplayerState::CreatingWorld)),
                 ),
+            )
+            .add_systems(
+                OnExit(factor_client::core_ui::WorldLoaded(true)),
+                |mut next_state: ResMut<NextState<ServerState>>| {
+                    next_state.set(ServerState::Disabled);
+                },
+            )
+            .add_systems(
+                OnEnter(factor_server::ServerState::Disabled),
+                glue::cleanup_server,
             )
             .add_observer(glue::after_loaded);
     }

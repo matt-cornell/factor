@@ -4,13 +4,18 @@ use crate::terrain::climate::ClimateCell;
 use crate::utils::database::Database;
 use crate::utils::mesh::*;
 use bevy::prelude::*;
-use factor_common::cell::{corners_of, ChunkId};
+use bevy::utils::tracing::Span;
+use bevy::utils::HashMap;
+use factor_common::cell::corners_of;
 use factor_common::coords::{get_absolute, get_relative, LonLat};
+use factor_common::data::{ChunkId, ChunkInterest, PlayerId};
 use factor_common::healpix;
 use rand::prelude::*;
+use rayon::prelude::*;
 use redb::{ReadableTable, Table};
 use serde::{Deserialize, Serialize};
 use std::io;
+use std::num::NonZeroUsize;
 use std::ops::{Add, Mul};
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -28,27 +33,300 @@ impl ChunkRequest {
     }
 }
 
+/// Unload a chunk. This is a buffered event, and is mostly used internally to this file.
+///
+/// If this event is sent, the chunk is unloaded. It doesn't check if someone else is still using it.
+#[derive(Debug, Clone, Copy, PartialEq, Event)]
+pub struct UnloadChunk {
+    pub id: u64,
+}
+impl UnloadChunk {
+    pub const fn new(id: u64) -> Self {
+        Self { id }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Event)]
 pub struct ChunkLoaded {
     pub id: u64,
     pub entity: Entity,
 }
 
-pub fn load_chunk(
-    trig: Trigger<ChunkRequest>,
+/// A player's chunk interest has changed. Unlike most events, this one is going to be buffered because it's more efficient to handle these changes all at once.
+#[derive(Debug, Clone, Event)]
+pub struct InterestChanged {
+    /// The player whose interest changed.
+    pub player: PlayerId,
+    /// If we're in singleplayer mode, entities are shared and we don't need to update our copy of the interest.
+    pub needs_update: bool,
+    pub added: tinyset::SetU64,
+    pub removed: tinyset::SetU64,
+}
+
+/// A map of chunks to how many players want them loaded.
+#[derive(Debug, Default, Clone, Resource)]
+pub struct LoadedChunks {
+    pub chunks: HashMap<u64, NonZeroUsize>,
+}
+
+pub fn handle_interests(
     mut commands: Commands,
+    mut chunks: ResMut<LoadedChunks>,
+    mut changes: EventReader<InterestChanged>,
+    mut query: Query<(&PlayerId, &mut ChunkInterest)>,
+    mut load: EventWriter<ChunkRequest>,
+    mut unload: EventWriter<UnloadChunk>,
+) {
+    match changes.len() {
+        0 => {}
+        1 => {
+            let change = changes.read().next().unwrap();
+            if change.added.is_empty() && change.removed.is_empty() {
+                warn!("No chunks changed in event");
+                return;
+            }
+            let chunks = &mut chunks.chunks;
+            if change.needs_update {
+                let Some(mut interest) = query
+                    .iter_mut()
+                    .find_map(|(player, interest)| (*player == change.player).then_some(interest))
+                else {
+                    warn!(player = %change.player, "Interests changed for non-existent player");
+                    return;
+                };
+                let set = &mut interest.chunks;
+                for chunk in change.removed.iter() {
+                    if !set.remove(chunk) {
+                        warn!(player = %change.player, chunk, "Attempted to remove a chunk that wasn't already in the interest");
+                    }
+                    if let Some(count) = chunks.get_mut(&chunk) {
+                        if count.get() == 1 {
+                            chunks.remove(&chunk);
+                            unload.send(UnloadChunk::new(chunk));
+                        } else {
+                            // SAFETY: we already checked this
+                            *count = unsafe { NonZeroUsize::new_unchecked(count.get() - 1) };
+                        }
+                    } else {
+                        warn!(chunk, "Attempted to remove a chunk from global interest that wasn't already in the interest");
+                        unload.send(UnloadChunk::new(chunk));
+                    }
+                }
+                for chunk in change.added.iter() {
+                    if !set.insert(chunk) {
+                        warn!(player = %change.player, chunk, "Attempted to add a chunk that was already in the interest");
+                    }
+                    chunks
+                        .entry(chunk)
+                        .and_modify(|count| {
+                            // SAFETY: the count only increases here
+                            *count = unsafe { NonZeroUsize::new_unchecked(count.get() + 1) };
+                        })
+                        .or_insert_with(|| {
+                            load.send(ChunkRequest::new(chunk));
+                            // SAFETY: 1 is not 0
+                            unsafe { NonZeroUsize::new_unchecked(1) }
+                        });
+                }
+            } else {
+                for chunk in change.removed.iter() {
+                    if let Some(count) = chunks.get_mut(&chunk) {
+                        if count.get() == 1 {
+                            chunks.remove(&chunk);
+                            unload.send(UnloadChunk::new(chunk));
+                        } else {
+                            // SAFETY: we already checked this
+                            *count = unsafe { NonZeroUsize::new_unchecked(count.get() - 1) };
+                        }
+                    } else {
+                        warn!(chunk, "Attempted to remove a chunk from global interest that wasn't already in the interest");
+                        unload.send(UnloadChunk::new(chunk));
+                    }
+                }
+                for chunk in change.added.iter() {
+                    chunks
+                        .entry(chunk)
+                        .and_modify(|count| {
+                            // SAFETY: the count only increases here
+                            *count = unsafe { NonZeroUsize::new_unchecked(count.get() + 1) };
+                        })
+                        .or_insert_with(|| {
+                            load.send(ChunkRequest::new(chunk));
+                            // SAFETY: 1 is not 0
+                            unsafe { NonZeroUsize::new_unchecked(1) }
+                        });
+                }
+            }
+        }
+        _ => {
+            let mut lookup = query
+                .iter_mut()
+                .map(|(p, i)| (*p, i))
+                .collect::<HashMap<_, _>>();
+            for change in changes.read() {
+                if change.added.is_empty() && change.removed.is_empty() {
+                    warn!("No chunks changed in event");
+                    continue;
+                }
+                let chunks = &mut chunks.chunks;
+                if change.needs_update {
+                    let Some(interest) = lookup.get_mut(&change.player) else {
+                        warn!(player = %change.player, "Interests changed for non-existent player");
+                        return;
+                    };
+                    let set = &mut interest.chunks;
+                    for chunk in change.removed.iter() {
+                        if !set.remove(chunk) {
+                            warn!(player = %change.player, chunk, "Attempted to remove a chunk that wasn't already in the interest");
+                        }
+                        if let Some(count) = chunks.get_mut(&chunk) {
+                            if count.get() == 1 {
+                                chunks.remove(&chunk);
+                                unload.send(UnloadChunk::new(chunk));
+                            } else {
+                                // SAFETY: we already checked this
+                                *count = unsafe { NonZeroUsize::new_unchecked(count.get() - 1) };
+                            }
+                        } else {
+                            warn!(chunk, "Attempted to remove a chunk from global interest that wasn't already in the interest");
+                            unload.send(UnloadChunk::new(chunk));
+                        }
+                    }
+                    for chunk in change.added.iter() {
+                        if !set.insert(chunk) {
+                            warn!(player = %change.player, chunk, "Attempted to add a chunk that was already in the interest");
+                        }
+                        chunks
+                            .entry(chunk)
+                            .and_modify(|count| {
+                                // SAFETY: the count only increases here
+                                *count = unsafe { NonZeroUsize::new_unchecked(count.get() + 1) };
+                            })
+                            .or_insert_with(|| {
+                                load.send(ChunkRequest::new(chunk));
+                                // SAFETY: 1 is not 0
+                                unsafe { NonZeroUsize::new_unchecked(1) }
+                            });
+                    }
+                } else {
+                    for chunk in change.removed.iter() {
+                        if let Some(count) = chunks.get_mut(&chunk) {
+                            if count.get() == 1 {
+                                chunks.remove(&chunk);
+                                unload.send(UnloadChunk::new(chunk));
+                            } else {
+                                // SAFETY: we already checked this
+                                *count = unsafe { NonZeroUsize::new_unchecked(count.get() - 1) };
+                            }
+                        } else {
+                            warn!(chunk, "Attempted to remove a chunk from global interest that wasn't already in the interest");
+                            unload.send(UnloadChunk::new(chunk));
+                        }
+                    }
+                    for chunk in change.added.iter() {
+                        chunks
+                            .entry(chunk)
+                            .and_modify(|count| {
+                                // SAFETY: the count only increases here
+                                *count = unsafe { NonZeroUsize::new_unchecked(count.get() + 1) };
+                            })
+                            .or_insert_with(|| {
+                                commands.trigger(ChunkRequest::new(chunk));
+                                // SAFETY: 1 is not 0
+                                unsafe { NonZeroUsize::new_unchecked(1) }
+                            });
+                    }
+                }
+            }
+        }
+    }
+}
+
+pub fn unload_chunks(
+    mut commands: Commands,
+    query: Query<(Entity, &ChunkId)>,
+    mut to_unload: EventReader<UnloadChunk>,
+) {
+    let mut unloaded = to_unload.read().map(|u| u.id).collect::<tinyset::SetU64>();
+    if unloaded.is_empty() {
+        return;
+    }
+    for (entity, &chunk) in query.iter() {
+        if unloaded.remove(chunk.0) {
+            commands.entity(entity).despawn();
+            if unloaded.is_empty() {
+                return;
+            }
+        }
+    }
+}
+
+pub fn load_chunks(
+    commands: ParallelCommands,
     cfg: Res<WorldConfig>,
     db: Res<Database>,
+    mut to_load: EventReader<ChunkRequest>,
+    mut queue: Local<
+        Option<(
+            crossbeam_channel::Sender<u64>,
+            crossbeam_channel::Receiver<u64>,
+        )>,
+    >,
 ) {
-    let id = trig.id;
+    use std::time::Duration;
+    use wasm_timer::Instant;
+    const TIMEOUT: Duration = Duration::from_millis(100);
+    let span = Span::current();
+    let (tx, rx) = queue.get_or_insert_with(crossbeam_channel::unbounded);
+    let start = Instant::now();
+    let has_time = rx
+        .try_iter()
+        .par_bridge()
+        .try_for_each(|id| {
+            let _guard = span.enter();
+            let step = Instant::now();
+            load_chunk(id, &commands, &cfg, &db);
+            debug!(id, time = ?step.elapsed(), "Loaded chunk");
+            (start.elapsed() < TIMEOUT).then_some(())
+        })
+        .is_some();
+    if has_time {
+        to_load.par_read().for_each(|&ChunkRequest { id }| {
+            if start.elapsed() < TIMEOUT {
+                let _guard = span.enter();
+                let step = Instant::now();
+                load_chunk(id, &commands, &cfg, &db);
+                debug!(id, time = ?step.elapsed(), "Loaded chunk");
+            } else if let Err(err) = tx.send(id) {
+                error!(%err, "Error queuing chunk load request");
+            }
+        });
+    } else {
+        warn!(
+            queued = rx.len(),
+            new = to_load.len(),
+            "Chunk loading behind"
+        );
+        to_load.par_read().for_each(|req| {
+            if let Err(err) = tx.send(req.id) {
+                error!(%err, "Error queuing chunk load request");
+            }
+        });
+    }
+}
+
+pub fn load_chunk(id: u64, commands: &ParallelCommands, cfg: &WorldConfig, db: &Database) {
     let res: Result<(), redb::Error> = try {
         let txn = db.begin_read()?;
         match txn.open_table(CHUNKS) {
             Ok(table) => {
                 if let Some(chunk) = table.get(id)? {
                     if let Some(data) = chunk.value() {
-                        let entity = commands.spawn((ChunkId(id), data.surface)).id();
-                        commands.trigger(ChunkLoaded { id, entity });
+                        commands.command_scope(|mut commands| {
+                            let entity = commands.spawn((ChunkId(id), data.surface)).id();
+                            commands.trigger(ChunkLoaded { id, entity });
+                        });
+                        drop(table);
                         txn.close()?;
                         return;
                     }
@@ -61,7 +339,7 @@ pub fn load_chunk(
         let txn = db.begin_write()?;
         let mut table = txn.open_table(CHUNKS)?;
         let surface = setup_chunk(
-            &cfg,
+            cfg,
             id,
             &mut txn.open_table(TERRAIN)?,
             &mut txn.open_table(HIGH_VALUE_NOISE)?,
@@ -69,10 +347,14 @@ pub fn load_chunk(
         )?;
         let opt_data = Some(ChunkData { surface });
         table.insert(id, &opt_data)?;
-        let entity = commands
-            .spawn((ChunkId(id), opt_data.unwrap().surface))
-            .id();
-        commands.trigger(ChunkLoaded { id, entity });
+        drop(table);
+        txn.commit()?;
+        commands.command_scope(|mut commands| {
+            let entity = commands
+                .spawn((ChunkId(id), opt_data.unwrap().surface))
+                .id();
+            commands.trigger(ChunkLoaded { id, entity });
+        });
     };
     if let Err(err) = res {
         error!(id, %err, "Error loading chunk");
@@ -98,7 +380,7 @@ fn get_height(
     high_grad: &mut Table<NoiseLocation, [f32; 2]>,
 ) -> Result<f32, redb::Error> {
     let mut height = {
-        let layer = healpix::Layer::new(12);
+        let layer = healpix::Layer::new(config.climate.depth);
         let mut sum = 0.0;
         let mut scale = 0.0;
         for (n, w) in layer.bilinear_interpolation(coords) {
@@ -133,7 +415,7 @@ fn get_height(
                     v.value()
                 } else {
                     drop(opt);
-                    debug!(
+                    trace!(
                         layer = n,
                         cell,
                         gradient = true,
@@ -207,7 +489,7 @@ fn setup_chunk(
         let j = j as f32 * 0.5;
         bilinear(i, j, base_corners)
     });
-    let center = healpix::Layer::new(12).center(hash);
+    let center = healpix::Layer::new(12).center(base_hash);
     let surface = try_mesh_quad(chunk_corners, 32, |MeshPoint { abs, .. }| {
         get_height(
             config,

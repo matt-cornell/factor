@@ -1,17 +1,36 @@
 use bevy::prelude::*;
-use factor_client::chunks::ChunkInterest;
+use factor_client::chunks::InterestChanged as ClientInterestChanged;
 use factor_client::core_ui::ClientState;
-use factor_client::player::PlayerPos;
-use factor_common::PlayerId;
-use factor_server::player::{PlayerLoaded, PlayerRequest, PlayerState};
+use factor_common::data::PlayerId;
+use factor_server::chunk::InterestChanged as ServerInterestChanged;
+use factor_server::player::{PlayerLoaded, PlayerRequest};
 use factor_server::terrain::bevy::TerrainReady;
+use factor_server::utils::database::Database;
+use factor_server::ServerState;
 use std::error::Error;
 use unsize::*;
+
+/// Marker component for singleplayer event listeners that we should despawn when we exit singleplayer
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, Component)]
+pub struct SPListener;
+
+/// Cleanup all entities with the [`SPListener`] component
+pub fn cleanup_server(world: &mut World) {
+    let to_despawn = world
+        .query_filtered::<Entity, With<SPListener>>()
+        .iter(world)
+        .collect::<Vec<_>>();
+    for entity in to_despawn {
+        world.despawn(entity);
+    }
+    world.remove_resource::<Database>();
+}
 
 pub fn after_loaded(
     mut trig: Trigger<TerrainReady>,
     mut commands: Commands,
     mut next_state: ResMut<NextState<ClientState>>,
+    mut next_server: ResMut<NextState<ServerState>>,
 ) {
     if let Err(err) = std::mem::replace(&mut trig.res, Ok(())) {
         next_state.set(ClientState::LoadingFailed {
@@ -20,13 +39,15 @@ pub fn after_loaded(
         });
     } else {
         commands.add_observer(player_loaded);
+        commands.add_observer(interest_changed).insert(SPListener);
         commands.trigger(PlayerRequest(PlayerId::DEFAULT));
         next_state.set(ClientState::WorldLoading);
+        next_server.set(ServerState::Running);
     }
 }
+
 pub fn player_loaded(
     trigger: Trigger<PlayerLoaded>,
-    player: Query<&PlayerState>,
     mut commands: Commands,
     mut next_state: ResMut<NextState<ClientState>>,
 ) {
@@ -38,15 +59,19 @@ pub fn player_loaded(
             return_to_sp: true,
         });
     } else {
-        let mut player_iter = player.iter().filter(|p| p.id == PlayerId::DEFAULT);
-        let player = player_iter.next().unwrap();
-        debug_assert!(player_iter.next().is_none());
-        commands.init_resource::<ChunkInterest>();
-        commands.insert_resource(PlayerPos {
-            chunk: player.data.chunk,
-            position: player.data.pos,
-            rotation: player.data.rot,
-        });
         next_state.set(ClientState::Running);
     }
+}
+
+pub fn interest_changed(
+    mut trig: Trigger<ClientInterestChanged>,
+    mut events: EventWriter<ServerInterestChanged>,
+) {
+    let ClientInterestChanged { added, removed } = std::mem::take(trig.event_mut());
+    events.send(ServerInterestChanged {
+        player: PlayerId::DEFAULT,
+        needs_update: false,
+        added,
+        removed,
+    });
 }

@@ -8,6 +8,7 @@
 use bevy::ecs::system::SystemId;
 use bevy::prelude::*;
 use bevy::time::common_conditions::on_timer;
+use factor_common::data::PlayerId;
 use orbit::OrbitPlugin;
 use terrain::bevy::*;
 
@@ -19,6 +20,18 @@ pub mod storage;
 pub mod tables;
 pub mod terrain;
 pub mod utils;
+
+/// Current state of the server
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, States)]
+pub enum ServerState {
+    /// Nothing is running. When this state is entered, we're going to teardown everything we had
+    #[default]
+    Disabled,
+    /// We aren't currently running, but we should keep everything loaded.
+    Paused,
+    /// We're running and doing stuff.
+    Running,
+}
 
 #[derive(Debug, Clone, Copy, Resource)]
 pub struct ServerSystems {
@@ -37,11 +50,16 @@ impl Plugin for ServerPlugin {
         app.init_asset_loader::<config::WorldConfigLoader>()
             .add_plugins(self.orbit)
             .init_state::<ClimatePhase>()
+            .init_state::<ServerState>()
             .add_sub_state::<SetupTectonics>()
             .add_sub_state::<RunningTectonics>()
             .add_sub_state::<RunningClimate>()
             .add_event::<player::PlayerRequest>()
             .add_event::<player::PlayerLoaded>()
+            .add_event::<chunk::ChunkRequest>()
+            .add_event::<chunk::ChunkLoaded>()
+            .add_event::<chunk::UnloadChunk>()
+            .add_event::<chunk::InterestChanged>()
             .insert_resource(ClimateRunning(false))
             .insert_resource(ServerSystems {
                 setup_terrain,
@@ -63,6 +81,32 @@ impl Plugin for ServerPlugin {
             .add_systems(OnEnter(ClimatePhase::NoiseSetup), setup_noise)
             .add_systems(OnEnter(ClimatePhase::ClimateSetup), setup_climate)
             .add_systems(OnEnter(ClimatePhase::Finalize), finalize)
+            .add_systems(OnEnter(ServerState::Running), start_server)
+            .add_systems(OnEnter(ServerState::Disabled), cleanup_server)
+            .add_systems(
+                Update,
+                (
+                    chunk::handle_interests,
+                    chunk::load_chunks,
+                    chunk::unload_chunks,
+                )
+                    .run_if(in_state(ServerState::Running)),
+            )
             .add_observer(player::load_player);
     }
+}
+
+fn start_server(mut commands: Commands) {
+    commands.init_resource::<chunk::LoadedChunks>();
+}
+
+fn cleanup_server(world: &mut World) {
+    let to_despawn = world
+        .query_filtered::<Entity, With<PlayerId>>()
+        .iter(world)
+        .collect::<Vec<_>>();
+    for entity in to_despawn {
+        world.despawn(entity);
+    }
+    world.remove_resource::<chunk::LoadedChunks>();
 }
