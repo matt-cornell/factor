@@ -490,7 +490,7 @@ fn setup_chunk(
         bilinear(i, j, base_corners)
     });
     let center = healpix::Layer::new(12).center(base_hash);
-    let surface = try_mesh_quad(chunk_corners, 32, |MeshPoint { abs, .. }| {
+    let surface = try_mesh_quad(chunk_corners, 64, |MeshPoint { abs, .. }| {
         get_height(
             config,
             get_absolute(center, abs.into()),

@@ -5,12 +5,12 @@ obliquity = 0.0
 
 [climate]
 depth = 5
-intensity = 5000
+intensity = 4500
 init-steps = 250
 time-step = 0.01
 
 [tectonics]
-depth = 5
+depth = 6
 steps = 100
 scale = 1.0
 
