@@ -31,11 +31,11 @@ jobs:
         run: |
           mkdir -p static-deployment/examples/
           for name in $client_examples $server_examples; do
-            wasm-bindgen --no-typescript --target no-modules --out-dir static-deployment/examples target/wasm32-unknown-unknown/release/examples/$name.wasm
+            wasm-bindgen --no-typescript --target no-modules --out-dir static-deployment/examples target/wasm32-unknown-unknown/github-release/examples/$name.wasm
             cp static-deployment/_base_example.html static-deployment/examples/$name.html
           done
-          mv target/wasm32-unknown-unknown/release/factor.wasm web-demo.wasm
-          mv target/wasm32-unknown-unknown/release/factor-client.wasm client.wasm
+          mv target/wasm32-unknown-unknown/github-release/factor.wasm web-demo.wasm
+          mv target/wasm32-unknown-unknown/github-release/factor-client.wasm client.wasm
           wasm-bindgen --no-typescript --target no-modules --out-dir static-deployment web-demo.wasm
           wasm-bindgen --no-typescript --target no-modules --out-dir static-deployment client.wasm
           cp static-deployment/_base_example.html static-deployment/web-demo.html
