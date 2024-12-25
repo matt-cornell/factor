@@ -22,11 +22,11 @@ jobs:
       - name: Install wasm-bindgen
         run: cargo install wasm-bindgen-cli
       - name: Build server examples
-        run: cargo build --target wasm32-unknown-unknown --release -p factor-server $(echo $server_examples | sed 's/[^ ]* */--example &/g')
+        run: cargo build --target wasm32-unknown-unknown --profile github-release -p factor-server $(echo $server_examples | sed 's/[^ ]* */--example &/g')
       - name: Build client examples
-        run: cargo build --target wasm32-unknown-unknown --release -p factor-client $(echo $client_examples | sed 's/[^ ]* */--example &/g')
+        run: cargo build --target wasm32-unknown-unknown --profile github-release -p factor-client $(echo $client_examples | sed 's/[^ ]* */--example &/g')
       - name: Build web demos
-        run: cargo build --target wasm32-unknown-unknown --release -p factor -p factor-client
+        run: cargo build --target wasm32-unknown-unknown --profile github-release -p factor -p factor-client
       - name: Create bindings
         run: |
           mkdir -p static-deployment/examples/
