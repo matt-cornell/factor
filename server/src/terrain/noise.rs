@@ -1,5 +1,5 @@
-use crate::healpix;
 use bevy::math::Vec2;
+use factor_common::healpix;
 use std::f64::consts::{FRAC_PI_2, TAU};
 
 fn circle_dist(a: Vec2, b: Vec2) -> Vec2 {

@@ -1,3 +1,4 @@
+use crate::chunk::ChunkData;
 use crate::player::{PlayerData, PlayerIdKey};
 use crate::terrain::climate::ClimateCell;
 use crate::utils::db_value::{ErasedValue, PostcardValue};
@@ -9,6 +10,9 @@ pub const PLAYERS: TableDefinition<PlayerIdKey, PostcardValue<Option<PlayerData>
 pub const MISC_DATA: TableDefinition<DataEntry, ErasedValue> = TableDefinition::new("misc");
 
 pub const TERRAIN: TableDefinition<u64, ClimateCell> = TableDefinition::new("climate");
+
+pub const CHUNKS: TableDefinition<u64, PostcardValue<Option<ChunkData>>> =
+    TableDefinition::new("chunks");
 
 pub const HIGH_VALUE_NOISE: TableDefinition<NoiseLocation, f32> =
     TableDefinition::new("high-value-noise");

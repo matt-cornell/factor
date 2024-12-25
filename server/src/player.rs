@@ -4,11 +4,12 @@ use crate::utils::database::{self as redb, Database};
 use crate::utils::random_point_in_quadrilateral;
 use crate::ClimateData;
 use bevy::prelude::*;
-use factor_common::PlayerId;
+use factor_common::data::{ChunkInterest, PlayerId, Position};
 use itertools::Itertools;
 use rand::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::error::Error;
+use std::f32::consts::TAU;
 use triomphe::Arc;
 use unsize::*;
 
@@ -44,19 +45,16 @@ impl redb::Key for PlayerIdKey {
     }
 }
 
-/// Data about the player that gets serialized and deserialzied.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlayerData {
-    pub chunk: u64,
-    pub pos: Vec3,
+    pos: Position,
 }
 
-/// State for a player, with their data and actual
-#[derive(Debug, Clone, Component)]
-pub struct PlayerState {
+#[derive(Debug, Default, Clone, Bundle)]
+pub struct PlayerBundle {
     pub id: PlayerId,
-    pub interest: tinyset::SetU64,
-    pub data: PlayerData,
+    pub pos: Position,
+    pub interest: ChunkInterest,
 }
 
 /// A request for a player to be loaded.
@@ -67,7 +65,7 @@ pub struct PlayerRequest(pub PlayerId);
 #[derive(Debug, Clone, Event)]
 pub struct PlayerLoaded {
     pub id: PlayerId,
-    pub res: Result<(), Arc<dyn Error + Send + Sync>>,
+    pub res: Result<Entity, Arc<dyn Error + Send + Sync>>,
 }
 
 pub fn load_player(
@@ -111,13 +109,16 @@ pub fn load_player(
             };
             let coords =
                 random_point_in_quadrilateral(factor_common::cell::corners_of(16, chunk), &mut rng);
-            let data = PlayerData {
+            let pos = Position {
                 chunk,
                 pos: coords.extend(0.0).xzy(),
+                rot: Quat::from_rotation_y(rng.gen_range(0.0..=TAU)),
             };
+            let data = PlayerData { pos };
             let opt = Some(data);
             table.insert(id, &opt)?;
-            #[allow(clippy::unnecessary_literal_unwrap)]
+            drop(table);
+            txn.commit()?;
             opt.unwrap()
         }
     };
@@ -126,12 +127,14 @@ pub fn load_player(
     }
     let res = match res {
         Ok(data) => {
-            commands.spawn(PlayerState {
-                id,
-                data,
-                interest: tinyset::SetU64::new(),
-            });
-            Ok(())
+            let id = commands
+                .spawn(PlayerBundle {
+                    id,
+                    pos: data.pos,
+                    ..default()
+                })
+                .id();
+            Ok(id)
         }
         Err(err) => Err(Arc::new(err).unsize(Coercion!(to dyn Error + Send + Sync))),
     };

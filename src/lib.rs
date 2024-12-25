@@ -1,27 +1,19 @@
 #![feature(try_blocks)]
-use bevy::ecs::system::SystemId;
 use bevy::prelude::*;
 use factor_client::core_ui::ClientState;
-use factor_server::utils::database as redb;
+use factor_server::ServerState;
 use state::*;
 
 pub mod glue;
 pub mod render;
 pub mod state;
 
-#[derive(Debug, Clone, Copy, Resource)]
-pub struct ComboSystems {
-    pub after_loaded: SystemId<In<Result<(), redb::Error>>>,
-}
-
 #[derive(Debug, Clone, Copy)]
 pub struct CombinedPlugin;
 impl Plugin for CombinedPlugin {
     fn build(&self, app: &mut App) {
-        let after_loaded = app.register_system(glue::after_loaded);
         app.insert_state(SingleplayerState::Base(ClientState::MainMenu))
             .add_sub_state::<CreatingWorld>()
-            .insert_resource(ComboSystems { after_loaded })
             .add_systems(PreUpdate, link_states)
             .add_systems(
                 Update,
@@ -31,6 +23,17 @@ impl Plugin for CombinedPlugin {
                     render::render_creating_world
                         .run_if(in_state(SingleplayerState::CreatingWorld)),
                 ),
-            );
+            )
+            .add_systems(
+                OnExit(factor_client::core_ui::WorldLoaded(true)),
+                |mut next_state: ResMut<NextState<ServerState>>| {
+                    next_state.set(ServerState::Disabled);
+                },
+            )
+            .add_systems(
+                OnEnter(factor_server::ServerState::Disabled),
+                glue::cleanup_server,
+            )
+            .add_observer(glue::after_loaded);
     }
 }

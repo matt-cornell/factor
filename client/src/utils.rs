@@ -1,88 +1,37 @@
+use bevy::ecs::world::Command;
 use bevy::prelude::*;
-use bevy::render::render_asset::RenderAssetUsages;
-use std::cmp::Ordering;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::OnceLock;
 use std::task::{Context, Poll};
 
-/// A point to be given to
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct MeshPoint {
-    pub abs: Vec2,
-    pub i: usize,
-    pub j: usize,
+/// A component that marks an entity as despawnable when we're done with it.
+///
+/// Entities can either be handled by multiplayer code, in which case they can be despawned immediately, or they can be shared with the server, in which case we just remove our components
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Component)]
+pub struct Despawnable;
+
+/// A bundle to mark all of the stuff that we have in a chunk that the server doesn't need.
+#[derive(Debug, Clone, Bundle)]
+pub struct ClientChunkBundle {
+    mesh: Mesh3d,
+    material: MeshMaterial3d<StandardMaterial>,
 }
 
-pub fn mesh_quad(
-    corners: [Vec2; 4],
-    depth: usize,
-    mut height: impl FnMut(MeshPoint) -> f32,
-) -> Mesh {
-    let len = depth + 1;
-    let nverts = len * len;
-    let (min_x, max_x, min_y, max_y) = corners.iter().fold(
-        (
-            f32::INFINITY,
-            f32::NEG_INFINITY,
-            f32::INFINITY,
-            f32::NEG_INFINITY,
-        ),
-        |(ix, ax, iy, ay), &Vec2 { x, y }| (ix.min(x), ax.max(x), iy.min(y), ay.max(y)),
-    );
-    let scale_x = (max_x - min_x).recip();
-    let scale_y = (max_y - min_y).recip();
-    let uv_add = Vec2::new(-min_x, -min_y);
-    let uv_scale = Vec2::new(scale_x, scale_y);
-    let mut verts = vec![Vec3::NAN; nverts];
-    let mut uv = vec![Vec2::NAN; nverts];
-    let mut indices = Vec::with_capacity(6 * nverts);
-    let [v0, v1, v2, v3] = corners;
-    let va = v1 - v0;
-    let vb = v2 - v0;
-    let vc = v3 - v0;
-    let scale = (depth as f32).recip();
-    for i in 0..len {
-        for j in 0..len {
-            let idx = i * len + j;
-            let basis = match i.cmp(&j) {
-                Ordering::Less => {
-                    indices.extend_from_slice(&[
-                        idx as u32,
-                        (idx - 1) as u32,
-                        (idx + len) as u32,
-                        (idx - 1) as u32,
-                        (idx + len - 1) as u32,
-                        (idx + len) as u32,
-                    ]);
-                    va * scale * i.abs_diff(j) as f32
-                }
-                Ordering::Greater => {
-                    indices.extend_from_slice(&[
-                        idx as u32,
-                        (idx + 1) as u32,
-                        (idx - len) as u32,
-                        (idx + 1) as u32,
-                        (idx - len + 1) as u32,
-                        (idx - len) as u32,
-                    ]);
-                    vc * scale * i.abs_diff(j) as f32
-                }
-                Ordering::Equal => Vec2::ZERO,
-            };
-            let b_basis = vb * scale * i.min(j) as f32;
-            let vert = b_basis + basis + v0;
-            verts[idx] = vert.extend(height(MeshPoint { abs: vert, i, j })).xzy();
-            uv[idx] = (vert + uv_add) * uv_scale;
+/// A command that will either despawn an entity or remove its client-only components.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Cleanup(pub Entity);
+impl Command for Cleanup {
+    fn apply(self, world: &mut World) {
+        let Ok(mut e) = world.get_entity_mut(self.0) else {
+            return;
+        };
+        if e.contains::<Despawnable>() {
+            e.despawn_recursive();
+        } else {
+            e.remove::<ClientChunkBundle>();
         }
     }
-    Mesh::new(
-        bevy::render::mesh::PrimitiveTopology::TriangleList,
-        RenderAssetUsages::RENDER_WORLD,
-    )
-    .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, verts)
-    .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, uv)
-    .with_inserted_indices(bevy::render::mesh::Indices::U32(indices))
 }
 
 #[derive(Debug)]

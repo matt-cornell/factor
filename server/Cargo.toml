@@ -29,6 +29,8 @@ papaya = "0.1.6"
 rand_distr = "0.4.3"
 rand_xoshiro = "0.6.0"
 redb = { version = "2.2.0", features = ["logging"] }
+rayon = "1.10.0"
+wasm-timer = "0.2.5"
 
 [dev-dependencies]
 bevy = { workspace = true, features = ["bevy_gizmos", "bevy_pbr", "bevy_render", "bevy_window", "bevy_winit", "tonemapping_luts", "webgl2", "x11"] }
