@@ -34,7 +34,7 @@ debug = false
 [profile.github-release] # Release speeds but builds fast enough that CI doesn't time out
 inherits = "release"
 lto = "thin"
-codegen-units = 4
+codegen-units = 16
 
 [lints]
 workspace = true
