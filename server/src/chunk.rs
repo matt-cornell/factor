@@ -276,14 +276,30 @@ impl Default for AsyncChunks {
     }
 }
 
+/// Self-referential type for my receiver mess
+pub struct ReceiverState {
+    to_load: Receiver<(u64, bool)>,
+    sender: Sender<(u64, ChunkData)>,
+    restart: Sender<Self>,
+}
+
 pub fn load_chunks(
     commands: ParallelCommands,
     cfg: Res<WorldConfig>,
     db: Res<Database>,
     mut to_load: EventReader<ChunkRequest>,
-    mut channels: Local<Option<(Sender<(u64, bool)>, Receiver<(u64, ChunkData)>)>>,
+    mut channels: Local<
+        Option<(
+            Sender<(u64, bool)>,
+            Receiver<(u64, ChunkData)>,
+            Receiver<ReceiverState>,
+        )>,
+    >,
 ) {
-    if let Some((send, recv)) = &*channels {
+    if let Some((send, recv, restart)) = &*channels {
+        if let Ok(state) = restart.try_recv() {
+            setup_recv(state, &cfg, &db);
+        }
         for (id, data) in recv.try_iter() {
             commands.command_scope(|mut commands| {
                 let entity = commands.spawn((ChunkId(id), data.surface)).id();
@@ -342,62 +358,75 @@ pub fn load_chunks(
         if let Err(err) = res {
             error!(id, %err, "Error loading chunk");
         }
-        let (send, _) = channels.get_or_insert_with(|| {
+        let (send, _, _) = channels.get_or_insert_with(|| {
             let (tx1, rx1) = crossbeam_channel::bounded(512);
             let (tx2, rx2) = crossbeam_channel::bounded(16);
-            new_stuff = Some((rx1, tx2));
-            (tx1, rx2)
+            let (tx3, rx3) = crossbeam_channel::bounded(1);
+            new_stuff = Some(ReceiverState {
+                to_load: rx1,
+                sender: tx2,
+                restart: tx3,
+            });
+            (tx1, rx2, rx3)
         });
         if let Err(_err) = send.send((id, false)) {
             error!("Channel is somehow closed?");
         }
     });
-    if let Some((to_load, sender)) = new_stuff {
-        match db.begin_write() {
-            Ok(txn) => {
-                let config = cfg.clone();
-                AsyncComputeTaskPool::get()
-                    .spawn(
-                        async move {
-                            let _: Result<(), redb::Error> = try {
-                                loop {
-                                    match to_load.try_recv() {
-                                        Ok((id, check_load)) => {
-                                            let start = wasm_timer::Instant::now();
-                                            let surface = setup_chunk(&config, id, &txn)?.await?;
-                                            let mut table = txn.open_table(CHUNKS)?;
-                                            if check_load {
-                                                if let Some(chunk) = table.get(id)? {
-                                                    if let Some(data) = chunk.value() {
-                                                        if let Err(_err) = sender.send((id, data)) {
-                                                            error!("Channel is somehow closed?");
-                                                        }
-                                                        debug!(id, time = ?start.elapsed(), "Loaded chunk");
-                                                        continue;
-                                                    }
-                                                }
-                                            }
-                                            let opt_data = Some(ChunkData { surface });
-                                            table.insert(id, &opt_data)?;
-                                            drop(table);
-                                            if let Err(_err) = sender.send((id, opt_data.unwrap()))
-                                            {
+    if let Some(state) = new_stuff {
+        setup_recv(state, &cfg, &db);
+    }
+}
+
+fn setup_recv(state: ReceiverState, cfg: &WorldConfig, db: &Database) {
+    match db.begin_write() {
+        Ok(txn) => {
+            let config = cfg.clone();
+            AsyncComputeTaskPool::get()
+                .spawn(
+                    async move {
+                        let _: Result<(), redb::Error> = try {
+                            let running = wasm_timer::Instant::now();
+                            for (id, check_load) in state.to_load.try_iter() {
+                                let start = wasm_timer::Instant::now();
+                                let surface = setup_chunk(&config, id, &txn)?.await?;
+                                let mut table = txn.open_table(CHUNKS)?;
+                                if check_load {
+                                    if let Some(chunk) = table.get(id)? {
+                                        if let Some(data) = chunk.value() {
+                                            if let Err(_err) = state.sender.send((id, data)) {
                                                 error!("Channel is somehow closed?");
                                             }
                                             debug!(id, time = ?start.elapsed(), "Loaded chunk");
+                                            continue;
                                         }
-                                        Err(crossbeam_channel::TryRecvError::Empty) => {}
-                                        Err(crossbeam_channel::TryRecvError::Disconnected) => break,
                                     }
                                 }
-                            };
-                        }
-                        .instrument(Span::current()),
-                    )
-                    .detach();
-            }
-            Err(err) => error!(%err, "Error starting write transaction"),
+                                let opt_data = Some(ChunkData { surface });
+                                table.insert(id, &opt_data)?;
+                                drop(table);
+                                if let Err(_err) = state.sender.send((id, opt_data.unwrap()))
+                                {
+                                    error!("Channel is somehow closed?");
+                                }
+                                debug!(id, time = ?start.elapsed(), "Loaded chunk");
+                                if running.elapsed() > std::time::Duration::from_secs(2) {
+                                    warn!(remaining = state.to_load.len(), "Chunk loading task has been running for a long time, restarting");
+                                    let restart = state.restart.clone();
+                                    if let Err(_err) = restart.send(state) {
+                                        error!("Channel is somehow closed?");
+                                    }
+                                    break;
+                                }
+                            }
+                            txn.commit()?;
+                        };
+                    }
+                    .instrument(Span::current()),
+                )
+                .detach();
         }
+        Err(err) => error!(%err, "Error starting write transaction"),
     }
 }
 
