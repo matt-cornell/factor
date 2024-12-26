@@ -231,7 +231,7 @@ pub(crate) fn setup_tect(
     let ClimatePhase::TectSetup(mut step) = **state else {
         unreachable!()
     };
-    if step == 0 {
+    if step == 0 && channel.is_none() {
         debug!("Beginning tectonics setup");
     }
     trace!(step, "Tectonics setup");
@@ -340,7 +340,7 @@ pub(crate) fn run_climate(
     let ClimatePhase::ClimateStep(step) = **state else {
         unreachable!()
     };
-    if step == 0 {
+    if step == 0 && channel.is_none() {
         debug!("Beginning climate simulation");
     }
     if let Some(rx) = &mut *channel {
