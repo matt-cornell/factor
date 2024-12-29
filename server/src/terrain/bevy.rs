@@ -7,6 +7,8 @@ use crate::tables::{DataEntry, MISC_DATA, TERRAIN};
 use crate::utils::database::*;
 use crate::utils::db_value::ErasedValue;
 use bevy::prelude::*;
+use bevy::tasks::AsyncComputeTaskPool;
+use crossbeam_channel::Receiver;
 use factor_common::healpix;
 use factor_common::util::UpdateStates;
 use rand::prelude::*;
@@ -142,7 +144,7 @@ pub struct RunningTectonics;
 #[source(ClimatePhase = ClimatePhase::ClimateStep(_))]
 pub struct RunningClimate;
 
-#[derive(Debug, Resource)]
+#[derive(Debug, Clone, Resource)]
 pub(crate) struct ClimateInit {
     rng: RandSource,
 }
@@ -224,20 +226,48 @@ pub(crate) fn setup_tect(
     config: Res<WorldConfig>,
     state: Res<State<ClimatePhase>>,
     mut next_state: ResMut<NextState<ClimatePhase>>,
+    mut channel: Local<Option<Receiver<Result<(TectonicState, ClimateInit), u16>>>>,
 ) {
-    let ClimatePhase::TectSetup(step) = **state else {
+    let ClimatePhase::TectSetup(mut step) = **state else {
         unreachable!()
     };
-    if step == 0 {
+    if step == 0 && channel.is_none() {
         debug!("Beginning tectonics setup");
     }
     trace!(step, "Tectonics setup");
-    let state = try_init_terrain(config.tectonics.depth, &mut init.rng);
-    if let Some(state) = state {
-        commands.insert_resource(TectonicData { state });
-        next_state.set(ClimatePhase::TectStep(0));
+    if let Some(rx) = &mut *channel {
+        match rx.try_iter().last() {
+            Some(Ok((state, init_))) => {
+                *init = init_;
+                commands.insert_resource(TectonicData { state });
+                next_state.set(ClimatePhase::TectStep(0));
+            }
+            Some(Err(step)) => next_state.set(ClimatePhase::TectSetup(step + 1)),
+            None => {}
+        }
     } else {
-        next_state.set(ClimatePhase::TectSetup(step + 1));
+        let depth = config.tectonics.depth;
+        let mut init = init.clone();
+        let (tx, rx) = crossbeam_channel::bounded(16);
+        *channel = Some(rx);
+        AsyncComputeTaskPool::get()
+            .spawn(async move {
+                loop {
+                    step += 1;
+                    #[allow(clippy::collapsible_else_if)]
+                    if let Some(state) = try_init_terrain(depth, &mut init.rng) {
+                        if let Err(_err) = tx.send(Ok((state, init))) {
+                            error!("Channel is closed!");
+                        }
+                        break;
+                    } else {
+                        if let Err(_err) = tx.send(Err(step)) {
+                            error!("Channel is closed!");
+                        }
+                    }
+                }
+            })
+            .detach();
     }
 }
 
@@ -305,12 +335,23 @@ pub(crate) fn run_climate(
     >,
     state: Res<State<ClimatePhase>>,
     mut next_state: ResMut<NextState<ClimatePhase>>,
+    mut channel: Local<Option<Receiver<(ClimateData, ClimateInit)>>>,
 ) {
     let ClimatePhase::ClimateStep(step) = **state else {
         unreachable!()
     };
-    if step == 0 {
+    if step == 0 && channel.is_none() {
         debug!("Beginning climate simulation");
+    }
+    if let Some(rx) = &mut *channel {
+        if let Ok(data) = rx.try_recv() {
+            *channel = None;
+            *climate = data.0;
+            *init = data.1;
+            next_state.set(ClimatePhase::ClimateStep(step + 1));
+        } else {
+            return;
+        }
     }
     trace!(step, "Climate step");
     if step >= config.climate.init_steps {
@@ -323,22 +364,34 @@ pub(crate) fn run_climate(
             planet.transmute_lens_filtered().query(),
             Res::clone(&config),
         );
-        let planet_transform = planet.single().2;
-        step_climate(
-            &mut climate.cells,
-            |x, y| {
-                let (xsin, xcos) = x.sin_cos();
-                let (ysin, ycos) = y.sin_cos();
-                let point = Vec3::new(xcos * ycos, xsin * ycos, ysin);
-                let (_, rot, trans) = planet_transform.to_scale_rotation_translation();
-                config.climate.intensity
-                    * rot.mul_vec3(point).dot(-trans.normalize_or_zero()).max(0.0)
-            },
-            config.climate.time_step * dt,
-            &mut init.rng,
-        );
-        climate.update();
-        next_state.set(ClimatePhase::ClimateStep(step + 1));
+        let planet_transform = *planet.single().2;
+        let mut climate = climate.clone();
+        let time_scale = config.climate.time_step * dt;
+        let intensity = config.climate.intensity;
+        let mut init = init.clone();
+        let (tx, rx) = crossbeam_channel::bounded(1);
+        *channel = Some(rx);
+        AsyncComputeTaskPool::get()
+            .spawn(async move {
+                step_climate(
+                    &mut climate.cells,
+                    |x, y| {
+                        let (xsin, xcos) = x.sin_cos();
+                        let (ysin, ycos) = y.sin_cos();
+                        let point = Vec3::new(xcos * ycos, xsin * ycos, ysin);
+                        let (_, rot, trans) = planet_transform.to_scale_rotation_translation();
+                        intensity * rot.mul_vec3(point).dot(-trans.normalize_or_zero()).max(0.0)
+                    },
+                    time_scale,
+                    &mut init.rng,
+                );
+                std::future::ready(()).await;
+                climate.update();
+                if let Err(_err) = tx.send((climate, init)) {
+                    error!("Somehow this channel closed?");
+                }
+            })
+            .detach();
     }
 }
 

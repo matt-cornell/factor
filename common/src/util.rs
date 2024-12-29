@@ -8,7 +8,7 @@ use serde::Serialize;
 use std::borrow::Borrow;
 use std::hash::Hash;
 use std::marker::PhantomData;
-use std::ops::Deref;
+use std::ops::{Deref, DerefMut};
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use triomphe::Arc;
@@ -152,5 +152,38 @@ pub struct UpdateStates;
 impl Command for UpdateStates {
     fn apply(self, world: &mut World) {
         let _ = world.try_run_schedule(StateTransition);
+    }
+}
+
+/// Workaround for https://github.com/rust-lang/rust/issues/64552
+#[derive(Debug, Clone, Copy)]
+pub struct UnsafeAssertSend<T>(T);
+impl<T> UnsafeAssertSend<T> {
+    /// Create a new version of this. T must be send, even if the compiler refuses to verify it.
+    #[allow(clippy::missing_safety_doc)]
+    pub const unsafe fn new(inner: T) -> Self {
+        Self(inner)
+    }
+    pub fn into_inner(self) -> T {
+        self.0
+    }
+}
+impl<'a, T: Sync> UnsafeAssertSend<&'a T> {
+    /// This is safe because `T: Sync`. The auto bound messes this up in async functions
+    pub const fn from_ref(inner: &'a T) -> Self {
+        Self(inner)
+    }
+}
+unsafe impl<T> Send for UnsafeAssertSend<T> {}
+impl<T> Deref for UnsafeAssertSend<T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+impl<T> DerefMut for UnsafeAssertSend<T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
     }
 }

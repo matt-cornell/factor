@@ -4,16 +4,18 @@ use crate::terrain::climate::ClimateCell;
 use crate::utils::database::Database;
 use crate::utils::mesh::*;
 use bevy::prelude::*;
-use bevy::utils::tracing::Span;
-use bevy::utils::HashMap;
+use bevy::tasks::AsyncComputeTaskPool;
+use bevy::utils::tracing::{Instrument, Span};
+use bevy::utils::{ConditionalSend, HashMap};
+use crossbeam_channel::{Receiver, Sender};
 use factor_common::cell::corners_of;
 use factor_common::coords::{get_absolute, get_relative, LonLat};
 use factor_common::data::{ChunkId, ChunkInterest, PlayerId};
 use factor_common::healpix;
 use rand::prelude::*;
-use rayon::prelude::*;
-use redb::{ReadableTable, Table};
+use redb::{ReadableTable, Table, WriteTransaction};
 use serde::{Deserialize, Serialize};
+use std::future::Future;
 use std::io;
 use std::num::NonZeroUsize;
 use std::ops::{Add, Mul};
@@ -261,103 +263,157 @@ pub fn unload_chunks(
     }
 }
 
+/// Self-referential type for my receiver mess
+pub struct ReceiverState {
+    to_load: Receiver<(u64, bool)>,
+    sender: Sender<(u64, ChunkData)>,
+    restart: Sender<Self>,
+}
+
 pub fn load_chunks(
     commands: ParallelCommands,
     cfg: Res<WorldConfig>,
     db: Res<Database>,
     mut to_load: EventReader<ChunkRequest>,
-    mut queue: Local<
+    mut channels: Local<
         Option<(
-            crossbeam_channel::Sender<u64>,
-            crossbeam_channel::Receiver<u64>,
+            Sender<(u64, bool)>,
+            Receiver<(u64, ChunkData)>,
+            Receiver<ReceiverState>,
         )>,
     >,
 ) {
-    use std::time::Duration;
-    use wasm_timer::Instant;
-    const TIMEOUT: Duration = Duration::from_millis(100);
-    let span = Span::current();
-    let (tx, rx) = queue.get_or_insert_with(crossbeam_channel::unbounded);
-    let start = Instant::now();
-    let has_time = rx
-        .try_iter()
-        .par_bridge()
-        .try_for_each(|id| {
-            let _guard = span.enter();
-            let step = Instant::now();
-            load_chunk(id, &commands, &cfg, &db);
-            debug!(id, time = ?step.elapsed(), "Loaded chunk");
-            (start.elapsed() < TIMEOUT).then_some(())
-        })
-        .is_some();
-    if has_time {
-        to_load.par_read().for_each(|&ChunkRequest { id }| {
-            if start.elapsed() < TIMEOUT {
-                let _guard = span.enter();
-                let step = Instant::now();
-                load_chunk(id, &commands, &cfg, &db);
-                debug!(id, time = ?step.elapsed(), "Loaded chunk");
-            } else if let Err(err) = tx.send(id) {
-                error!(%err, "Error queuing chunk load request");
+    if let Some((send, recv, restart)) = &*channels {
+        if let Ok(state) = restart.try_recv() {
+            setup_recv(state, &cfg, &db);
+        }
+        for (id, data) in recv.try_iter() {
+            commands.command_scope(|mut commands| {
+                let entity = commands.spawn((ChunkId(id), data.surface)).id();
+                commands.trigger(ChunkLoaded { id, entity });
+            });
+        }
+        match recv.try_recv() {
+            Ok((id, data)) => {
+                // whoops
+                commands.command_scope(|mut commands| {
+                    let entity = commands.spawn((ChunkId(id), data.surface)).id();
+                    commands.trigger(ChunkLoaded { id, entity });
+                });
+
+                to_load.read().for_each(|&ChunkRequest { id }| {
+                    if let Err(_err) = send.send((id, true)) {
+                        error!("Channel is somehow closed?");
+                    }
+                });
             }
-        });
-    } else {
-        warn!(
-            queued = rx.len(),
-            new = to_load.len(),
-            "Chunk loading behind"
-        );
-        to_load.par_read().for_each(|req| {
-            if let Err(err) = tx.send(req.id) {
-                error!(%err, "Error queuing chunk load request");
+            Err(crossbeam_channel::TryRecvError::Empty) => {
+                to_load.read().for_each(|&ChunkRequest { id }| {
+                    if let Err(_err) = send.send((id, true)) {
+                        error!("Channel is somehow closed?");
+                    }
+                })
             }
+            Err(crossbeam_channel::TryRecvError::Disconnected) => *channels = None,
+        }
+    }
+    let mut new_stuff = None;
+    to_load.read().for_each(|&ChunkRequest { id }| {
+        let start = wasm_timer::Instant::now();
+        let res: Result<(), redb::Error> = try {
+            let txn = db.begin_read()?;
+            match txn.open_table(CHUNKS) {
+                Ok(table) => {
+                    if let Some(chunk) = table.get(id)? {
+                        if let Some(data) = chunk.value() {
+                            commands.command_scope(|mut commands| {
+                                let entity = commands.spawn((ChunkId(id), data.surface)).id();
+                                commands.trigger(ChunkLoaded { id, entity });
+                            });
+                            drop(table);
+                            txn.close()?;
+                            debug!(id, time = ?start.elapsed(), "Loaded chunk");
+                            return;
+                        }
+                    }
+                }
+                Err(redb::TableError::TableDoesNotExist(_)) => {}
+                Err(err) => Err(err)?,
+            }
+            txn.close()?;
+        };
+        if let Err(err) = res {
+            error!(id, %err, "Error loading chunk");
+        }
+        let (send, _, _) = channels.get_or_insert_with(|| {
+            let (tx1, rx1) = crossbeam_channel::bounded(512);
+            let (tx2, rx2) = crossbeam_channel::bounded(16);
+            let (tx3, rx3) = crossbeam_channel::bounded(1);
+            new_stuff = Some(ReceiverState {
+                to_load: rx1,
+                sender: tx2,
+                restart: tx3,
+            });
+            (tx1, rx2, rx3)
         });
+        if let Err(_err) = send.send((id, false)) {
+            error!("Channel is somehow closed?");
+        }
+    });
+    if let Some(state) = new_stuff {
+        setup_recv(state, &cfg, &db);
     }
 }
 
-pub fn load_chunk(id: u64, commands: &ParallelCommands, cfg: &WorldConfig, db: &Database) {
-    let res: Result<(), redb::Error> = try {
-        let txn = db.begin_read()?;
-        match txn.open_table(CHUNKS) {
-            Ok(table) => {
-                if let Some(chunk) = table.get(id)? {
-                    if let Some(data) = chunk.value() {
-                        commands.command_scope(|mut commands| {
-                            let entity = commands.spawn((ChunkId(id), data.surface)).id();
-                            commands.trigger(ChunkLoaded { id, entity });
-                        });
-                        drop(table);
-                        txn.close()?;
-                        return;
+fn setup_recv(state: ReceiverState, cfg: &WorldConfig, db: &Database) {
+    match db.begin_write() {
+        Ok(txn) => {
+            let config = cfg.clone();
+            AsyncComputeTaskPool::get()
+                .spawn(
+                    async move {
+                        let _: Result<(), redb::Error> = try {
+                            let running = wasm_timer::Instant::now();
+                            for (id, check_load) in state.to_load.try_iter() {
+                                let start = wasm_timer::Instant::now();
+                                let surface = setup_chunk(&config, id, &txn)?.await?;
+                                let mut table = txn.open_table(CHUNKS)?;
+                                if check_load {
+                                    if let Some(chunk) = table.get(id)? {
+                                        if let Some(data) = chunk.value() {
+                                            if let Err(_err) = state.sender.send((id, data)) {
+                                                error!("Channel is somehow closed?");
+                                            }
+                                            debug!(id, time = ?start.elapsed(), "Loaded chunk");
+                                            continue;
+                                        }
+                                    }
+                                }
+                                let opt_data = Some(ChunkData { surface });
+                                table.insert(id, &opt_data)?;
+                                drop(table);
+                                if let Err(_err) = state.sender.send((id, opt_data.unwrap()))
+                                {
+                                    error!("Channel is somehow closed?");
+                                }
+                                debug!(id, time = ?start.elapsed(), "Loaded chunk");
+                                if running.elapsed() > std::time::Duration::from_secs(2) {
+                                    warn!(remaining = state.to_load.len(), "Chunk loading task has been running for a long time, restarting");
+                                    let restart = state.restart.clone();
+                                    if let Err(_err) = restart.send(state) {
+                                        error!("Channel is somehow closed?");
+                                    }
+                                    break;
+                                }
+                            }
+                            txn.commit()?;
+                        };
                     }
-                }
-            }
-            Err(redb::TableError::TableDoesNotExist(_)) => {}
-            Err(err) => Err(err)?,
+                    .instrument(Span::current()),
+                )
+                .detach();
         }
-        txn.close()?;
-        let txn = db.begin_write()?;
-        let mut table = txn.open_table(CHUNKS)?;
-        let surface = setup_chunk(
-            cfg,
-            id,
-            &mut txn.open_table(TERRAIN)?,
-            &mut txn.open_table(HIGH_VALUE_NOISE)?,
-            &mut txn.open_table(HIGH_GRAD_NOISE)?,
-        )?;
-        let opt_data = Some(ChunkData { surface });
-        table.insert(id, &opt_data)?;
-        drop(table);
-        txn.commit()?;
-        commands.command_scope(|mut commands| {
-            let entity = commands
-                .spawn((ChunkId(id), opt_data.unwrap().surface))
-                .id();
-            commands.trigger(ChunkLoaded { id, entity });
-        });
-    };
-    if let Err(err) = res {
-        error!(id, %err, "Error loading chunk");
+        Err(err) => error!(%err, "Error starting write transaction"),
     }
 }
 
@@ -463,13 +519,14 @@ fn get_height(
     Ok(height)
 }
 
-fn setup_chunk(
-    config: &WorldConfig,
+fn setup_chunk<'txn>(
+    config: &'txn WorldConfig,
     hash: u64,
-    terrain: &mut Table<u64, ClimateCell>,
-    high_value: &mut Table<NoiseLocation, f32>,
-    high_grad: &mut Table<NoiseLocation, [f32; 2]>,
-) -> Result<MeshData, redb::Error> {
+    txn: &'txn WriteTransaction,
+) -> Result<
+    impl Future<Output = Result<MeshData, redb::Error>> + ConditionalSend + 'txn,
+    redb::TableError,
+> {
     use factor_common::healpix::nested::zordercurve::*;
     let zoc = get_zoc(4);
     let base_hash = hash >> 8;
@@ -489,17 +546,23 @@ fn setup_chunk(
         let j = j as f32 * 0.5;
         bilinear(i, j, base_corners)
     });
+    let mut terrain = txn.open_table(TERRAIN)?;
+    let mut high_value = txn.open_table(HIGH_VALUE_NOISE)?;
+    let mut high_grad = txn.open_table(HIGH_GRAD_NOISE)?;
     let center = healpix::Layer::new(12).center(base_hash);
-    let surface = try_mesh_quad(chunk_corners, 64, |MeshPoint { abs, .. }| {
-        get_height(
-            config,
-            get_absolute(center, abs.into()),
-            terrain,
-            high_value,
-            high_grad,
-        )
-    })?;
-    Ok(surface)
+    Ok(async_try_mesh_quad(
+        chunk_corners,
+        64,
+        move |MeshPoint { abs, .. }| {
+            get_height(
+                config,
+                get_absolute(center, abs.into()),
+                &mut terrain,
+                &mut high_value,
+                &mut high_grad,
+            )
+        },
+    ))
 }
 
 fn bilinear<T: Mul<f32, Output = T> + Add<Output = T>>(i: f32, j: f32, verts: [T; 4]) -> T {
