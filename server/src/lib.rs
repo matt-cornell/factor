@@ -60,7 +60,6 @@ impl Plugin for ServerPlugin {
             .add_event::<chunk::ChunkLoaded>()
             .add_event::<chunk::UnloadChunk>()
             .add_event::<chunk::InterestChanged>()
-            .init_resource::<chunk::AsyncChunks>()
             .insert_resource(ClimateRunning(false))
             .insert_resource(ServerSystems {
                 setup_terrain,

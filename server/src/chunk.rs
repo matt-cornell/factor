@@ -263,19 +263,6 @@ pub fn unload_chunks(
     }
 }
 
-/// Channels to interact with the chunkloading thread
-#[derive(Debug, Resource)]
-pub struct AsyncChunks {
-    pub send: Sender<(u64, ChunkData)>,
-    pub recv: Receiver<(u64, ChunkData)>,
-}
-impl Default for AsyncChunks {
-    fn default() -> Self {
-        let (send, recv) = crossbeam_channel::bounded(512);
-        Self { send, recv }
-    }
-}
-
 /// Self-referential type for my receiver mess
 pub struct ReceiverState {
     to_load: Receiver<(u64, bool)>,
