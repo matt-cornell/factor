@@ -9,16 +9,12 @@ bevy_egui.workspace = true
 factor-common.workspace = true
 futures-sink.workspace = true
 futures-util.workspace = true
-hex.workspace = true
-itertools.workspace = true
 leafwing-input-manager = "0.16.0"
-quick_cache.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 tinyset.workspace = true
 toml.workspace = true
 triomphe.workspace = true
-unsize.workspace = true
 
 [dev-dependencies]
 rand.workspace = true
