@@ -5,7 +5,7 @@ on:
     branches: ["main"]
 
 env:
-  client_examples: surface
+  client_examples: surface rough
   server_examples: terrain
   CARGO_TERM_COLOR: always
 
