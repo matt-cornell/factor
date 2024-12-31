@@ -2,7 +2,6 @@ use crate::settings::ClientSettings;
 use bevy::prelude::*;
 use factor_common::coords::get_absolute;
 use factor_common::data::{ChunkInterest, DefaultPlayer, Position};
-use factor_common::mesh::MeshData;
 use factor_common::{healpix, PLANET_RADIUS};
 
 /// The server and client need to have separate chunks, this component marks the client's
@@ -24,7 +23,6 @@ pub fn update_interest(
     if !(settings.is_changed() || player.is_changed() || interest.is_changed()) {
         return;
     }
-    println!("update");
     let layer = healpix::Layer::new(16);
     let abs = get_absolute(
         layer.center(player.chunk),

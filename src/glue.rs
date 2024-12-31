@@ -93,10 +93,10 @@ pub fn surface_mesh(
 ) {
     let mut client_lookup = client_chunks
         .iter_mut()
-        .map(|e| (e.1 .0, e))
+        .map(|e| (e.1 .0, (e.0, e.2)))
         .collect::<HashMap<_, _>>();
     for (ChunkId(id), mesh) in server_chunks.iter_mut() {
-        if let Some((entity, id, cmesh)) = client_lookup.remove(id) {
+        if let Some((entity, cmesh)) = client_lookup.remove(id) {
             if cmesh.is_none_or(|cmesh| {
                 mesh.last_changed()
                     .is_newer_than(cmesh.last_changed(), tick.this_run())

@@ -112,7 +112,7 @@ pub fn load_player(
             let pos = Position {
                 chunk,
                 pos: coords.extend(10.0).xzy(),
-                rot: Quat::from_rotation_y(rng.gen_range(0.0..=TAU)) * Quat::from_rotation_x(-0.1),
+                rot: Quat::from_rotation_y(rng.gen_range(0.0..=TAU)) * Quat::from_rotation_x(0.2),
             };
             let data = PlayerData { pos };
             let opt = Some(data);

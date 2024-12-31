@@ -1,12 +1,13 @@
-use std::f32::consts::FRAC_PI_2;
-
 use crate::action::Action;
 use crate::player::AttemptedMotion;
 use crate::settings::ClientSettings;
 use crate::ClientState;
+use bevy::ecs::system::SystemChangeTick;
 use bevy::prelude::*;
+use bevy::window::CursorGrabMode;
 use factor_common::data::{DefaultPlayer, Position};
 use leafwing_input_manager::prelude::*;
+use std::f32::consts::{FRAC_PI_2, PI};
 
 pub fn setup_world_render(mut commands: Commands, pos: Single<&Position, DefaultPlayer>) {
     commands.spawn((
@@ -48,7 +49,7 @@ pub fn handle_keypresses(
         walk /= len2.sqrt();
     }
     let (y, _x, _) = pos.rot.to_euler(EulerRot::YXZ);
-    let mut look = state.clamped_axis_pair(&Action::Move);
+    let mut look = state.clamped_axis_pair(&Action::Look);
     look *= settings.mouse_sensitivity;
     look.y = (look.y + y).clamp(-FRAC_PI_2, FRAC_PI_2) - y;
     let jump = state.just_pressed(&Action::Jump);
@@ -60,12 +61,40 @@ pub fn local_reflect_attempts(
     mut pos: Single<&mut Position, DefaultPlayer>,
 ) {
     let Vec2 { x, y } = attempt.look;
-    pos.rot = Quat::from_rotation_x(y) * Quat::from_rotation_y(x) * pos.rot;
-    let mut forward = (pos.rot * -Vec3::Z).xz();
-    if forward.length_squared() < 0.01 {
-        forward = (pos.rot * Vec3::Y).xz();
+    let (y0, x0, z0) = pos.rot.to_euler(EulerRot::YXZ);
+    dbg!(y0, x0, z0);
+    pos.rot = Quat::from_euler(EulerRot::YXZ, y0 + x, (x0 + y).clamp(-PI, PI), z0);
+}
+
+pub fn link_camera(
+    tick: SystemChangeTick,
+    mut trans: Single<&mut Transform, With<Camera3d>>,
+    pos: Single<Ref<Position>, DefaultPlayer>,
+) {
+    if pos
+        .last_changed()
+        .is_newer_than(pos.last_changed(), tick.this_run())
+    {
+        **trans = pos.get_transform();
     }
-    forward = forward.normalize();
-    pos.pos += attempt.walk.rotate(forward).extend(0.0).xzy();
-    // TODO: jump/gravity
+}
+
+pub fn autopause(
+    window: Single<&Window>,
+    state: Res<State<ClientState>>,
+    mut next_state: ResMut<NextState<ClientState>>,
+) {
+    if !window.focused && **state == ClientState::Running {
+        next_state.set(ClientState::Paused);
+    }
+}
+
+pub fn grab_mouse(mut window: Single<&mut Window>) {
+    window.cursor_options.grab_mode = CursorGrabMode::Confined;
+    window.cursor_options.visible = false;
+}
+
+pub fn release_mouse(mut window: Single<&mut Window>) {
+    window.cursor_options.grab_mode = CursorGrabMode::None;
+    window.cursor_options.visible = true;
 }

@@ -52,9 +52,17 @@ impl Plugin for ClientPlugin {
                     render_mp_select.run_if(in_state(ClientState::MPSelect)),
                     render_settings.run_if(in_state(ClientState::Settings)),
                     render_loading_failed.run_if(in_state(LoadingFailed)),
-                    render_paused.run_if(in_state(ClientState::Paused)),
-                    render::handle_keypresses.run_if(in_state(ClientState::Running)),
-                    (chunks::update_interest,)
+                    render_paused
+                        .after(bevy_egui::EguiSet::InitContexts)
+                        .run_if(in_state(ClientState::Paused)),
+                    (
+                        render::handle_keypresses,
+                        render::local_reflect_attempts,
+                        render::autopause,
+                    )
+                        .chain()
+                        .run_if(in_state(ClientState::Running)),
+                    (chunks::update_interest, render::link_camera)
                         .before(render_paused)
                         .run_if(in_state(RenderGame).and(settings::with_fps)),
                 ),
@@ -63,11 +71,20 @@ impl Plugin for ClientPlugin {
             .add_systems(OnExit(WorldLoaded(true)), render::cleanup_world_render)
             .add_systems(
                 OnEnter(ClientState::Running),
-                (setup_target_fps, render::resume_world_render),
+                (
+                    setup_target_fps,
+                    render::resume_world_render,
+                    render::grab_mouse,
+                ),
             )
             .add_systems(
                 OnExit(ClientState::Running),
-                (limit_target_fps, clear_motion, render::pause_world_render)
+                (
+                    limit_target_fps,
+                    clear_motion,
+                    render::pause_world_render,
+                    render::release_mouse,
+                )
                     .before(render::cleanup_world_render),
             );
     }
