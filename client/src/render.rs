@@ -62,7 +62,6 @@ pub fn local_reflect_attempts(
 ) {
     let Vec2 { x, y } = attempt.look;
     let (y0, x0, z0) = pos.rot.to_euler(EulerRot::YXZ);
-    dbg!(y0, x0, z0);
     pos.rot = Quat::from_euler(EulerRot::YXZ, y0 + x, (x0 + y).clamp(-PI, PI), z0);
 }
 

@@ -11,7 +11,7 @@ use crossbeam_channel::{Receiver, Sender};
 use factor_common::cell::corners_of;
 use factor_common::coords::{get_absolute, get_relative, LonLat};
 use factor_common::data::{ChunkId, ChunkInterest, PlayerId};
-use factor_common::healpix;
+use factor_common::{healpix, PLANET_RADIUS};
 use rand::prelude::*;
 use redb::{ReadableTable, Table, WriteTransaction};
 use serde::{Deserialize, Serialize};
@@ -386,7 +386,6 @@ fn setup_recv(state: ReceiverState, cfg: &WorldConfig, db: &Database) {
                             let running = wasm_timer::Instant::now();
                             for (id, check_load) in state.to_load.try_iter() {
                                 let start = wasm_timer::Instant::now();
-                                let surface = setup_chunk(&config, id, &txn)?.await?;
                                 let mut table = txn.open_table(CHUNKS)?;
                                 if check_load {
                                     if let Some(chunk) = table.get(id)? {
@@ -399,6 +398,7 @@ fn setup_recv(state: ReceiverState, cfg: &WorldConfig, db: &Database) {
                                         }
                                     }
                                 }
+                                let surface = setup_chunk(&config, id, &txn)?.await?;
                                 let opt_data = Some(ChunkData { surface });
                                 table.insert(id, &opt_data)?;
                                 drop(table);
@@ -481,12 +481,6 @@ fn get_height(
                     v.value()
                 } else {
                     drop(opt);
-                    trace!(
-                        layer = n,
-                        cell,
-                        gradient = true,
-                        "Generating new random weight"
-                    );
                     let mut rng = get_rng(config.seed.unwrap(), loc.layer, loc.cell);
                     let v = rng.sample(rand_distr::UnitCircle);
                     high_grad.insert(loc, v)?;
@@ -509,12 +503,6 @@ fn get_height(
                     v.value()
                 } else {
                     drop(opt);
-                    debug!(
-                        layer = n,
-                        cell,
-                        gradient = false,
-                        "Generating new random weight"
-                    );
                     let mut rng = get_rng(config.seed.unwrap(), loc.layer, loc.cell);
                     let v = rng.gen();
                     high_value.insert(loc, v)?;
@@ -566,7 +554,7 @@ fn setup_chunk<'txn>(
         move |MeshPoint { abs, .. }| {
             get_height(
                 config,
-                get_absolute(center, abs.into()),
+                get_absolute(center, abs.as_dvec2()),
                 &mut terrain,
                 &mut high_value,
                 &mut high_grad,
