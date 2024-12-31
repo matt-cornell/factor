@@ -20,6 +20,10 @@ use std::io;
 use std::num::NonZeroUsize;
 use std::ops::{Add, Mul};
 
+/// The server and client need to have separate chunks, this component marks the server's
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, Component)]
+pub struct ServerChunk;
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ChunkData {
     pub surface: MeshData,
@@ -287,17 +291,21 @@ pub fn load_chunks(
         if let Ok(state) = restart.try_recv() {
             setup_recv(state, &cfg, &db);
         }
-        for (id, data) in recv.try_iter() {
-            commands.command_scope(|mut commands| {
-                let entity = commands.spawn((ChunkId(id), data.surface)).id();
+        commands.command_scope(|mut commands| {
+            for (id, data) in recv.try_iter() {
+                let entity = commands
+                    .spawn((ChunkId(id), data.surface, ServerChunk))
+                    .id();
                 commands.trigger(ChunkLoaded { id, entity });
-            });
-        }
+            }
+        });
         match recv.try_recv() {
             Ok((id, data)) => {
                 // whoops
                 commands.command_scope(|mut commands| {
-                    let entity = commands.spawn((ChunkId(id), data.surface)).id();
+                    let entity = commands
+                        .spawn((ChunkId(id), data.surface, ServerChunk))
+                        .id();
                     commands.trigger(ChunkLoaded { id, entity });
                 });
 
@@ -327,7 +335,9 @@ pub fn load_chunks(
                     if let Some(chunk) = table.get(id)? {
                         if let Some(data) = chunk.value() {
                             commands.command_scope(|mut commands| {
-                                let entity = commands.spawn((ChunkId(id), data.surface)).id();
+                                let entity = commands
+                                    .spawn((ChunkId(id), data.surface, ServerChunk))
+                                    .id();
                                 commands.trigger(ChunkLoaded { id, entity });
                             });
                             drop(table);

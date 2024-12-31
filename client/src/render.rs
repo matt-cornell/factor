@@ -9,6 +9,14 @@ use factor_common::data::{DefaultPlayer, Position};
 use leafwing_input_manager::prelude::*;
 
 pub fn setup_world_render(mut commands: Commands, pos: Single<&Position, DefaultPlayer>) {
+    commands.spawn((
+        PointLight {
+            intensity: 4000.0,
+            color: Color::WHITE,
+            ..default()
+        },
+        Transform::from_xyz(0.0, 100.0, 0.0),
+    ));
     commands.spawn((Camera3d::default(), pos.get_transform()));
     commands.init_resource::<AttemptedMotion>();
 }

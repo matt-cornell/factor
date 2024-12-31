@@ -41,7 +41,6 @@ impl Plugin for ClientPlugin {
             .init_state::<WorldLoaded>()
             .add_sub_state::<LoadingFailed>()
             .add_sub_state::<RenderGame>()
-            .add_event::<chunks::ReloadTerrain>()
             .insert_resource(LastState(ClientState::MainMenu))
             .insert_resource(self.clone())
             .add_systems(PreStartup, settings::load_config)

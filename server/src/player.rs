@@ -111,8 +111,8 @@ pub fn load_player(
                 random_point_in_quadrilateral(factor_common::cell::corners_of(16, chunk), &mut rng);
             let pos = Position {
                 chunk,
-                pos: coords.extend(0.0).xzy(),
-                rot: Quat::from_rotation_y(rng.gen_range(0.0..=TAU)),
+                pos: coords.extend(10.0).xzy(),
+                rot: Quat::from_rotation_y(rng.gen_range(0.0..=TAU)) * Quat::from_rotation_x(-0.1),
             };
             let data = PlayerData { pos };
             let opt = Some(data);
