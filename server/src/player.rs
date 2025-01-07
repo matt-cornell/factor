@@ -101,17 +101,17 @@ pub fn load_player(
                 .collect::<Vec<_>>()
                 .choose(&mut rng)
                 .unwrap();
-            let chunk = if let Some(depth_diff) = 16u8.checked_sub(world.depth) {
-                let additional = rng.gen_range(0..(1 << depth_diff));
+            let chunk = if let Some(depth_diff) = 12u8.checked_sub(world.depth) {
+                let additional = rng.gen_range(0..(1 << (depth_diff * 2)));
                 clim_cell << (depth_diff * 2) | additional
             } else {
-                clim_cell >> ((world.depth - 16) * 2)
+                clim_cell >> ((world.depth - 12) * 2)
             };
             let coords =
-                random_point_in_quadrilateral(factor_common::cell::corners_of(16, chunk), &mut rng);
+                random_point_in_quadrilateral(factor_common::cell::corners_of(12, chunk), &mut rng);
             let pos = Position {
-                chunk,
-                pos: coords.extend(10.0).xzy(),
+                frame: chunk,
+                pos: coords.extend(20.0).xzy(),
                 rot: Quat::from_rotation_y(rng.gen_range(0.0..=TAU)) * Quat::from_rotation_x(0.2),
             };
             let data = PlayerData { pos };

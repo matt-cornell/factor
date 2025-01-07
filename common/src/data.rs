@@ -1,3 +1,4 @@
+use crate::coords::{get_absolute, LonLat};
 use bevy::ecs::archetype::Archetype;
 use bevy::ecs::component::{ComponentId, Components, Tick};
 use bevy::ecs::query::{FilteredAccess, QueryFilter, WorldQuery};
@@ -5,6 +6,7 @@ use bevy::ecs::storage::{Table, TableRow};
 use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::fmt::{self, Debug, Display, Formatter};
+use crate::PLANET_RADIUS;
 
 /// A wrapper around a player ID hash.
 #[derive(Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Component)]
@@ -132,7 +134,9 @@ impl Default for ChunkInterest {
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Serialize, Deserialize, Component)]
 pub struct Position {
-    pub chunk: u64,
+    /// Depth 12 cell that this is contained in
+    pub frame: u64,
+    /// Position relative to the center of the frame
     pub pos: Vec3,
     pub rot: Quat,
 }
@@ -146,6 +150,16 @@ impl Position {
             rotation: self.rot,
             scale: Vec3::splat(1.0),
         }
+    }
+    pub fn get_absolute(&self) -> LonLat {
+        get_absolute(
+            crate::healpix::Layer::new(12).center(self.frame),
+            self.pos.xz().as_dvec2() / PLANET_RADIUS,
+        )
+    }
+    /// Get the containing depth 16 frame, i.e. the chunk
+    pub fn get_chunk(&self) -> u64 {
+        crate::healpix::Layer::new(16).hash(self.get_absolute()) // TODO: use inverse bilinear
     }
 }
 

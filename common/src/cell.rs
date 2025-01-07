@@ -33,6 +33,9 @@ pub fn corners_of(depth: u8, hash: u64) -> [Vec2; 4] {
     cache_data(depth, hash).0
 }
 pub fn transforms_for(depth: u8, base: u64, neighbor: u64) -> Transform {
+    if base == neighbor {
+        return Transform::IDENTITY;
+    }
     let (verts, slice) = cache_data(depth, base); // verts: S E N W
     let transforms = slice.get_or_init(|| {
         let _guard = info_span!("finding transforms", depth, base).entered();

@@ -4,12 +4,15 @@ use crate::settings::ClientSettings;
 use crate::ClientState;
 use bevy::ecs::system::SystemChangeTick;
 use bevy::prelude::*;
-use bevy::window::CursorGrabMode;
+use bevy::window::{CursorGrabMode, PrimaryWindow};
 use factor_common::data::{DefaultPlayer, Position};
 use leafwing_input_manager::prelude::*;
-use std::f32::consts::{FRAC_PI_2, PI};
+use std::f32::consts::{FRAC_PI_2, PI, TAU};
 
-pub fn setup_world_render(mut commands: Commands, pos: Single<&Position, DefaultPlayer>) {
+pub fn setup_world_render(
+    mut commands: Commands,
+    pos: Single<&Position, DefaultPlayer>,
+) {
     commands.spawn((
         PointLight {
             intensity: 4000.0,
@@ -35,10 +38,12 @@ pub fn handle_keypresses(
     state: Res<ActionState<Action>>,
     input: Res<ButtonInput<KeyCode>>,
     settings: Res<ClientSettings>,
-    pos: Single<&Position, DefaultPlayer>,
+    // pos: Single<&Position, DefaultPlayer>,
     mut next_state: ResMut<NextState<ClientState>>,
     mut attempted: ResMut<AttemptedMotion>,
+    window: Single<&Window, With<PrimaryWindow>>,
 ) {
+    let scale = window.width().min(window.height());
     if input.just_pressed(KeyCode::Escape) {
         info!("Pausing");
         next_state.set(ClientState::Paused);
@@ -48,10 +53,11 @@ pub fn handle_keypresses(
     if len2 > 1.0 {
         walk /= len2.sqrt();
     }
-    let (y, _x, _) = pos.rot.to_euler(EulerRot::YXZ);
-    let mut look = state.clamped_axis_pair(&Action::Look);
-    look *= settings.mouse_sensitivity;
-    look.y = (look.y + y).clamp(-FRAC_PI_2, FRAC_PI_2) - y;
+    // let (y, _x, _) = pos.rot.to_euler(EulerRot::YXZ);
+    // let y = (y + PI) % TAU - PI;
+    let mut look = -state.clamped_axis_pair(&Action::Look);
+    look *= settings.mouse_sensitivity * scale;
+    // look.y = (look.y + y).clamp(-FRAC_PI_2, FRAC_PI_2) - y;
     let jump = state.just_pressed(&Action::Jump);
     *attempted = AttemptedMotion { walk, look, jump };
 }
@@ -62,7 +68,13 @@ pub fn local_reflect_attempts(
 ) {
     let Vec2 { x, y } = attempt.look;
     let (y0, x0, z0) = pos.rot.to_euler(EulerRot::YXZ);
-    pos.rot = Quat::from_euler(EulerRot::YXZ, y0 + x, (x0 + y).clamp(-PI, PI), z0);
+    let y0 = (y0 + PI) % TAU - PI;
+    pos.rot = Quat::from_euler(
+        EulerRot::YXZ,
+        y0 + x,
+        (x0 + y).clamp(-FRAC_PI_2, FRAC_PI_2),
+        z0,
+    );
 }
 
 pub fn link_camera(
@@ -72,7 +84,7 @@ pub fn link_camera(
 ) {
     if pos
         .last_changed()
-        .is_newer_than(pos.last_changed(), tick.this_run())
+        .is_newer_than(trans.last_changed(), tick.this_run())
     {
         **trans = pos.get_transform();
     }

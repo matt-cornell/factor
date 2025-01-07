@@ -514,7 +514,7 @@ fn get_height(
         }
         height += sum / scale;
     }
-    Ok(height)
+    Ok(height * 10.0)
 }
 
 fn setup_chunk<'txn>(
@@ -554,7 +554,7 @@ fn setup_chunk<'txn>(
         move |MeshPoint { abs, .. }| {
             get_height(
                 config,
-                get_absolute(center, abs.as_dvec2()),
+                get_absolute(center, abs.as_dvec2() / PLANET_RADIUS),
                 &mut terrain,
                 &mut high_value,
                 &mut high_grad,

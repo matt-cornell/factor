@@ -1,6 +1,5 @@
 use crate::settings::ClientSettings;
 use bevy::prelude::*;
-use factor_common::coords::get_absolute;
 use factor_common::data::{ChunkInterest, DefaultPlayer, Position};
 use factor_common::{healpix, PLANET_RADIUS};
 
@@ -23,12 +22,7 @@ pub fn update_interest(
     if !(settings.is_changed() || player.is_changed() || interest.is_changed()) {
         return;
     }
-    let layer = healpix::Layer::new(16);
-    let abs = get_absolute(
-        layer.center(player.chunk),
-        player.pos.xz().as_dvec2() / PLANET_RADIUS,
-    )
-    .normalized();
+    let abs = player.get_absolute().normalized();
     let mut old = std::mem::replace(
         &mut interest.chunks,
         healpix::nested::cone_coverage_approx(
