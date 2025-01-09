@@ -1,13 +1,11 @@
 use crate::coords::*;
-use crate::healpix;
 use crate::healpix::cds::compass_point::MainWind;
+use crate::{healpix, PLANET_RADIUS};
 use bevy::math::Affine2;
 use bevy::prelude::*;
 use std::convert::Infallible;
 use std::sync::{LazyLock, OnceLock};
 use triomphe::Arc;
-
-pub const SCALE: f64 = 100000.0;
 
 pub const NAN_TRANSFORM: Transform = Transform {
     translation: Vec3::NAN,
@@ -24,7 +22,7 @@ fn cache_data(depth: u8, hash: u64) -> ([Vec2; 4], Arc<OnceLock<[(u64, Transform
         let layer = healpix::Layer::new(depth);
         let vertices = layer.vertices(hash);
         let center = layer.center(hash);
-        let corners = vertices.map(|c2| (get_relative(center, c2) * SCALE).as_vec2()); // I don't know where this 2 came from
+        let corners = vertices.map(|c2| (get_relative(center, c2) * PLANET_RADIUS).as_vec2()); // I don't know where this 2 came from
         Ok::<_, Infallible>((corners, Arc::new(OnceLock::new())))
     });
     res
@@ -36,10 +34,10 @@ pub fn transforms_for(depth: u8, base: u64, neighbor: u64) -> Transform {
     if base == neighbor {
         return Transform::IDENTITY;
     }
+    let layer = healpix::Layer::new(depth);
     let (verts, slice) = cache_data(depth, base); // verts: S E N W
     let transforms = slice.get_or_init(|| {
         let _guard = info_span!("finding transforms", depth, base).entered();
-        let layer = healpix::Layer::new(depth);
         let neighbors = layer.neighbors(base, false);
         let mut out_verts = [[Vec2::NAN; 4]; 8]; // NW NE SE SW N E S W
         let mut out = [(u64::MAX, NAN_TRANSFORM); 8]; // same order
@@ -162,7 +160,11 @@ pub fn transforms_for(depth: u8, base: u64, neighbor: u64) -> Transform {
         .unwrap_or_else(|| {
             error!(
                 depth,
-                base, neighbor, "attempted to find transform for non-neighboring cell"
+                base,
+                neighbor,
+                dist = get_relative(layer.center(base), layer.center(neighbor)).length()
+                    * PLANET_RADIUS,
+                "attempted to find transform for non-neighboring cell"
             );
             NAN_TRANSFORM
         })

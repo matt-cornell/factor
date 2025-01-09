@@ -72,6 +72,8 @@ pub struct WorldConfig {
     /// Random seed to use for terrain generation.
     #[serde(default, with = "crate::utils::option_bytes")]
     pub seed: Option<[u8; 32]>,
+    /// Depth-12 frame to spawn in, should most likely be left to `None` for a suitable one to be chosen during creation.
+    pub spawn: Option<u64>,
     /// See [`OrbitConifg`].
     pub orbit: OrbitConfig,
     /// See [`ClimateConfig`].
