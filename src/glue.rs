@@ -12,7 +12,9 @@ use factor_server::terrain::bevy::TerrainReady;
 use factor_server::utils::database::Database;
 use factor_server::ServerState;
 use std::error::Error;
+use bevy::pbr::wireframe::WireframeConfig;
 use unsize::*;
+use factor_client::settings::DebugSettings;
 
 /// Marker component for singleplayer event listeners that we should despawn when we exit singleplayer
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, Component)]
@@ -28,6 +30,7 @@ pub fn cleanup_server(world: &mut World) {
         world.despawn(entity);
     }
     world.remove_resource::<Database>();
+    world.remove_resource::<DebugSettings>();
 }
 
 pub fn after_loaded(
@@ -44,6 +47,7 @@ pub fn after_loaded(
     } else {
         commands.add_observer(player_loaded).insert(SPListener);
         commands.add_observer(interest_changed).insert(SPListener);
+        commands.init_resource::<DebugSettings>();
         commands.trigger(PlayerRequest(PlayerId::DEFAULT));
         next_state.set(ClientState::WorldLoading);
         next_server.set(ServerState::Running);

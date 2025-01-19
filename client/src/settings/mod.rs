@@ -110,3 +110,10 @@ pub fn fill_keybinds(map: &mut InputMap<Action>) -> bool {
     }
     needs_write
 }
+
+/// Debug utilities, not intended for normal play
+#[derive(Debug, Default, Clone, Copy, Resource)]
+pub struct DebugSettings {
+    /// Show all meshes with wireframes.
+    pub wireframes: bool,
+}
