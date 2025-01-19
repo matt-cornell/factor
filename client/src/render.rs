@@ -3,7 +3,7 @@ use crate::player::AttemptedMotion;
 use crate::settings::{ClientSettings, DebugSettings};
 use crate::ClientState;
 use bevy::ecs::system::SystemChangeTick;
-use bevy::pbr::wireframe::{Wireframe, WireframeConfig};
+use bevy::pbr::wireframe::WireframeConfig;
 use bevy::prelude::*;
 use bevy::window::{CursorGrabMode, PrimaryWindow};
 use factor_common::data::{DefaultPlayer, Position};
@@ -59,10 +59,14 @@ pub fn handle_keypresses(
                 if let Some(mut wireframes) = wireframes {
                     info!("Toggling wireframes");
                     debug.wireframes = !debug.wireframes;
-                    // wireframes.global = debug.wireframes;
+                    wireframes.global = debug.wireframes;
                 } else {
                     warn!("Wireframes are disabled for this target");
                 }
+            }
+            if input.just_pressed(KeyCode::KeyG) {
+                debug.ghost = !debug.ghost;
+                info!("Toggling ghost mode");
             }
         }
     }
@@ -73,11 +77,13 @@ pub fn handle_keypresses(
     }
     let mut look = -state.clamped_axis_pair(&Action::Look);
     look *= settings.mouse_sensitivity * scale;
-    let jump = state.just_pressed(&Action::Jump);
-    *attempted = AttemptedMotion { walk, look, jump };
+    let jump = state.pressed(&Action::Jump);
+    let crouch = state.pressed(&Action::Crouch);
+    *attempted = AttemptedMotion { walk, look, jump, crouch };
 }
 
 pub fn local_reflect_attempts(
+    debug: Option<Res<DebugSettings>>,
     attempt: Res<AttemptedMotion>,
     mut pos: Single<&mut Position, DefaultPlayer>,
 ) {
@@ -90,6 +96,21 @@ pub fn local_reflect_attempts(
         (x0 + y).clamp(-FRAC_PI_2, FRAC_PI_2),
         z0,
     );
+    if debug.is_some_and(|d| d.ghost) {
+        let trans = pos.get_transform();
+        let mut forward = trans.forward().xz();
+        if forward.length_squared() < 0.01 {
+            forward = trans.up().xz();
+        }
+        let mut vert = 0.0;
+        if attempt.jump {
+            vert += 1.0;
+        }
+        if attempt.crouch {
+            vert -= 1.0;
+        }
+        pos.pos += attempt.walk.rotate(forward.normalize()).extend(vert).xzy() * 2.0;
+    }
 }
 
 pub fn link_camera(

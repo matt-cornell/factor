@@ -3,6 +3,7 @@ use bevy::prelude::*;
 use bevy::utils::HashMap;
 use factor_client::chunks::{ClientChunk, InterestChanged as ClientInterestChanged};
 use factor_client::core_ui::ClientState;
+use factor_client::settings::DebugSettings;
 use factor_common::cell::transforms_for;
 use factor_common::data::{ChunkId, ChunkInterest, DefaultPlayer, PlayerId, Position};
 use factor_common::mesh::MeshData;
@@ -12,9 +13,7 @@ use factor_server::terrain::bevy::TerrainReady;
 use factor_server::utils::database::Database;
 use factor_server::ServerState;
 use std::error::Error;
-use bevy::pbr::wireframe::WireframeConfig;
 use unsize::*;
-use factor_client::settings::DebugSettings;
 
 /// Marker component for singleplayer event listeners that we should despawn when we exit singleplayer
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, Component)]

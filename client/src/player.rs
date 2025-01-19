@@ -4,5 +4,6 @@ use bevy::prelude::*;
 pub struct AttemptedMotion {
     pub walk: Vec2,
     pub jump: bool,
+    pub crouch: bool,
     pub look: Vec2,
 }
