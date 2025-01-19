@@ -21,7 +21,9 @@ pub fn setup_world_render(
         },
         Transform::from_xyz(0.0, 100.0, 0.0),
     ));
-    commands.spawn((Camera3d::default(), pos.get_transform()));
+    let mut transform = pos.get_transform();
+    transform.translation.y += 1.5;
+    commands.spawn((Camera3d::default(), transform));
     commands.init_resource::<AttemptedMotion>();
 }
 pub fn pause_world_render(mut camera: Single<&mut Camera, With<Camera3d>>) {
@@ -87,6 +89,7 @@ pub fn link_camera(
         .is_newer_than(trans.last_changed(), tick.this_run())
     {
         **trans = pos.get_transform();
+        trans.translation.y += 1.5;
     }
 }
 

@@ -1,10 +1,11 @@
-use crate::chunk::ChunkLoaded;
+use crate::chunk::{chunk_height, ChunkCorners, ChunkLoaded, InterestChanged};
 use crate::config::WorldConfig;
 use crate::tables::PLAYERS;
 use crate::utils::database::{self as redb, Database};
 use crate::utils::random_point_in_quadrilateral;
 use bevy::prelude::*;
 use factor_common::data::{ChunkInterest, PlayerId, Position};
+use factor_common::mesh::MeshData;
 use rand::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::error::Error;
@@ -44,9 +45,29 @@ impl redb::Key for PlayerIdKey {
     }
 }
 
+#[derive(Debug, Clone, Copy, Component)]
+pub struct PendingPosition(u64);
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum PlayerPosition {
+    Resolved(Position),
+    Pending(u64),
+}
+impl PlayerPosition {
+    pub fn get_chunk(&self) -> u64 {
+        match self {
+            Self::Resolved(pos) => pos.get_chunk(),
+            Self::Pending(chunk) => *chunk,
+        }
+    }
+    pub fn is_pending(&self) -> bool {
+        matches!(self, Self::Pending(_))
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlayerData {
-    pos: Position,
+    pub pos: PlayerPosition,
 }
 
 #[derive(Debug, Default, Clone, Bundle)]
@@ -89,7 +110,7 @@ pub fn load_player(
                 Ok(table) => {
                     if let Some(player) = table.get(id)? {
                         if let Some(data) = player.value() {
-                            break 'load (data, false);
+                            break 'load data;
                         }
                     }
                 }
@@ -99,52 +120,101 @@ pub fn load_player(
             txn.close()?;
             let txn = db.begin_write()?;
             let mut table = txn.open_table(PLAYERS)?;
-            let mut rng = thread_rng();
-            let coords =
-                random_point_in_quadrilateral(factor_common::cell::corners_of(12, chunk), &mut rng);
-            let pos = Position {
-                frame: chunk,
-                pos: coords.extend(0.0).xzy(),
-                rot: Quat::from_rotation_y(rng.gen_range(0.0..=TAU)) * Quat::from_rotation_x(0.2),
+            let data = PlayerData {
+                pos: PlayerPosition::Pending(chunk << 8 | thread_rng().gen_range(0..256))
             };
-            let data = PlayerData { pos };
             let opt = Some(data);
             table.insert(id, &opt)?;
             drop(table);
             txn.commit()?;
-            (opt.unwrap(), true)
+            opt.unwrap()
         }
     };
     if let Err(err) = &res {
         error!(%id, %err, "Error loading player");
     }
     let res = match res {
-        Ok((data, needs_height)) => {
-            let mut cmd = commands.spawn(PlayerBundle {
-                id,
-                pos: data.pos,
-                ..default()
+        Ok(PlayerData { pos }) => {
+            let mut interest = ChunkInterest::new();
+            let chunk = pos.get_chunk();
+            interest.chunks.insert(chunk);
+            let mut cmd = commands.spawn((id, interest));
+            let res = match pos {
+                PlayerPosition::Resolved(pos) => {
+                    cmd.insert(pos);
+                    Some(Ok(cmd.id()))
+                }
+                PlayerPosition::Pending(chunk) => {
+                    cmd.insert((PendingPosition(chunk), Position::default()));
+                    None
+                }
+            };
+            commands.send_event(InterestChanged {
+                player: id,
+                needs_update: false,
+                added: tinyset::SetU64::from_iter([chunk]),
+                removed: tinyset::SetU64::new(),
             });
-            if needs_height {
-                cmd.insert(NeedsHeight);
-            }
-            Ok(cmd.id())
+            res
         }
-        Err(err) => Err(Arc::new(err).unsize(Coercion!(to dyn Error + Send + Sync))),
+        Err(err) => Some(Err(Arc::new(err).unsize(Coercion!(to dyn Error + Send + Sync)))),
     };
-    commands.trigger(PlayerLoaded { id, res });
+    if let Some(res) = res {
+        commands.trigger(PlayerLoaded { id, res });
+    }
 }
 
 pub fn set_heights(
     trig: Trigger<ChunkLoaded>,
     mut commands: Commands,
-    mut players: Query<(Entity, &mut Position), With<NeedsHeight>>,
+    mut players: Query<(Entity, Option<&PlayerId>, &PendingPosition, &mut Position)>,
+    chunks: Query<(&MeshData, &ChunkCorners)>,
 ) {
-    let frame = trig.id >> 8;
-    for (entitiy, mut player) in players.iter_mut() {
-        if player.frame == frame && player.get_chunk() == trig.id {
-            player.pos.y = 10.0; // TODO: set an actual height
-            commands.entity(entitiy).remove::<NeedsHeight>();
+    let Ok((mesh, &ChunkCorners { corners })) = chunks
+        .get(trig.entity)
+        .inspect_err(|err| error!(%err, "Tried to set heights for a chunk that isn't loaded"))
+    else {
+        return;
+    };
+    for (entity, id, &PendingPosition(chunk), mut pos) in players.iter_mut() {
+        if chunk != trig.id {
+            continue;
+        }
+        let mut rng = thread_rng();
+        let xz = random_point_in_quadrilateral(corners, &mut rng);
+        let y = chunk_height(xz, mesh) + 1.0;
+        *pos = Position {
+            frame: chunk >> 8,
+            pos: xz.extend(y).xzy(),
+            rot: Quat::from_rotation_y(rng.gen_range(0.0..=TAU)) * Quat::from_rotation_x(0.2),
+        };
+        commands.entity(entity).remove::<PendingPosition>();
+        if let Some(&id) = id {
+            info!(%id, "Setting player position");
+            commands.trigger(PlayerLoaded { id, res: Ok(entity) });
+        }
+    }
+}
+
+pub fn persist_players(
+    players: Query<(&PlayerId, &Position), (Without<PendingPosition>, Changed<Position>)>,
+    db: Res<Database>,
+) {
+    for (&id, &pos) in players.iter() {
+        let res: Result<(), redb::Error> = try {
+            let txn = db.begin_write()?;
+            let mut table = txn.open_table(PLAYERS)?;
+            table.insert(
+                id,
+                Some(PlayerData {
+                    pos: PlayerPosition::Resolved(pos),
+                }),
+            )?;
+            drop(table);
+            txn.commit()?;
+        };
+        if let Err(err) = res {
+            error!(%err, ?id, "Error saving player data");
         }
     }
 }

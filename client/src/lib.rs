@@ -51,6 +51,7 @@ impl Plugin for ClientPlugin {
                     render_main_menu.run_if(in_state(ClientState::MainMenu)),
                     render_mp_select.run_if(in_state(ClientState::MPSelect)),
                     render_settings.run_if(in_state(ClientState::Settings)),
+                    render_loading.run_if(in_state(ClientState::WorldLoading)),
                     render_loading_failed.run_if(in_state(LoadingFailed)),
                     render_paused
                         .after(bevy_egui::EguiSet::InitContexts)

@@ -63,7 +63,7 @@ pub fn player_loaded(
             return_to_sp: true,
         });
     } else {
-        next_state.set(ClientState::Running);
+        next_state.set(ClientState::Paused);
     }
 }
 
