@@ -61,3 +61,22 @@ gradient = true
 depth = 10
 shift = 0.0
 scale = 0.001
+
+[[noise.local]]
+gradient = true
+depth = 14
+shift = 0.000001
+scale = 0.001
+
+[[noise.local]]
+gradient = false
+depth = 14
+shift = 0.000002
+scale = 0.002
+
+[[noise.local]]
+gradient = true
+depth = 15
+shift = 0.000005
+scale = 0.0005
+

@@ -9,4 +9,5 @@ pub mod mesh;
 pub mod rcu;
 pub mod util;
 
-pub const PLANET_RADIUS: f64 = 6_000_000.0;
+// Yes this is a bit bigger than the earth, but it makes the distnaces work out better.
+pub const PLANET_RADIUS: f64 = 10_000_000.0;

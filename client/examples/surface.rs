@@ -14,7 +14,7 @@ use bevy::window::WindowFocused;
 use bevy_egui::{egui, EguiContexts, EguiPlugin};
 use factor_common::cell::*;
 use factor_common::coords::*;
-use factor_common::healpix;
+use factor_common::{healpix, PLANET_RADIUS};
 use rand::Rng;
 use std::cmp::Ordering;
 use std::f64::consts::{FRAC_PI_2, TAU};
@@ -273,7 +273,7 @@ fn show_ui(
                 let layer = healpix::Layer::new(params.depth);
                 let LonLat { lon, lat } = get_absolute(
                     layer.center(cell.0),
-                    trans.translation.xz().as_dvec2() / SCALE,
+                    trans.translation.xz().as_dvec2() / PLANET_RADIUS,
                 );
                 let rot = trans.forward();
                 ui.label(egui::text::LayoutJob::simple(format!(
@@ -339,13 +339,14 @@ fn show_ui(
             let layer = healpix::Layer::new(params.depth);
             let center = layer.center(containing.0);
             let LonLat { lon, lat } =
-                get_absolute(center, trans.translation.xz().as_dvec2() / SCALE);
+                get_absolute(center, trans.translation.xz().as_dvec2() / PLANET_RADIUS);
             let (mut new_lon, mut new_lat) = (lon, lat);
             ui.add(egui::Slider::new(&mut new_lon, 0.0..=TAU).text("Longitude"));
             ui.add(egui::Slider::new(&mut new_lat, -FRAC_PI_2..=FRAC_PI_2).text("Latitude"));
             if lon != new_lon || lat != new_lat {
-                let off =
-                    (get_relative(center, LonLat::from_f64(new_lon, new_lat)) * SCALE).as_vec2();
+                let off = (get_relative(center, LonLat::from_f64(new_lon, new_lat))
+                    * PLANET_RADIUS)
+                    .as_vec2();
                 trans.translation.x = off.x;
                 trans.translation.z = off.y;
             }
@@ -459,10 +460,10 @@ fn update_coords(
     let new_layer = healpix::Layer::new(params.depth);
     for (mut trans, mut cell) in objects.iter_mut() {
         let old = old_layer.center(cell.0);
-        let abs = get_absolute(old, trans.translation.xz().as_dvec2() / SCALE);
+        let abs = get_absolute(old, trans.translation.xz().as_dvec2() / PLANET_RADIUS);
         cell.0 = new_layer.hash(abs);
         let new = new_layer.center(cell.0);
-        let off = (get_relative(new, abs) * SCALE).as_vec2();
+        let off = (get_relative(new, abs) * PLANET_RADIUS).as_vec2();
         trans.translation.x = off.x;
         trans.translation.z = off.y;
     }
@@ -484,13 +485,13 @@ fn check_cell(
     let layer = healpix::Layer::new(params.depth);
     for (entity, mut trans, mut cell, is_cam) in objects.iter_mut() {
         let old = layer.center(cell.0);
-        let abs = get_absolute(old, trans.translation.xz().as_dvec2() / SCALE);
+        let abs = get_absolute(old, trans.translation.xz().as_dvec2() / PLANET_RADIUS);
         let new_hash = layer.hash(abs);
         if new_hash == cell.0 {
             continue;
         }
         let new = layer.center(new_hash);
-        let off = (get_relative(new, abs) * SCALE).as_vec2();
+        let off = (get_relative(new, abs) * PLANET_RADIUS).as_vec2();
         trans.translation.x = off.x;
         trans.translation.z = off.y;
         cell.0 = new_hash;
@@ -619,7 +620,7 @@ fn load_cells(
     let base_layer = healpix::Layer::new(params.depth);
     let abs = get_absolute(
         base_layer.center(center),
-        camera.translation.xz().as_dvec2() / SCALE,
+        camera.translation.xz().as_dvec2() / PLANET_RADIUS,
     );
     let delta_layer = healpix::Layer::new(params.depth + params.delta);
     let delta_hash = delta_layer.hash(abs);
@@ -726,7 +727,7 @@ fn test_points(
     let center = layer.center(cell);
     for dx in (-40..=40).map(|x| x as f64 * 0.5) {
         for dy in (-40..=40).map(|x| x as f64 * 0.5) {
-            let coords = get_absolute(center, DVec2::new(dx, dy) / SCALE);
+            let coords = get_absolute(center, DVec2::new(dx, dy) / PLANET_RADIUS);
             if layer.hash(coords) == cell {
                 gizmos.sphere(
                     Isometry3d::from_xyz(dx as _, 1.0, dy as _),

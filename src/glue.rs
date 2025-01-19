@@ -1,8 +1,12 @@
+use bevy::ecs::system::SystemChangeTick;
 use bevy::prelude::*;
-use factor_client::chunks::InterestChanged as ClientInterestChanged;
+use bevy::utils::HashMap;
+use factor_client::chunks::{ClientChunk, InterestChanged as ClientInterestChanged};
 use factor_client::core_ui::ClientState;
-use factor_common::data::PlayerId;
-use factor_server::chunk::InterestChanged as ServerInterestChanged;
+use factor_common::cell::transforms_for;
+use factor_common::data::{ChunkId, ChunkInterest, DefaultPlayer, PlayerId, Position};
+use factor_common::mesh::MeshData;
+use factor_server::chunk::{InterestChanged as ServerInterestChanged, ServerChunk};
 use factor_server::player::{PlayerLoaded, PlayerRequest};
 use factor_server::terrain::bevy::TerrainReady;
 use factor_server::utils::database::Database;
@@ -38,7 +42,7 @@ pub fn after_loaded(
             return_to_sp: true,
         });
     } else {
-        commands.add_observer(player_loaded);
+        commands.add_observer(player_loaded).insert(SPListener);
         commands.add_observer(interest_changed).insert(SPListener);
         commands.trigger(PlayerRequest(PlayerId::DEFAULT));
         next_state.set(ClientState::WorldLoading);
@@ -59,7 +63,7 @@ pub fn player_loaded(
             return_to_sp: true,
         });
     } else {
-        next_state.set(ClientState::Running);
+        next_state.set(ClientState::Paused);
     }
 }
 
@@ -74,4 +78,48 @@ pub fn interest_changed(
         added,
         removed,
     });
+}
+
+pub fn surface_mesh(
+    tick: SystemChangeTick,
+    mut commands: Commands,
+    pos: Single<&Position, DefaultPlayer>,
+    player_interest: Single<&ChunkInterest, DefaultPlayer>,
+    mut client_chunks: Query<
+        (Entity, &ChunkId, Option<Ref<MeshData>>),
+        (With<ClientChunk>, Without<ServerChunk>),
+    >,
+    mut server_chunks: Query<(&ChunkId, Ref<MeshData>), (With<ServerChunk>, Without<ClientChunk>)>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+) {
+    let mut client_lookup = client_chunks
+        .iter_mut()
+        .map(|e| (e.1 .0, (e.0, e.2)))
+        .collect::<HashMap<_, _>>();
+    for (ChunkId(id), mesh) in server_chunks.iter_mut() {
+        if let Some((entity, cmesh)) = client_lookup.remove(id) {
+            if cmesh.is_none_or(|cmesh| {
+                mesh.last_changed()
+                    .is_newer_than(cmesh.last_changed(), tick.this_run())
+            }) {
+                commands
+                    .entity(entity)
+                    .insert((mesh.clone(), Mesh3d(meshes.add(mesh.clone().build_bevy()))));
+            }
+        } else if player_interest.chunks.contains(*id) {
+            commands.spawn((
+                ChunkId(*id),
+                mesh.clone(),
+                Mesh3d(meshes.add(mesh.clone().build_bevy())),
+                MeshMaterial3d(materials.add(StandardMaterial {
+                    base_color: Color::BLACK,
+                    cull_mode: None,
+                    ..default()
+                })),
+                transforms_for(12, pos.frame, *id >> 8),
+                ClientChunk,
+            ));
+        }
+    }
 }

@@ -89,10 +89,12 @@ impl Plugin for ServerPlugin {
                     chunk::handle_interests,
                     chunk::load_chunks,
                     chunk::unload_chunks,
+                    player::persist_players,
                 )
                     .run_if(in_state(ServerState::Running)),
             )
-            .add_observer(player::load_player);
+            .add_observer(player::load_player)
+            .add_observer(player::set_heights);
     }
 }
 

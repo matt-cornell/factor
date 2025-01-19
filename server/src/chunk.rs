@@ -8,21 +8,29 @@ use bevy::tasks::AsyncComputeTaskPool;
 use bevy::utils::tracing::{Instrument, Span};
 use bevy::utils::{ConditionalSend, HashMap};
 use crossbeam_channel::{Receiver, Sender};
-use factor_common::cell::corners_of;
 use factor_common::coords::{get_absolute, get_relative, LonLat};
 use factor_common::data::{ChunkId, ChunkInterest, PlayerId};
-use factor_common::healpix;
+use factor_common::{healpix, PLANET_RADIUS};
 use rand::prelude::*;
 use redb::{ReadableTable, Table, WriteTransaction};
 use serde::{Deserialize, Serialize};
 use std::future::Future;
 use std::io;
 use std::num::NonZeroUsize;
-use std::ops::{Add, Mul};
+
+/// The server and client need to have separate chunks, this component marks the server's
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, Component)]
+pub struct ServerChunk;
+
+#[derive(Debug, Clone, Copy, PartialEq, Component)]
+pub struct ChunkCorners {
+    pub corners: [Vec2; 4],
+}
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ChunkData {
     pub surface: MeshData,
+    pub corners: [Vec2; 4],
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Event)]
@@ -65,10 +73,17 @@ pub struct InterestChanged {
     pub removed: tinyset::SetU64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ChunkLoadingState {
+    Queued,
+    Loading,
+    Loaded(Entity),
+}
+
 /// A map of chunks to how many players want them loaded.
 #[derive(Debug, Default, Clone, Resource)]
 pub struct LoadedChunks {
-    pub chunks: HashMap<u64, NonZeroUsize>,
+    pub chunks: HashMap<u64, (ChunkLoadingState, NonZeroUsize)>,
 }
 
 pub fn handle_interests(
@@ -101,7 +116,7 @@ pub fn handle_interests(
                     if !set.remove(chunk) {
                         warn!(player = %change.player, chunk, "Attempted to remove a chunk that wasn't already in the interest");
                     }
-                    if let Some(count) = chunks.get_mut(&chunk) {
+                    if let Some((_, count)) = chunks.get_mut(&chunk) {
                         if count.get() == 1 {
                             chunks.remove(&chunk);
                             unload.send(UnloadChunk::new(chunk));
@@ -120,19 +135,21 @@ pub fn handle_interests(
                     }
                     chunks
                         .entry(chunk)
-                        .and_modify(|count| {
+                        .and_modify(|(_, count)| {
                             // SAFETY: the count only increases here
                             *count = unsafe { NonZeroUsize::new_unchecked(count.get() + 1) };
                         })
                         .or_insert_with(|| {
                             load.send(ChunkRequest::new(chunk));
                             // SAFETY: 1 is not 0
-                            unsafe { NonZeroUsize::new_unchecked(1) }
+                            (ChunkLoadingState::Queued, unsafe {
+                                NonZeroUsize::new_unchecked(1)
+                            })
                         });
                 }
             } else {
                 for chunk in change.removed.iter() {
-                    if let Some(count) = chunks.get_mut(&chunk) {
+                    if let Some((_, count)) = chunks.get_mut(&chunk) {
                         if count.get() == 1 {
                             chunks.remove(&chunk);
                             unload.send(UnloadChunk::new(chunk));
@@ -148,14 +165,16 @@ pub fn handle_interests(
                 for chunk in change.added.iter() {
                     chunks
                         .entry(chunk)
-                        .and_modify(|count| {
+                        .and_modify(|(_, count)| {
                             // SAFETY: the count only increases here
                             *count = unsafe { NonZeroUsize::new_unchecked(count.get() + 1) };
                         })
                         .or_insert_with(|| {
                             load.send(ChunkRequest::new(chunk));
                             // SAFETY: 1 is not 0
-                            unsafe { NonZeroUsize::new_unchecked(1) }
+                            (ChunkLoadingState::Queued, unsafe {
+                                NonZeroUsize::new_unchecked(1)
+                            })
                         });
                 }
             }
@@ -181,7 +200,7 @@ pub fn handle_interests(
                         if !set.remove(chunk) {
                             warn!(player = %change.player, chunk, "Attempted to remove a chunk that wasn't already in the interest");
                         }
-                        if let Some(count) = chunks.get_mut(&chunk) {
+                        if let Some((_, count)) = chunks.get_mut(&chunk) {
                             if count.get() == 1 {
                                 chunks.remove(&chunk);
                                 unload.send(UnloadChunk::new(chunk));
@@ -200,19 +219,21 @@ pub fn handle_interests(
                         }
                         chunks
                             .entry(chunk)
-                            .and_modify(|count| {
+                            .and_modify(|(_, count)| {
                                 // SAFETY: the count only increases here
                                 *count = unsafe { NonZeroUsize::new_unchecked(count.get() + 1) };
                             })
                             .or_insert_with(|| {
                                 load.send(ChunkRequest::new(chunk));
                                 // SAFETY: 1 is not 0
-                                unsafe { NonZeroUsize::new_unchecked(1) }
+                                (ChunkLoadingState::Queued, unsafe {
+                                    NonZeroUsize::new_unchecked(1)
+                                })
                             });
                     }
                 } else {
                     for chunk in change.removed.iter() {
-                        if let Some(count) = chunks.get_mut(&chunk) {
+                        if let Some((_, count)) = chunks.get_mut(&chunk) {
                             if count.get() == 1 {
                                 chunks.remove(&chunk);
                                 unload.send(UnloadChunk::new(chunk));
@@ -228,14 +249,16 @@ pub fn handle_interests(
                     for chunk in change.added.iter() {
                         chunks
                             .entry(chunk)
-                            .and_modify(|count| {
+                            .and_modify(|(_, count)| {
                                 // SAFETY: the count only increases here
                                 *count = unsafe { NonZeroUsize::new_unchecked(count.get() + 1) };
                             })
                             .or_insert_with(|| {
                                 commands.trigger(ChunkRequest::new(chunk));
                                 // SAFETY: 1 is not 0
-                                unsafe { NonZeroUsize::new_unchecked(1) }
+                                (ChunkLoadingState::Queued, unsafe {
+                                    NonZeroUsize::new_unchecked(1)
+                                })
                             });
                     }
                 }
@@ -246,7 +269,7 @@ pub fn handle_interests(
 
 pub fn unload_chunks(
     mut commands: Commands,
-    query: Query<(Entity, &ChunkId)>,
+    query: Query<(Entity, &ChunkId), With<ServerChunk>>,
     mut to_unload: EventReader<UnloadChunk>,
 ) {
     let mut unloaded = to_unload.read().map(|u| u.id).collect::<tinyset::SetU64>();
@@ -273,7 +296,8 @@ pub struct ReceiverState {
 pub fn load_chunks(
     commands: ParallelCommands,
     cfg: Res<WorldConfig>,
-    db: Res<Database>,
+    db: ResMut<Database>,
+    mut loaded_chunks: ResMut<LoadedChunks>,
     mut to_load: EventReader<ChunkRequest>,
     mut channels: Local<
         Option<(
@@ -287,17 +311,37 @@ pub fn load_chunks(
         if let Ok(state) = restart.try_recv() {
             setup_recv(state, &cfg, &db);
         }
-        for (id, data) in recv.try_iter() {
-            commands.command_scope(|mut commands| {
-                let entity = commands.spawn((ChunkId(id), data.surface)).id();
+        commands.command_scope(|mut commands| {
+            for (id, data) in recv.try_iter() {
+                let entity = commands
+                    .spawn((ChunkId(id), data.surface, ChunkCorners { corners: data.corners }, ServerChunk))
+                    .id();
+                if let Some((tracked, _)) = loaded_chunks.chunks.get_mut(&id) {
+                    if let ChunkLoadingState::Loaded(old) = tracked {
+                        error!(id, %old, new = %entity, "Duplicate loaded chunk");
+                    }
+                    *tracked = ChunkLoadingState::Loaded(entity);
+                } else {
+                    error!(id, %entity, "Loaded chunk that's not in interest");
+                }
                 commands.trigger(ChunkLoaded { id, entity });
-            });
-        }
+            }
+        });
         match recv.try_recv() {
             Ok((id, data)) => {
                 // whoops
                 commands.command_scope(|mut commands| {
-                    let entity = commands.spawn((ChunkId(id), data.surface)).id();
+                    let entity = commands
+                        .spawn((ChunkId(id), data.surface, ChunkCorners { corners: data.corners }, ServerChunk))
+                        .id();
+                    if let Some((tracked, _)) = loaded_chunks.chunks.get_mut(&id) {
+                        if let ChunkLoadingState::Loaded(old) = tracked {
+                            error!(id, %old, new = %entity, "Duplicate loaded chunk");
+                        }
+                        *tracked = ChunkLoadingState::Loaded(entity);
+                    } else {
+                        error!(id, %entity, "Loaded chunk that's not in interest");
+                    }
                     commands.trigger(ChunkLoaded { id, entity });
                 });
 
@@ -320,6 +364,17 @@ pub fn load_chunks(
     let mut new_stuff = None;
     to_load.read().for_each(|&ChunkRequest { id }| {
         let start = wasm_timer::Instant::now();
+        if let Some((state, _)) = loaded_chunks.chunks.get_mut(&id) {
+            match *state {
+                ChunkLoadingState::Loaded(entity) => {
+                    commands
+                        .command_scope(|mut commands| commands.trigger(ChunkLoaded { id, entity }));
+                    return;
+                }
+                ChunkLoadingState::Loading => return,
+                ChunkLoadingState::Queued => *state = ChunkLoadingState::Loading,
+            }
+        }
         let res: Result<(), redb::Error> = try {
             let txn = db.begin_read()?;
             match txn.open_table(CHUNKS) {
@@ -327,7 +382,17 @@ pub fn load_chunks(
                     if let Some(chunk) = table.get(id)? {
                         if let Some(data) = chunk.value() {
                             commands.command_scope(|mut commands| {
-                                let entity = commands.spawn((ChunkId(id), data.surface)).id();
+                                let entity = commands
+                                    .spawn((ChunkId(id), data.surface, ChunkCorners { corners: data.corners }, ServerChunk))
+                                    .id();
+                                if let Some((tracked, _)) = loaded_chunks.chunks.get_mut(&id) {
+                                    if let ChunkLoadingState::Loaded(old) = tracked {
+                                        error!(id, %old, new = %entity, "Duplicate loaded chunk");
+                                    }
+                                    *tracked = ChunkLoadingState::Loaded(entity);
+                                } else {
+                                    error!(id, %entity, "Loaded chunk that's not in interest");
+                                }
                                 commands.trigger(ChunkLoaded { id, entity });
                             });
                             drop(table);
@@ -376,7 +441,6 @@ fn setup_recv(state: ReceiverState, cfg: &WorldConfig, db: &Database) {
                             let running = wasm_timer::Instant::now();
                             for (id, check_load) in state.to_load.try_iter() {
                                 let start = wasm_timer::Instant::now();
-                                let surface = setup_chunk(&config, id, &txn)?.await?;
                                 let mut table = txn.open_table(CHUNKS)?;
                                 if check_load {
                                     if let Some(chunk) = table.get(id)? {
@@ -389,7 +453,8 @@ fn setup_recv(state: ReceiverState, cfg: &WorldConfig, db: &Database) {
                                         }
                                     }
                                 }
-                                let opt_data = Some(ChunkData { surface });
+                                let (surface, corners) = setup_chunk(&config, id, &txn)?.await?;
+                                let opt_data = Some(ChunkData { surface, corners });
                                 table.insert(id, &opt_data)?;
                                 drop(table);
                                 if let Err(_err) = state.sender.send((id, opt_data.unwrap()))
@@ -397,7 +462,7 @@ fn setup_recv(state: ReceiverState, cfg: &WorldConfig, db: &Database) {
                                     error!("Channel is somehow closed?");
                                 }
                                 debug!(id, time = ?start.elapsed(), "Loaded chunk");
-                                if running.elapsed() > std::time::Duration::from_secs(2) {
+                                if running.elapsed() > std::time::Duration::from_secs(1) {
                                     warn!(remaining = state.to_load.len(), "Chunk loading task has been running for a long time, restarting");
                                     let restart = state.restart.clone();
                                     if let Err(_err) = restart.send(state) {
@@ -471,12 +536,6 @@ fn get_height(
                     v.value()
                 } else {
                     drop(opt);
-                    trace!(
-                        layer = n,
-                        cell,
-                        gradient = true,
-                        "Generating new random weight"
-                    );
                     let mut rng = get_rng(config.seed.unwrap(), loc.layer, loc.cell);
                     let v = rng.sample(rand_distr::UnitCircle);
                     high_grad.insert(loc, v)?;
@@ -499,12 +558,6 @@ fn get_height(
                     v.value()
                 } else {
                     drop(opt);
-                    debug!(
-                        layer = n,
-                        cell,
-                        gradient = false,
-                        "Generating new random weight"
-                    );
                     let mut rng = get_rng(config.seed.unwrap(), loc.layer, loc.cell);
                     let v = rng.gen();
                     high_value.insert(loc, v)?;
@@ -516,7 +569,7 @@ fn get_height(
         }
         height += sum / scale;
     }
-    Ok(height)
+    Ok(height * 1000.0)
 }
 
 fn setup_chunk<'txn>(
@@ -524,50 +577,58 @@ fn setup_chunk<'txn>(
     hash: u64,
     txn: &'txn WriteTransaction,
 ) -> Result<
-    impl Future<Output = Result<MeshData, redb::Error>> + ConditionalSend + 'txn,
+    impl Future<Output=Result<(MeshData, [Vec2; 4]), redb::Error>> + ConditionalSend + 'txn,
     redb::TableError,
 > {
-    use factor_common::healpix::nested::zordercurve::*;
-    let zoc = get_zoc(4);
-    let base_hash = hash >> 8;
-    let base_corners = corners_of(12, base_hash); // SENW
-    let ij = zoc.h2ij(hash & 0xff);
-    let i = zoc.ij2i(ij);
-    let j = zoc.ij2j(ij);
-    let chunk_corners = std::array::from_fn(|n| {
-        let (i, j) = match n {
-            0 => (i, j),
-            1 => (i + 1, j),
-            2 => (i + 1, j + 1),
-            3 => (i, j + 1),
-            _ => unreachable!(),
-        };
-        let i = i as f32 * 0.5;
-        let j = j as f32 * 0.5;
-        bilinear(i, j, base_corners)
-    });
+    let center = healpix::Layer::new(12).center(hash >> 8);
+    let chunk_corners = healpix::Layer::new(16).vertices(hash).map(|abs| (get_relative(center, abs) * PLANET_RADIUS).as_vec2()); // SENW
     let mut terrain = txn.open_table(TERRAIN)?;
     let mut high_value = txn.open_table(HIGH_VALUE_NOISE)?;
     let mut high_grad = txn.open_table(HIGH_GRAD_NOISE)?;
-    let center = healpix::Layer::new(12).center(base_hash);
-    Ok(async_try_mesh_quad(
-        chunk_corners,
-        64,
-        move |MeshPoint { abs, .. }| {
-            get_height(
-                config,
-                get_absolute(center, abs.into()),
-                &mut terrain,
-                &mut high_value,
-                &mut high_grad,
-            )
-        },
-    ))
+    Ok(async move {
+        let mesh = async_try_mesh_quad(
+            chunk_corners,
+            64,
+            move |MeshPoint { abs, .. }| {
+                get_height(
+                    config,
+                    get_absolute(center, abs.as_dvec2() / PLANET_RADIUS),
+                    &mut terrain,
+                    &mut high_value,
+                    &mut high_grad,
+                )
+            },
+        ).await;
+        mesh.map(|mesh| (mesh, chunk_corners))
+    })
 }
 
-fn bilinear<T: Mul<f32, Output = T> + Add<Output = T>>(i: f32, j: f32, verts: [T; 4]) -> T {
-    let [s, e, n, w] = verts;
-    let se = e * i + s * (1.0 - i);
-    let nw = n * i + w * (1.0 - i);
-    nw * j + se * (1.0 - j)
+fn barycentric(point: Vec2, tri: [Vec2; 3]) -> [f32; 3] {
+    let [a, b, c] = tri;
+    let x1 = a - c;
+    let x2 = b - c;
+    let r = point - c;
+
+    let &[u, v] = (Mat2::from_cols(x1, x2).inverse() * r).as_ref();
+    let w = 1.0 - u - v;
+    [u, v, w]
+}
+pub fn chunk_height(p: Vec2, mesh: &MeshData) -> f32 {
+    let mut res = f32::NEG_INFINITY;
+    let mut found = false;
+    for &tri in &mesh.triangles {
+        let pts = tri.map(|i| mesh.vertices[i as usize]);
+        let bary = barycentric(p, pts.map(Vec3::xz));
+        if bary.iter().any(|i| *i < -0.0001) {
+            continue;
+        }
+        res = res.max(pts.iter().map(|v| v.y).zip(bary).map(|(a, b)| a * b).sum());
+        found = true;
+    }
+    if found {
+        res
+    } else {
+        error!(%p, "Point is not within mesh!");
+        0.0
+    }
 }

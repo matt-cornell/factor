@@ -22,6 +22,7 @@ impl Plugin for CombinedPlugin {
                     render::render_create_world.run_if(in_state(CreatingWorld)),
                     render::render_creating_world
                         .run_if(in_state(SingleplayerState::CreatingWorld)),
+                    glue::surface_mesh.run_if(in_state(ServerState::Running)),
                 ),
             )
             .add_systems(

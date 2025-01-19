@@ -1,7 +1,7 @@
 use bevy::math::{Vec2, Vec3, Vec3Swizzles};
 use bevy::utils::ConditionalSend;
 use std::cmp::Ordering;
-
+use bevy::tasks::futures_lite::future::yield_now;
 pub use factor_common::mesh::MeshData;
 
 /// A point to be given to the height generator function. Gives both absolute position and i,j coordinates.
@@ -125,7 +125,7 @@ pub async fn async_try_mesh_quad<E>(
             let b_basis = vb * scale * i.min(j) as f32;
             let vert = b_basis + basis + v0;
             vertices[idx] = vert.extend(height(MeshPoint { abs: vert, i, j })?).xzy();
-            std::future::ready(()).await; // add in breaks
+            yield_now().await; // add in breaks
             uv[idx] = (vert + uv_add) * uv_scale;
         }
     }
