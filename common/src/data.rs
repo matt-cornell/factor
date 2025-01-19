@@ -1,4 +1,5 @@
 use crate::coords::{get_absolute, LonLat};
+use crate::PLANET_RADIUS;
 use bevy::ecs::archetype::Archetype;
 use bevy::ecs::component::{ComponentId, Components, Tick};
 use bevy::ecs::query::{FilteredAccess, QueryFilter, WorldQuery};
@@ -6,7 +7,6 @@ use bevy::ecs::storage::{Table, TableRow};
 use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::fmt::{self, Debug, Display, Formatter};
-use crate::PLANET_RADIUS;
 
 /// A wrapper around a player ID hash.
 #[derive(Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Component)]

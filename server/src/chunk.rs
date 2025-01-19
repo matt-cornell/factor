@@ -314,7 +314,14 @@ pub fn load_chunks(
         commands.command_scope(|mut commands| {
             for (id, data) in recv.try_iter() {
                 let entity = commands
-                    .spawn((ChunkId(id), data.surface, ChunkCorners { corners: data.corners }, ServerChunk))
+                    .spawn((
+                        ChunkId(id),
+                        data.surface,
+                        ChunkCorners {
+                            corners: data.corners,
+                        },
+                        ServerChunk,
+                    ))
                     .id();
                 if let Some((tracked, _)) = loaded_chunks.chunks.get_mut(&id) {
                     if let ChunkLoadingState::Loaded(old) = tracked {
@@ -332,7 +339,14 @@ pub fn load_chunks(
                 // whoops
                 commands.command_scope(|mut commands| {
                     let entity = commands
-                        .spawn((ChunkId(id), data.surface, ChunkCorners { corners: data.corners }, ServerChunk))
+                        .spawn((
+                            ChunkId(id),
+                            data.surface,
+                            ChunkCorners {
+                                corners: data.corners,
+                            },
+                            ServerChunk,
+                        ))
                         .id();
                     if let Some((tracked, _)) = loaded_chunks.chunks.get_mut(&id) {
                         if let ChunkLoadingState::Loaded(old) = tracked {
@@ -383,7 +397,14 @@ pub fn load_chunks(
                         if let Some(data) = chunk.value() {
                             commands.command_scope(|mut commands| {
                                 let entity = commands
-                                    .spawn((ChunkId(id), data.surface, ChunkCorners { corners: data.corners }, ServerChunk))
+                                    .spawn((
+                                        ChunkId(id),
+                                        data.surface,
+                                        ChunkCorners {
+                                            corners: data.corners,
+                                        },
+                                        ServerChunk,
+                                    ))
                                     .id();
                                 if let Some((tracked, _)) = loaded_chunks.chunks.get_mut(&id) {
                                     if let ChunkLoadingState::Loaded(old) = tracked {
@@ -569,7 +590,7 @@ fn get_height(
         }
         height += sum / scale;
     }
-    Ok(height * 1000.0)
+    Ok(height * 10000.0)
 }
 
 fn setup_chunk<'txn>(
@@ -577,28 +598,27 @@ fn setup_chunk<'txn>(
     hash: u64,
     txn: &'txn WriteTransaction,
 ) -> Result<
-    impl Future<Output=Result<(MeshData, [Vec2; 4]), redb::Error>> + ConditionalSend + 'txn,
+    impl Future<Output = Result<(MeshData, [Vec2; 4]), redb::Error>> + ConditionalSend + 'txn,
     redb::TableError,
 > {
     let center = healpix::Layer::new(12).center(hash >> 8);
-    let chunk_corners = healpix::Layer::new(16).vertices(hash).map(|abs| (get_relative(center, abs) * PLANET_RADIUS).as_vec2()); // SENW
+    let chunk_corners = healpix::Layer::new(16)
+        .vertices(hash)
+        .map(|abs| (get_relative(center, abs) * PLANET_RADIUS).as_vec2()); // SENW
     let mut terrain = txn.open_table(TERRAIN)?;
     let mut high_value = txn.open_table(HIGH_VALUE_NOISE)?;
     let mut high_grad = txn.open_table(HIGH_GRAD_NOISE)?;
     Ok(async move {
-        let mesh = async_try_mesh_quad(
-            chunk_corners,
-            64,
-            move |MeshPoint { abs, .. }| {
-                get_height(
-                    config,
-                    get_absolute(center, abs.as_dvec2() / PLANET_RADIUS),
-                    &mut terrain,
-                    &mut high_value,
-                    &mut high_grad,
-                )
-            },
-        ).await;
+        let mesh = async_try_mesh_quad(chunk_corners, 64, move |MeshPoint { abs, .. }| {
+            get_height(
+                config,
+                get_absolute(center, abs.as_dvec2() / PLANET_RADIUS),
+                &mut terrain,
+                &mut high_value,
+                &mut high_grad,
+            )
+        })
+        .await;
         mesh.map(|mesh| (mesh, chunk_corners))
     })
 }
@@ -613,7 +633,7 @@ fn barycentric(point: Vec2, tri: [Vec2; 3]) -> [f32; 3] {
     let w = 1.0 - u - v;
     [u, v, w]
 }
-pub fn chunk_height(p: Vec2, mesh: &MeshData) -> f32 {
+pub fn chunk_height(p: Vec2, mesh: &MeshData) -> Option<f32> {
     let mut res = f32::NEG_INFINITY;
     let mut found = false;
     for &tri in &mesh.triangles {
@@ -626,9 +646,8 @@ pub fn chunk_height(p: Vec2, mesh: &MeshData) -> f32 {
         found = true;
     }
     if found {
-        res
+        Some(res)
     } else {
-        error!(%p, "Point is not within mesh!");
-        0.0
+        None
     }
 }

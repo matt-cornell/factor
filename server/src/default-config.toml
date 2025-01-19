@@ -5,7 +5,7 @@ obliquity = 0.0
 
 [climate]
 depth = 5
-intensity = 4500
+intensity = 4250
 init-steps = 250
 time-step = 0.01
 
@@ -60,7 +60,7 @@ scale = 0.006
 gradient = true
 depth = 10
 shift = 0.0
-scale = 0.001
+scale = 0.005
 
 [[noise.local]]
 gradient = true

@@ -121,7 +121,7 @@ pub fn load_player(
             let txn = db.begin_write()?;
             let mut table = txn.open_table(PLAYERS)?;
             let data = PlayerData {
-                pos: PlayerPosition::Pending(chunk << 8 | thread_rng().gen_range(0..256))
+                pos: PlayerPosition::Pending(chunk << 8 | thread_rng().gen_range(0..256)),
             };
             let opt = Some(data);
             table.insert(id, &opt)?;
@@ -157,7 +157,9 @@ pub fn load_player(
             });
             res
         }
-        Err(err) => Some(Err(Arc::new(err).unsize(Coercion!(to dyn Error + Send + Sync)))),
+        Err(err) => Some(Err(
+            Arc::new(err).unsize(Coercion!(to dyn Error + Send + Sync))
+        )),
     };
     if let Some(res) = res {
         commands.trigger(PlayerLoaded { id, res });
@@ -181,8 +183,13 @@ pub fn set_heights(
             continue;
         }
         let mut rng = thread_rng();
-        let xz = random_point_in_quadrilateral(corners, &mut rng);
-        let y = chunk_height(xz, mesh) + 1.0;
+        let mut xz;
+        let y = loop {
+            xz = random_point_in_quadrilateral(corners, &mut rng);
+            if let Some(y) = chunk_height(xz, mesh) {
+                break y;
+            }
+        };
         *pos = Position {
             frame: chunk >> 8,
             pos: xz.extend(y).xzy(),
@@ -191,7 +198,10 @@ pub fn set_heights(
         commands.entity(entity).remove::<PendingPosition>();
         if let Some(&id) = id {
             info!(%id, pos = %pos.pos, "Setting player position");
-            commands.trigger(PlayerLoaded { id, res: Ok(entity) });
+            commands.trigger(PlayerLoaded {
+                id,
+                res: Ok(entity),
+            });
         }
     }
 }

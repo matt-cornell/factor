@@ -9,10 +9,7 @@ use factor_common::data::{DefaultPlayer, Position};
 use leafwing_input_manager::prelude::*;
 use std::f32::consts::{FRAC_PI_2, PI, TAU};
 
-pub fn setup_world_render(
-    mut commands: Commands,
-    pos: Single<&Position, DefaultPlayer>,
-) {
+pub fn setup_world_render(mut commands: Commands, pos: Single<&Position, DefaultPlayer>) {
     commands.spawn((
         PointLight {
             intensity: 4000.0,

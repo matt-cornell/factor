@@ -1,8 +1,8 @@
 use bevy::math::{Vec2, Vec3, Vec3Swizzles};
-use bevy::utils::ConditionalSend;
-use std::cmp::Ordering;
 use bevy::tasks::futures_lite::future::yield_now;
+use bevy::utils::ConditionalSend;
 pub use factor_common::mesh::MeshData;
+use std::cmp::Ordering;
 
 /// A point to be given to the height generator function. Gives both absolute position and i,j coordinates.
 #[derive(Debug, Clone, Copy, PartialEq)]
