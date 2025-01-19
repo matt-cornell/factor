@@ -605,19 +605,12 @@ fn setup_chunk<'txn>(
 
 fn barycentric(point: Vec2, tri: [Vec2; 3]) -> [f32; 3] {
     let [a, b, c] = tri;
-    let v0 = b - a;
-    let v1 = c - a;
-    let v2 = point - a;
-    let d00 = v0.dot(v0);
-    let d01 = v0.dot(v1);
-    let d11 = v1.dot(v1);
-    let d20 = v2.dot(v0);
-    let d21 = v2.dot(v1);
+    let x1 = a - c;
+    let x2 = b - c;
+    let r = point - c;
 
-    let denom = d00 * d11 - d01 * d01;
-    let w = (d11 * d20 - d01 * d21) / denom;
-    let u = (d00 * d21 - d01 * d20) / denom;
-    let v = 1.0 - u - w;
+    let &[u, v] = (Mat2::from_cols(x1, x2).inverse() * r).as_ref();
+    let w = 1.0 - u - v;
     [u, v, w]
 }
 pub fn chunk_height(p: Vec2, mesh: &MeshData) -> f32 {
@@ -626,7 +619,7 @@ pub fn chunk_height(p: Vec2, mesh: &MeshData) -> f32 {
     for &tri in &mesh.triangles {
         let pts = tri.map(|i| mesh.vertices[i as usize]);
         let bary = barycentric(p, pts.map(Vec3::xz));
-        if bary.iter().any(|i| *i < 0.0) {
+        if bary.iter().any(|i| *i < -0.0001) {
             continue;
         }
         res = res.max(pts.iter().map(|v| v.y).zip(bary).map(|(a, b)| a * b).sum());

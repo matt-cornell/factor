@@ -190,7 +190,7 @@ pub fn set_heights(
         };
         commands.entity(entity).remove::<PendingPosition>();
         if let Some(&id) = id {
-            info!(%id, "Setting player position");
+            info!(%id, pos = %pos.pos, "Setting player position");
             commands.trigger(PlayerLoaded { id, res: Ok(entity) });
         }
     }
