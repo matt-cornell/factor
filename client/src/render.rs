@@ -98,10 +98,7 @@ pub fn local_reflect_attempts(
     );
     if debug.is_some_and(|d| d.ghost) {
         let trans = pos.get_transform();
-        let mut forward = trans.forward().xz();
-        if forward.length_squared() < 0.01 {
-            forward = trans.up().xz();
-        }
+        let right = trans.right().xz();
         let mut vert = 0.0;
         if attempt.jump {
             vert += 1.0;
@@ -109,7 +106,10 @@ pub fn local_reflect_attempts(
         if attempt.crouch {
             vert -= 1.0;
         }
-        pos.pos += attempt.walk.rotate(forward.normalize()).extend(vert).xzy() * 2.0;
+        let mut walk = attempt.walk;
+        walk.y = -walk.y;
+        let diff = walk.rotate(right.normalize()).extend(vert).xzy() * 2.0;
+        pos.pos += diff;
     }
 }
 
