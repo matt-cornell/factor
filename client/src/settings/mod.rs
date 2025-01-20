@@ -108,5 +108,18 @@ pub fn fill_keybinds(map: &mut InputMap<Action>) -> bool {
         map.insert(Action::Jump, KeyCode::Space);
         needs_write = true;
     }
+    if map.get_buttonlike(&Action::Crouch).is_none() {
+        map.insert(Action::Crouch, KeyCode::ShiftLeft);
+        needs_write = true;
+    }
     needs_write
+}
+
+/// Debug utilities, not intended for normal play
+#[derive(Debug, Default, Clone, Copy, Resource)]
+pub struct DebugSettings {
+    /// Show all meshes with wireframes.
+    pub wireframes: bool,
+    /// Ignore physics and the server.
+    pub ghost: bool,
 }

@@ -3,6 +3,7 @@ use bevy::prelude::*;
 use bevy::utils::HashMap;
 use factor_client::chunks::{ClientChunk, InterestChanged as ClientInterestChanged};
 use factor_client::core_ui::ClientState;
+use factor_client::settings::DebugSettings;
 use factor_common::cell::transforms_for;
 use factor_common::data::{ChunkId, ChunkInterest, DefaultPlayer, PlayerId, Position};
 use factor_common::mesh::MeshData;
@@ -28,6 +29,7 @@ pub fn cleanup_server(world: &mut World) {
         world.despawn(entity);
     }
     world.remove_resource::<Database>();
+    world.remove_resource::<DebugSettings>();
 }
 
 pub fn after_loaded(
@@ -44,6 +46,7 @@ pub fn after_loaded(
     } else {
         commands.add_observer(player_loaded).insert(SPListener);
         commands.add_observer(interest_changed).insert(SPListener);
+        commands.init_resource::<DebugSettings>();
         commands.trigger(PlayerRequest(PlayerId::DEFAULT));
         next_state.set(ClientState::WorldLoading);
         next_server.set(ServerState::Running);

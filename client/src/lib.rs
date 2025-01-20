@@ -70,11 +70,12 @@ impl Plugin for ClientPlugin {
             )
             .add_systems(OnEnter(WorldLoaded(true)), render::setup_world_render)
             .add_systems(OnExit(WorldLoaded(true)), render::cleanup_world_render)
+            .add_systems(OnEnter(RenderGame), render::resume_world_render)
+            .add_systems(OnExit(RenderGame), render::pause_world_render)
             .add_systems(
                 OnEnter(ClientState::Running),
                 (
                     setup_target_fps,
-                    render::resume_world_render,
                     render::grab_mouse,
                 ),
             )
@@ -83,11 +84,12 @@ impl Plugin for ClientPlugin {
                 (
                     limit_target_fps,
                     clear_motion,
-                    render::pause_world_render,
                     render::release_mouse,
                 )
                     .before(render::cleanup_world_render),
             );
+        #[cfg(not(target_family = "wasm"))]
+        app.add_plugins(bevy::pbr::wireframe::WireframePlugin);
     }
 }
 

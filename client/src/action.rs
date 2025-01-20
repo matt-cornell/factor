@@ -22,4 +22,5 @@ pub enum Action {
     #[actionlike(DualAxis)]
     Look,
     Jump,
+    Crouch,
 }

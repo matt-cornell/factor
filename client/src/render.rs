@@ -1,8 +1,9 @@
 use crate::action::Action;
 use crate::player::AttemptedMotion;
-use crate::settings::ClientSettings;
+use crate::settings::{ClientSettings, DebugSettings};
 use crate::ClientState;
 use bevy::ecs::system::SystemChangeTick;
+use bevy::pbr::wireframe::WireframeConfig;
 use bevy::prelude::*;
 use bevy::window::{CursorGrabMode, PrimaryWindow};
 use factor_common::data::{DefaultPlayer, Position};
@@ -29,17 +30,21 @@ pub fn pause_world_render(mut camera: Single<&mut Camera, With<Camera3d>>) {
 pub fn resume_world_render(mut camera: Single<&mut Camera, With<Camera3d>>) {
     camera.is_active = true;
 }
-pub fn cleanup_world_render(mut commands: Commands, camera: Single<Entity, With<Camera3d>>) {
+pub fn cleanup_world_render(mut commands: Commands, camera: Single<Entity, With<Camera3d>>, wireframes: Option<ResMut<WireframeConfig>>) {
     commands.entity(*camera).despawn();
+    if let Some(mut wireframes) = wireframes {
+        wireframes.global = false;
+    }
 }
 
 pub fn handle_keypresses(
     state: Res<ActionState<Action>>,
     input: Res<ButtonInput<KeyCode>>,
     settings: Res<ClientSettings>,
-    // pos: Single<&Position, DefaultPlayer>,
     mut next_state: ResMut<NextState<ClientState>>,
     mut attempted: ResMut<AttemptedMotion>,
+    debug: Option<ResMut<DebugSettings>>,
+    wireframes: Option<ResMut<WireframeConfig>>,
     window: Single<&Window, With<PrimaryWindow>>,
 ) {
     let scale = window.width().min(window.height());
@@ -47,21 +52,38 @@ pub fn handle_keypresses(
         info!("Pausing");
         next_state.set(ClientState::Paused);
     }
+    if let Some(mut debug) = debug {
+        #[allow(clippy::collapsible_if)]
+        if input.pressed(KeyCode::Backslash) {
+            if input.just_pressed(KeyCode::KeyF) {
+                if let Some(mut wireframes) = wireframes {
+                    info!("Toggling wireframes");
+                    debug.wireframes = !debug.wireframes;
+                    wireframes.global = debug.wireframes;
+                } else {
+                    warn!("Wireframes are disabled for this target");
+                }
+            }
+            if input.just_pressed(KeyCode::KeyG) {
+                debug.ghost = !debug.ghost;
+                info!("Toggling ghost mode");
+            }
+        }
+    }
     let mut walk = state.clamped_axis_pair(&Action::Move);
     let len2 = walk.length_squared();
     if len2 > 1.0 {
         walk /= len2.sqrt();
     }
-    // let (y, _x, _) = pos.rot.to_euler(EulerRot::YXZ);
-    // let y = (y + PI) % TAU - PI;
     let mut look = -state.clamped_axis_pair(&Action::Look);
     look *= settings.mouse_sensitivity * scale;
-    // look.y = (look.y + y).clamp(-FRAC_PI_2, FRAC_PI_2) - y;
-    let jump = state.just_pressed(&Action::Jump);
-    *attempted = AttemptedMotion { walk, look, jump };
+    let jump = state.pressed(&Action::Jump);
+    let crouch = state.pressed(&Action::Crouch);
+    *attempted = AttemptedMotion { walk, look, jump, crouch };
 }
 
 pub fn local_reflect_attempts(
+    debug: Option<Res<DebugSettings>>,
     attempt: Res<AttemptedMotion>,
     mut pos: Single<&mut Position, DefaultPlayer>,
 ) {
@@ -74,6 +96,21 @@ pub fn local_reflect_attempts(
         (x0 + y).clamp(-FRAC_PI_2, FRAC_PI_2),
         z0,
     );
+    if debug.is_some_and(|d| d.ghost) {
+        let trans = pos.get_transform();
+        let right = trans.right().xz();
+        let mut vert = 0.0;
+        if attempt.jump {
+            vert += 1.0;
+        }
+        if attempt.crouch {
+            vert -= 1.0;
+        }
+        let mut walk = attempt.walk;
+        walk.y = -walk.y;
+        let diff = walk.rotate(right.normalize()).extend(vert).xzy() * 2.0;
+        pos.pos += diff;
+    }
 }
 
 pub fn link_camera(
