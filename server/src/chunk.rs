@@ -1,22 +1,19 @@
 use crate::config::WorldConfig;
 use crate::tables::{NoiseLocation, CHUNKS, HIGH_GRAD_NOISE, HIGH_VALUE_NOISE, TERRAIN};
-use crate::terrain::climate::ClimateCell;
 use crate::utils::database::Database;
 use crate::utils::mesh::*;
 use bevy::prelude::*;
-use bevy::tasks::AsyncComputeTaskPool;
-use bevy::utils::tracing::{Instrument, Span};
-use bevy::utils::{ConditionalSend, HashMap};
+use bevy::utils::HashMap;
 use crossbeam_channel::{Receiver, Sender};
 use factor_common::coords::{get_absolute, get_relative, LonLat};
 use factor_common::data::{ChunkId, ChunkInterest, PlayerId};
 use factor_common::{healpix, PLANET_RADIUS};
 use rand::prelude::*;
-use redb::{ReadableTable, Table, WriteTransaction};
+use redb::ReadableTable as _;
 use serde::{Deserialize, Serialize};
-use std::future::Future;
 use std::io;
 use std::num::NonZeroUsize;
+use std::time::Duration;
 
 /// The server and client need to have separate chunks, this component marks the server's
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, Component)]
@@ -286,221 +283,128 @@ pub fn unload_chunks(
     }
 }
 
-/// Self-referential type for my receiver mess
-pub struct ReceiverState {
-    to_load: Receiver<(u64, bool)>,
-    sender: Sender<(u64, ChunkData)>,
-    restart: Sender<Self>,
+#[derive(Resource)]
+pub struct ChunkloaderHandle {
+    cancel: Sender<()>,
+    requests: Sender<u64>,
+    finished: Receiver<(u64, ChunkData)>,
+}
+impl ChunkloaderHandle {
+    pub fn spawn(config: WorldConfig, db: Database) -> Self {
+        let (cancel_tx, cancel_rx) = crossbeam_channel::bounded(1);
+        let (requests_tx, requests_rx) = crossbeam_channel::bounded(256);
+        let (finished_tx, finished_rx) = crossbeam_channel::bounded(8);
+        std::thread::spawn(move || loop {
+            match cancel_rx.recv_timeout(Duration::from_millis(1)) {
+                Ok(()) | Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break,
+                Err(crossbeam_channel::RecvTimeoutError::Timeout) => {}
+            }
+            for req in requests_rx.try_iter() {
+                match load_chunk(&config, &db, req) {
+                    Ok(data) => {
+                        if finished_tx.send((req, data)).is_err() {
+                            break;
+                        }
+                    }
+                    Err(err) => {
+                        error!(id = req, %err, "Error loading chunk");
+                    }
+                }
+            }
+        });
+        Self {
+            cancel: cancel_tx,
+            requests: requests_tx,
+            finished: finished_rx,
+        }
+    }
+    pub fn request(&self, chunk: u64) {
+        let _ = self.requests.send(chunk);
+    }
+    pub fn finished(&self) -> impl Iterator<Item = (u64, ChunkData)> + '_ {
+        self.finished.try_iter()
+    }
+    pub fn cancel(&self) {
+        let _ = self.cancel.try_send(());
+    }
+}
+impl Drop for ChunkloaderHandle {
+    fn drop(&mut self) {
+        self.cancel();
+    }
 }
 
 pub fn load_chunks(
-    commands: ParallelCommands,
-    cfg: Res<WorldConfig>,
-    db: ResMut<Database>,
+    mut commands: Commands,
     mut loaded_chunks: ResMut<LoadedChunks>,
     mut to_load: EventReader<ChunkRequest>,
-    mut channels: Local<
-        Option<(
-            Sender<(u64, bool)>,
-            Receiver<(u64, ChunkData)>,
-            Receiver<ReceiverState>,
-        )>,
-    >,
+    loader: Res<ChunkloaderHandle>,
 ) {
-    if let Some((send, recv, restart)) = &*channels {
-        if let Ok(state) = restart.try_recv() {
-            setup_recv(state, &cfg, &db);
-        }
-        commands.command_scope(|mut commands| {
-            for (id, data) in recv.try_iter() {
-                let entity = commands
-                    .spawn((
-                        ChunkId(id),
-                        data.surface,
-                        ChunkCorners {
-                            corners: data.corners,
-                        },
-                        ServerChunk,
-                    ))
-                    .id();
-                if let Some((tracked, _)) = loaded_chunks.chunks.get_mut(&id) {
-                    if let ChunkLoadingState::Loaded(old) = tracked {
-                        error!(id, %old, new = %entity, "Duplicate loaded chunk");
-                    }
-                    *tracked = ChunkLoadingState::Loaded(entity);
-                } else {
-                    error!(id, %entity, "Loaded chunk that's not in interest");
-                }
-                commands.trigger(ChunkLoaded { id, entity });
-            }
-        });
-        match recv.try_recv() {
-            Ok((id, data)) => {
-                // whoops
-                commands.command_scope(|mut commands| {
-                    let entity = commands
-                        .spawn((
-                            ChunkId(id),
-                            data.surface,
-                            ChunkCorners {
-                                corners: data.corners,
-                            },
-                            ServerChunk,
-                        ))
-                        .id();
-                    if let Some((tracked, _)) = loaded_chunks.chunks.get_mut(&id) {
-                        if let ChunkLoadingState::Loaded(old) = tracked {
-                            error!(id, %old, new = %entity, "Duplicate loaded chunk");
-                        }
-                        *tracked = ChunkLoadingState::Loaded(entity);
-                    } else {
-                        error!(id, %entity, "Loaded chunk that's not in interest");
-                    }
-                    commands.trigger(ChunkLoaded { id, entity });
-                });
-
-                to_load.read().for_each(|&ChunkRequest { id }| {
-                    if let Err(_err) = send.send((id, true)) {
-                        error!("Channel is somehow closed?");
-                    }
-                });
-            }
-            Err(crossbeam_channel::TryRecvError::Empty) => {
-                to_load.read().for_each(|&ChunkRequest { id }| {
-                    if let Err(_err) = send.send((id, true)) {
-                        error!("Channel is somehow closed?");
-                    }
-                })
-            }
-            Err(crossbeam_channel::TryRecvError::Disconnected) => *channels = None,
-        }
-    }
-    let mut new_stuff = None;
-    to_load.read().for_each(|&ChunkRequest { id }| {
-        let start = wasm_timer::Instant::now();
+    for &ChunkRequest { id } in to_load.read() {
         if let Some((state, _)) = loaded_chunks.chunks.get_mut(&id) {
             match *state {
                 ChunkLoadingState::Loaded(entity) => {
-                    commands
-                        .command_scope(|mut commands| commands.trigger(ChunkLoaded { id, entity }));
-                    return;
+                    commands.trigger(ChunkLoaded { id, entity });
+                    continue;
                 }
-                ChunkLoadingState::Loading => return,
+                ChunkLoadingState::Loading => continue,
                 ChunkLoadingState::Queued => *state = ChunkLoadingState::Loading,
             }
         }
-        let res: Result<(), redb::Error> = try {
-            let txn = db.begin_read()?;
-            match txn.open_table(CHUNKS) {
-                Ok(table) => {
-                    if let Some(chunk) = table.get(id)? {
-                        if let Some(data) = chunk.value() {
-                            commands.command_scope(|mut commands| {
-                                let entity = commands
-                                    .spawn((
-                                        ChunkId(id),
-                                        data.surface,
-                                        ChunkCorners {
-                                            corners: data.corners,
-                                        },
-                                        ServerChunk,
-                                    ))
-                                    .id();
-                                if let Some((tracked, _)) = loaded_chunks.chunks.get_mut(&id) {
-                                    if let ChunkLoadingState::Loaded(old) = tracked {
-                                        error!(id, %old, new = %entity, "Duplicate loaded chunk");
-                                    }
-                                    *tracked = ChunkLoadingState::Loaded(entity);
-                                } else {
-                                    error!(id, %entity, "Loaded chunk that's not in interest");
-                                }
-                                commands.trigger(ChunkLoaded { id, entity });
-                            });
-                            drop(table);
-                            txn.close()?;
-                            debug!(id, time = ?start.elapsed(), "Loaded chunk");
-                            return;
-                        }
-                    }
-                }
-                Err(redb::TableError::TableDoesNotExist(_)) => {}
-                Err(err) => Err(err)?,
+        loader.request(id);
+    }
+    for (id, data) in loader.finished() {
+        let entity = commands
+            .spawn((
+                ChunkId(id),
+                data.surface,
+                ChunkCorners {
+                    corners: data.corners,
+                },
+                ServerChunk,
+            ))
+            .id();
+        if let Some((tracked, _)) = loaded_chunks.chunks.get_mut(&id) {
+            if let ChunkLoadingState::Loaded(old) = tracked {
+                error!(id, %old, new = %entity, "Duplicate loaded chunk");
             }
-            txn.close()?;
-        };
-        if let Err(err) = res {
-            error!(id, %err, "Error loading chunk");
+            *tracked = ChunkLoadingState::Loaded(entity);
+        } else {
+            error!(id, %entity, "Loaded chunk that's not in interest");
         }
-        let (send, _, _) = channels.get_or_insert_with(|| {
-            let (tx1, rx1) = crossbeam_channel::bounded(512);
-            let (tx2, rx2) = crossbeam_channel::bounded(16);
-            let (tx3, rx3) = crossbeam_channel::bounded(1);
-            new_stuff = Some(ReceiverState {
-                to_load: rx1,
-                sender: tx2,
-                restart: tx3,
-            });
-            (tx1, rx2, rx3)
-        });
-        if let Err(_err) = send.send((id, false)) {
-            error!("Channel is somehow closed?");
-        }
-    });
-    if let Some(state) = new_stuff {
-        setup_recv(state, &cfg, &db);
+        commands.trigger(ChunkLoaded { id, entity });
     }
 }
 
-fn setup_recv(state: ReceiverState, cfg: &WorldConfig, db: &Database) {
-    match db.begin_write() {
-        Ok(txn) => {
-            let config = cfg.clone();
-            AsyncComputeTaskPool::get()
-                .spawn(
-                    async move {
-                        let _: Result<(), redb::Error> = try {
-                            let running = wasm_timer::Instant::now();
-                            for (id, check_load) in state.to_load.try_iter() {
-                                let start = wasm_timer::Instant::now();
-                                let mut table = txn.open_table(CHUNKS)?;
-                                if check_load {
-                                    if let Some(chunk) = table.get(id)? {
-                                        if let Some(data) = chunk.value() {
-                                            if let Err(_err) = state.sender.send((id, data)) {
-                                                error!("Channel is somehow closed?");
-                                            }
-                                            debug!(id, time = ?start.elapsed(), "Loaded chunk");
-                                            continue;
-                                        }
-                                    }
-                                }
-                                let (surface, corners) = setup_chunk(&config, id, &txn)?.await?;
-                                let opt_data = Some(ChunkData { surface, corners });
-                                table.insert(id, &opt_data)?;
-                                drop(table);
-                                if let Err(_err) = state.sender.send((id, opt_data.unwrap()))
-                                {
-                                    error!("Channel is somehow closed?");
-                                }
-                                debug!(id, time = ?start.elapsed(), "Loaded chunk");
-                                if running.elapsed() > std::time::Duration::from_secs(1) {
-                                    warn!(remaining = state.to_load.len(), "Chunk loading task has been running for a long time, restarting");
-                                    let restart = state.restart.clone();
-                                    if let Err(_err) = restart.send(state) {
-                                        error!("Channel is somehow closed?");
-                                    }
-                                    break;
-                                }
-                            }
-                            txn.commit()?;
-                        };
+fn load_chunk(config: &WorldConfig, db: &Database, id: u64) -> Result<ChunkData, redb::Error> {
+    {
+        let txn = db.begin_read()?;
+        match txn.open_table(CHUNKS) {
+            Ok(table) => {
+                if let Some(chunk) = table.get(id)? {
+                    if let Some(data) = chunk.value() {
+                        drop(table);
+                        txn.close().inspect_err(|_| println!("1"))?;
+                        return Ok(data);
                     }
-                    .instrument(Span::current()),
-                )
-                .detach();
+                }
+                drop(table);
+                txn.close().inspect_err(|_| println!("2"))?;
+            }
+            Err(redb::TableError::TableDoesNotExist(_)) => {}
+            Err(err) => Err(err)?,
         }
-        Err(err) => error!(%err, "Error starting write transaction"),
     }
+    let (surface, corners) = setup_chunk(config, id, db)?;
+    let opt_data = Some(ChunkData { surface, corners });
+
+    let txn = db.begin_write()?;
+    let mut table = txn.open_table(CHUNKS)?;
+    table.insert(id, &opt_data)?;
+    drop(table);
+    txn.commit()?;
+
+    Ok(opt_data.unwrap())
 }
 
 fn get_rng(mut seed: [u8; 32], layer: u8, hash: u64) -> rand_xoshiro::Xoshiro256PlusPlus {
@@ -514,14 +418,10 @@ fn get_rng(mut seed: [u8; 32], layer: u8, hash: u64) -> rand_xoshiro::Xoshiro256
     SeedableRng::from_seed(seed)
 }
 
-fn get_height(
-    config: &WorldConfig,
-    coords: LonLat,
-    terrain: &mut Table<u64, ClimateCell>,
-    high_value: &mut Table<NoiseLocation, f32>,
-    high_grad: &mut Table<NoiseLocation, [f32; 2]>,
-) -> Result<f32, redb::Error> {
+fn get_height(config: &WorldConfig, coords: LonLat, db: &Database) -> Result<f32, redb::Error> {
     let mut height = {
+        let txn = db.begin_read()?;
+        let terrain = txn.open_table(TERRAIN)?;
         let layer = healpix::Layer::new(config.climate.depth);
         let mut sum = 0.0;
         let mut scale = 0.0;
@@ -536,8 +436,14 @@ fn get_height(
             let cell = h.value();
             sum += cell.height * w;
         }
+        drop(terrain);
+        txn.close().inspect_err(|_| println!("3"))?;
         sum / scale
     };
+    let mut txn = db.begin_write()?;
+    txn.set_durability(redb::Durability::None);
+    let mut high_value = txn.open_table(HIGH_VALUE_NOISE)?;
+    let mut high_grad = txn.open_table(HIGH_GRAD_NOISE)?;
     for (n, noise) in config.noise.local.iter().enumerate() {
         let mut coords = coords;
         coords.lon -= noise.shift as f64;
@@ -590,37 +496,29 @@ fn get_height(
         }
         height += sum / scale;
     }
+    drop(high_value);
+    drop(high_grad);
+    txn.commit()?;
     Ok(height * 10000.0)
 }
 
-fn setup_chunk<'txn>(
-    config: &'txn WorldConfig,
+fn setup_chunk(
+    config: &WorldConfig,
     hash: u64,
-    txn: &'txn WriteTransaction,
-) -> Result<
-    impl Future<Output = Result<(MeshData, [Vec2; 4]), redb::Error>> + ConditionalSend + 'txn,
-    redb::TableError,
-> {
+    db: &Database,
+) -> Result<(MeshData, [Vec2; 4]), redb::Error> {
     let center = healpix::Layer::new(12).center(hash >> 8);
     let chunk_corners = healpix::Layer::new(16)
         .vertices(hash)
         .map(|abs| (get_relative(center, abs) * PLANET_RADIUS).as_vec2()); // SENW
-    let mut terrain = txn.open_table(TERRAIN)?;
-    let mut high_value = txn.open_table(HIGH_VALUE_NOISE)?;
-    let mut high_grad = txn.open_table(HIGH_GRAD_NOISE)?;
-    Ok(async move {
-        let mesh = async_try_mesh_quad(chunk_corners, 64, move |MeshPoint { abs, .. }| {
-            get_height(
-                config,
-                get_absolute(center, abs.as_dvec2() / PLANET_RADIUS),
-                &mut terrain,
-                &mut high_value,
-                &mut high_grad,
-            )
-        })
-        .await;
-        mesh.map(|mesh| (mesh, chunk_corners))
-    })
+    let mesh = try_mesh_quad(chunk_corners, 64, move |MeshPoint { abs, .. }| {
+        get_height(
+            config,
+            get_absolute(center, abs.as_dvec2() / PLANET_RADIUS),
+            db,
+        )
+    });
+    mesh.map(|mesh| (mesh, chunk_corners))
 }
 
 fn barycentric(point: Vec2, tri: [Vec2; 3]) -> [f32; 3] {

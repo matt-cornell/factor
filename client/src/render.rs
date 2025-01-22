@@ -30,7 +30,11 @@ pub fn pause_world_render(mut camera: Single<&mut Camera, With<Camera3d>>) {
 pub fn resume_world_render(mut camera: Single<&mut Camera, With<Camera3d>>) {
     camera.is_active = true;
 }
-pub fn cleanup_world_render(mut commands: Commands, camera: Single<Entity, With<Camera3d>>, wireframes: Option<ResMut<WireframeConfig>>) {
+pub fn cleanup_world_render(
+    mut commands: Commands,
+    camera: Single<Entity, With<Camera3d>>,
+    wireframes: Option<ResMut<WireframeConfig>>,
+) {
     commands.entity(*camera).despawn();
     if let Some(mut wireframes) = wireframes {
         wireframes.global = false;
@@ -79,7 +83,12 @@ pub fn handle_keypresses(
     look *= settings.mouse_sensitivity * scale;
     let jump = state.pressed(&Action::Jump);
     let crouch = state.pressed(&Action::Crouch);
-    *attempted = AttemptedMotion { walk, look, jump, crouch };
+    *attempted = AttemptedMotion {
+        walk,
+        look,
+        jump,
+        crouch,
+    };
 }
 
 pub fn local_reflect_attempts(

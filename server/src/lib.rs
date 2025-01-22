@@ -98,8 +98,14 @@ impl Plugin for ServerPlugin {
     }
 }
 
-fn start_server(mut commands: Commands) {
+fn start_server(
+    mut commands: Commands,
+    cfg: Res<config::WorldConfig>,
+    db: Res<utils::database::Database>,
+) {
     commands.init_resource::<chunk::LoadedChunks>();
+    let handle = chunk::ChunkloaderHandle::spawn(cfg.clone(), db.clone());
+    commands.insert_resource(handle);
 }
 
 fn cleanup_server(world: &mut World) {
@@ -111,4 +117,7 @@ fn cleanup_server(world: &mut World) {
         world.despawn(entity);
     }
     world.remove_resource::<chunk::LoadedChunks>();
+    if let Some(loader) = world.remove_resource::<chunk::ChunkloaderHandle>() {
+        loader.cancel();
+    }
 }
