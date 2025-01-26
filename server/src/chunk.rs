@@ -440,10 +440,7 @@ fn get_height(config: &WorldConfig, coords: LonLat, db: &Database) -> Result<f32
         txn.close().inspect_err(|_| println!("3"))?;
         sum / scale
     };
-    let mut txn = db.begin_write()?;
-    txn.set_durability(redb::Durability::None);
-    let mut high_value = txn.open_table(HIGH_VALUE_NOISE)?;
-    let mut high_grad = txn.open_table(HIGH_GRAD_NOISE)?;
+    let mut data = either::Left(db.begin_read()?);
     for (n, noise) in config.noise.local.iter().enumerate() {
         let mut coords = coords;
         coords.lon -= noise.shift as f64;
@@ -458,15 +455,49 @@ fn get_height(config: &WorldConfig, coords: LonLat, db: &Database) -> Result<f32
                     layer: n as _,
                     cell,
                 };
-                let opt = high_grad.get(loc)?;
-                let val = if let Some(v) = opt {
-                    v.value()
-                } else {
-                    drop(opt);
-                    let mut rng = get_rng(config.seed.unwrap(), loc.layer, loc.cell);
-                    let v = rng.sample(rand_distr::UnitCircle);
-                    high_grad.insert(loc, v)?;
-                    v
+                let val = match data {
+                    either::Left(txn) => {
+                        let opt = match txn.open_table(HIGH_GRAD_NOISE) {
+                            Ok(table) => table.get(loc)?.as_ref().map(redb::AccessGuard::value),
+                            Err(redb::TableError::TableDoesNotExist(_)) => None,
+                            Err(err) => Err(err)?,
+                        };
+                        if let Some(v) = opt {
+                            data = either::Left(txn);
+                            v
+                        } else {
+                            txn.close()?;
+                            let txn = db.begin_write()?;
+                            let mut grad = txn.open_table(HIGH_GRAD_NOISE)?;
+                            let opt = grad.get(loc)?.as_ref().map(redb::AccessGuard::value);
+                            let val = if let Some(v) = opt {
+                                v
+                            } else {
+                                let mut rng = get_rng(config.seed.unwrap(), loc.layer, loc.cell);
+                                let v = rng.sample(rand_distr::UnitCircle);
+                                grad.insert(loc, v)?;
+                                v
+                            };
+                            drop(grad);
+                            data = either::Right(txn);
+                            val
+                        }
+                    }
+                    either::Right(txn) => {
+                        let mut grad = txn.open_table(HIGH_GRAD_NOISE)?;
+                        let opt = grad.get(loc)?.as_ref().map(redb::AccessGuard::value);
+                        let val = if let Some(v) = opt {
+                            v
+                        } else {
+                            let mut rng = get_rng(config.seed.unwrap(), loc.layer, loc.cell);
+                            let v = rng.sample(rand_distr::UnitCircle);
+                            grad.insert(loc, v)?;
+                            v
+                        };
+                        drop(grad);
+                        data = either::Right(txn);
+                        val
+                    }
                 };
                 sum += Vec2::from(val)
                     .dot(get_relative(c, coords).as_vec2())
@@ -480,15 +511,49 @@ fn get_height(config: &WorldConfig, coords: LonLat, db: &Database) -> Result<f32
                     layer: n as _,
                     cell,
                 };
-                let opt = high_value.get(loc)?;
-                let val = if let Some(v) = opt {
-                    v.value()
-                } else {
-                    drop(opt);
-                    let mut rng = get_rng(config.seed.unwrap(), loc.layer, loc.cell);
-                    let v = rng.gen();
-                    high_value.insert(loc, v)?;
-                    v
+                let val = match data {
+                    either::Left(txn) => {
+                        let opt = match txn.open_table(HIGH_VALUE_NOISE) {
+                            Ok(table) => table.get(loc)?.as_ref().map(redb::AccessGuard::value),
+                            Err(redb::TableError::TableDoesNotExist(_)) => None,
+                            Err(err) => Err(err)?,
+                        };
+                        if let Some(v) = opt {
+                            data = either::Left(txn);
+                            v
+                        } else {
+                            txn.close()?;
+                            let txn = db.begin_write()?;
+                            let mut value = txn.open_table(HIGH_VALUE_NOISE)?;
+                            let opt = value.get(loc)?.as_ref().map(redb::AccessGuard::value);
+                            let val = if let Some(v) = opt {
+                                v
+                            } else {
+                                let mut rng = get_rng(config.seed.unwrap(), loc.layer, loc.cell);
+                                let v = rng.gen();
+                                value.insert(loc, v)?;
+                                v
+                            };
+                            drop(value);
+                            data = either::Right(txn);
+                            val
+                        }
+                    }
+                    either::Right(txn) => {
+                        let mut value = txn.open_table(HIGH_VALUE_NOISE)?;
+                        let opt = value.get(loc)?.as_ref().map(redb::AccessGuard::value);
+                        let val = if let Some(v) = opt {
+                            v
+                        } else {
+                            let mut rng = get_rng(config.seed.unwrap(), loc.layer, loc.cell);
+                            let v = rng.gen();
+                            value.insert(loc, v)?;
+                            v
+                        };
+                        drop(value);
+                        data = either::Right(txn);
+                        val
+                    }
                 };
                 sum += w;
                 scale += val * w;
@@ -496,9 +561,15 @@ fn get_height(config: &WorldConfig, coords: LonLat, db: &Database) -> Result<f32
         }
         height += sum / scale;
     }
-    drop(high_value);
-    drop(high_grad);
-    txn.commit()?;
+    match data {
+        either::Left(txn) => {
+            txn.close()?;
+        }
+        either::Right(mut txn) => {
+            txn.set_durability(redb::Durability::None);
+            txn.commit()?;
+        }
+    }
     Ok(height * 10000.0)
 }
 
