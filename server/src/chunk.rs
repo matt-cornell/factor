@@ -384,12 +384,12 @@ fn load_chunk(config: &WorldConfig, db: &Database, id: u64) -> Result<ChunkData,
                 if let Some(chunk) = table.get(id)? {
                     if let Some(data) = chunk.value() {
                         drop(table);
-                        txn.close().inspect_err(|_| println!("1"))?;
+                        txn.close()?;
                         return Ok(data);
                     }
                 }
                 drop(table);
-                txn.close().inspect_err(|_| println!("2"))?;
+                txn.close()?;
             }
             Err(redb::TableError::TableDoesNotExist(_)) => {}
             Err(err) => Err(err)?,
@@ -437,7 +437,7 @@ fn get_height(config: &WorldConfig, coords: LonLat, db: &Database) -> Result<f32
             sum += cell.height * w;
         }
         drop(terrain);
-        txn.close().inspect_err(|_| println!("3"))?;
+        txn.close()?;
         sum / scale
     };
     let mut data = either::Left(db.begin_read()?);
