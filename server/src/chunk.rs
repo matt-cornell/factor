@@ -1,6 +1,5 @@
 use crate::config::WorldConfig;
 use crate::tables::{NoiseLocation, CHUNKS, HIGH_GRAD_NOISE, HIGH_VALUE_NOISE, TERRAIN};
-use crate::utils::ctx_pool::CtxPool;
 use crate::utils::database::Database;
 use crate::utils::mesh::*;
 use bevy::prelude::*;
@@ -18,6 +17,7 @@ use serde::{Deserialize, Serialize};
 use std::io;
 use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use triomphe::Arc;
 
 /// The server and client need to have separate chunks, this component marks the server's
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, Component)]
@@ -323,7 +323,6 @@ impl RingBufferBody {
             {
                 continue;
             }
-            info!(idx = head, "Pop");
             return Some(self.body[head].load(Ordering::Acquire));
         }
     }
@@ -342,7 +341,6 @@ impl RingBufferBody {
             };
             self.body[tail].store(value, Ordering::Release);
             self.tail.store(new_tail, Ordering::Release);
-            info!(idx = tail, "Push");
             tail = new_tail;
             count += 1;
         }
@@ -354,45 +352,45 @@ unsafe impl Sync for RingBufferBody {}
 #[derive(Resource)]
 pub struct ChunkloaderHandle {
     finished: Receiver<(u64, ChunkData)>,
-    pool: CtxPool<Box<RingBufferBody>>,
+    shared: Arc<RingBufferBody>,
     queue: PriorityQueue<u64, OrderedFloat<f32>>,
 }
 impl ChunkloaderHandle {
     pub fn spawn(config: &WorldConfig, db: &Database) -> Self {
         let (finished_tx, finished_rx) = crossbeam_channel::bounded(8);
-        let pool = CtxPool::new(
-            Box::new(RingBufferBody::new()),
-            std::thread::available_parallelism().map_or(1, |n| n.get()),
-            |i| {
-                let config = config.clone();
-                let db = db.clone();
-                let finished_tx = finished_tx.clone();
-                (
-                    std::thread::Builder::new().name(format!("chunkload-{i}")),
-                    move |queue| {
-                        while !queue.cancel.load(Ordering::Acquire) {
-                            if let Some(req) = queue.pop() {
-                                match load_chunk(&config, &db, req) {
-                                    Ok(data) => {
-                                        if finished_tx.send((req, data)).is_err() {
-                                            break;
-                                        }
-                                    }
-                                    Err(err) => {
-                                        error!(id = req, %err, "Error loading chunk");
+        let shared = Arc::new(RingBufferBody::new());
+        for i in 0..std::thread::available_parallelism().map_or(1, |n| n.get()) {
+            let queue = Arc::clone(&shared);
+            let config = config.clone();
+            let db = db.clone();
+            let finished_tx = finished_tx.clone();
+            let res = std::thread::Builder::new()
+                .name(format!("chunkload-{i}"))
+                .spawn(move || {
+                    while !queue.cancel.load(Ordering::Acquire) {
+                        if let Some(req) = queue.pop() {
+                            match load_chunk(&config, &db, req) {
+                                Ok(data) => {
+                                    if finished_tx.send((req, data)).is_err() {
+                                        break;
                                     }
                                 }
-                            } else {
-                                std::thread::sleep(std::time::Duration::from_millis(10));
+                                Err(err) => {
+                                    error!(id = req, %err, "Error loading chunk");
+                                }
                             }
+                        } else {
+                            std::thread::sleep(std::time::Duration::from_millis(10));
                         }
-                    },
-                )
-            },
-        );
+                    }
+                });
+            if let Err(err) = res {
+                error!(%err, "Failed to spawn thread");
+            }
+        }
         Self {
-            pool,
             finished: finished_rx,
+            shared,
             queue: PriorityQueue::new(),
         }
     }
@@ -400,7 +398,7 @@ impl ChunkloaderHandle {
         self.finished.try_iter()
     }
     pub fn cancel(&self) {
-        self.pool.ctx().cancel.store(true, Ordering::Release);
+        self.shared.cancel.store(true, Ordering::Release);
     }
 }
 impl Drop for ChunkloaderHandle {
@@ -415,14 +413,8 @@ pub fn loader_interface(
     mut loader: ResMut<ChunkloaderHandle>,
 ) {
     let loader = &mut *loader;
-    // info!(
-    //     head = loader.pool.ctx().head.load(Ordering::Relaxed),
-    //     tail = loader.pool.ctx().head.load(Ordering::Relaxed),
-    //     "ringbuf state"
-    // );
     loader
-        .pool
-        .ctx()
+        .shared
         .fill(&mut std::iter::from_fn(|| loader.queue.pop().map(|v| v.0)));
     for (id, data) in loader.finished() {
         let entity = commands
