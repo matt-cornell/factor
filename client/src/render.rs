@@ -1,4 +1,5 @@
 use crate::action::Action;
+use crate::chunks::ChunkInterest;
 use crate::player::AttemptedMotion;
 use crate::settings::{ClientSettings, DebugSettings};
 use crate::ClientState;
@@ -23,6 +24,7 @@ pub fn setup_world_render(mut commands: Commands, pos: Single<&Position, Default
     transform.translation.y += 1.5;
     commands.spawn((Camera3d::default(), transform));
     commands.init_resource::<AttemptedMotion>();
+    commands.init_resource::<ChunkInterest>();
 }
 pub fn pause_world_render(mut camera: Single<&mut Camera, With<Camera3d>>) {
     camera.is_active = false;

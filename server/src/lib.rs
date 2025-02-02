@@ -88,7 +88,7 @@ impl Plugin for ServerPlugin {
                 Update,
                 (
                     chunk::handle_interests,
-                    chunk::load_chunks,
+                    chunk::loader_interface,
                     chunk::unload_chunks,
                     player::persist_players,
                 )

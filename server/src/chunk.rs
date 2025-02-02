@@ -4,23 +4,30 @@ use crate::utils::ctx_pool::CtxPool;
 use crate::utils::database::Database;
 use crate::utils::mesh::*;
 use bevy::prelude::*;
-use bevy::utils::HashMap;
+use bevy::utils::{Entry, HashMap};
 use crossbeam_channel::Receiver;
 use factor_common::coords::{get_absolute, get_relative, LonLat};
-use factor_common::data::{ChunkId, ChunkInterest, PlayerId};
+use factor_common::data::{ChunkId, PlayerId};
 use factor_common::{healpix, PLANET_RADIUS};
+use itertools::{EitherOrBoth, Itertools};
+use ordered_float::OrderedFloat;
 use priority_queue::PriorityQueue;
 use rand::prelude::*;
 use redb::ReadableTable as _;
 use serde::{Deserialize, Serialize};
-use std::cell::UnsafeCell;
 use std::io;
 use std::num::NonZeroUsize;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 /// The server and client need to have separate chunks, this component marks the server's
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, Component)]
 pub struct ServerChunk;
+
+/// Chunk interest, at least that the server knows about. The client may have its own ideas but we need our own copy to track changes anyways.
+#[derive(Debug, Default, Clone, PartialEq, Eq, Hash, Component)]
+pub struct ChunkInterest {
+    pub chunks: Vec<u64>,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Component)]
 pub struct ChunkCorners {
@@ -67,17 +74,37 @@ pub struct ChunkLoaded {
 pub struct InterestChanged {
     /// The player whose interest changed.
     pub player: PlayerId,
-    /// If we're in singleplayer mode, entities are shared and we don't need to update our copy of the interest.
-    pub needs_update: bool,
-    pub added: tinyset::SetU64,
-    pub removed: tinyset::SetU64,
+    /// Chunks, sorted from most to least important.
+    pub new: Vec<u64>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ChunkLoadingState {
-    Queued,
-    Loading,
+    Queued(ChunkPriority),
     Loaded(Entity),
+}
+
+#[derive(Debug, Clone)]
+
+pub struct ChunkPriority {
+    pub sum: f32,
+    pub contributors: HashMap<PlayerId, f32>,
+}
+impl PartialEq for ChunkPriority {
+    fn eq(&self, other: &Self) -> bool {
+        self.sum == other.sum
+    }
+}
+impl PartialOrd for ChunkPriority {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+impl Eq for ChunkPriority {}
+impl Ord for ChunkPriority {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.sum.total_cmp(&other.sum)
+    }
 }
 
 /// A map of chunks to how many players want them loaded.
@@ -86,183 +113,160 @@ pub struct LoadedChunks {
     pub chunks: HashMap<u64, (ChunkLoadingState, NonZeroUsize)>,
 }
 
+fn add_interest(
+    player: PlayerId,
+    chunk: u64,
+    chunks: &mut LoadedChunks,
+    weight: &mut f32,
+    handle: &mut ChunkloaderHandle,
+) {
+    match chunks.chunks.entry(chunk) {
+        Entry::Occupied(e) => {
+            if let (ChunkLoadingState::Queued(priority), count) = e.into_mut() {
+                priority.sum += *weight;
+                if let Some(old) = priority.contributors.insert(player, *weight) {
+                    priority.sum -= old;
+                } else {
+                    *count = unsafe { NonZeroUsize::new_unchecked(count.get() + 1) };
+                }
+                // if this is none, then the chunk is already in the ringbuffer and shouldn't be counted
+                if handle
+                    .queue
+                    .change_priority(&chunk, OrderedFloat(priority.sum))
+                    .is_some()
+                {
+                    *weight *= 0.5;
+                }
+            }
+        }
+        Entry::Vacant(e) => {
+            e.insert((
+                ChunkLoadingState::Queued(ChunkPriority {
+                    sum: *weight,
+                    contributors: [(player, *weight)].into(),
+                }),
+                unsafe { NonZeroUsize::new_unchecked(1) },
+            ));
+            let opt = handle.queue.push(chunk, OrderedFloat(*weight));
+            debug_assert_eq!(opt, None);
+            *weight *= 0.5;
+        }
+    }
+}
+
+fn rem_interest(
+    player: PlayerId,
+    chunk: u64,
+    chunks: &mut LoadedChunks,
+    handle: &mut ChunkloaderHandle,
+) -> bool {
+    let Some((state, count)) = chunks.chunks.get_mut(&chunk) else {
+        error!(
+            chunk,
+            %player,
+            "Lost interest in a chunk that already had no interest"
+        );
+        return false;
+    };
+    if let Some(new_count) = NonZeroUsize::new(count.get() - 1) {
+        *count = new_count;
+        if let ChunkLoadingState::Queued(priority) = state {
+            if let Some(weight) = priority.contributors.remove(&player) {
+                priority.sum -= weight;
+                handle
+                    .queue
+                    .change_priority(&chunk, OrderedFloat(priority.sum));
+            } else {
+                error!(chunk, %player, "Stopped contributing to a chunk that this player already wasn't contributing to");
+            }
+        }
+        false
+    } else {
+        true
+    }
+}
+
+fn update_interest(
+    change: &InterestChanged,
+    interest: &mut ChunkInterest,
+    chunks: &mut LoadedChunks,
+    handle: &mut ChunkloaderHandle,
+    prune: &mut tinyset::SetU64,
+) {
+    let mut weight = 0.5;
+    for pair in change.new.iter().zip_longest(&mut interest.chunks) {
+        match pair {
+            EitherOrBoth::Both(l, r) => {
+                if *l == *r {
+                    continue;
+                }
+                prune.remove(*l);
+                if rem_interest(change.player, *r, chunks, handle) {
+                    prune.insert(*r);
+                }
+                add_interest(change.player, *l, chunks, &mut weight, handle);
+                *r = *l;
+            }
+            EitherOrBoth::Left(l) => {
+                prune.remove(*l);
+                add_interest(change.player, *l, chunks, &mut weight, handle)
+            }
+            EitherOrBoth::Right(r) => {
+                if rem_interest(change.player, *r, chunks, handle) {
+                    prune.remove(*r);
+                }
+            }
+        }
+    }
+    if interest.chunks.len() < change.new.len() {
+        interest
+            .chunks
+            .extend_from_slice(&change.new[interest.chunks.len()..]);
+    } else {
+        interest.chunks.truncate(change.new.len());
+    }
+}
+
 pub fn handle_interests(
-    mut commands: Commands,
     mut chunks: ResMut<LoadedChunks>,
     mut changes: EventReader<InterestChanged>,
     mut query: Query<(&PlayerId, &mut ChunkInterest)>,
-    mut load: EventWriter<ChunkRequest>,
+    mut handle: ResMut<ChunkloaderHandle>,
     mut unload: EventWriter<UnloadChunk>,
 ) {
+    let mut prune = tinyset::SetU64::new();
     match changes.len() {
         0 => {}
         1 => {
             let change = changes.read().next().unwrap();
-            if change.added.is_empty() && change.removed.is_empty() {
-                warn!("No chunks changed in event");
+            let Some(mut interest) = query
+                .iter_mut()
+                .find_map(|(p, i)| (*p == change.player).then_some(i))
+            else {
+                warn!(player = %change.player, "Interests changed for non-existent player");
                 return;
-            }
-            let chunks = &mut chunks.chunks;
-            if change.needs_update {
-                let Some(mut interest) = query
-                    .iter_mut()
-                    .find_map(|(player, interest)| (*player == change.player).then_some(interest))
-                else {
-                    warn!(player = %change.player, "Interests changed for non-existent player");
-                    return;
-                };
-                let set = &mut interest.chunks;
-                for chunk in change.removed.iter() {
-                    if !set.remove(chunk) {
-                        warn!(player = %change.player, chunk, "Attempted to remove a chunk that wasn't already in the interest");
-                    }
-                    if let Some((_, count)) = chunks.get_mut(&chunk) {
-                        if count.get() == 1 {
-                            chunks.remove(&chunk);
-                            unload.send(UnloadChunk::new(chunk));
-                        } else {
-                            // SAFETY: we already checked this
-                            *count = unsafe { NonZeroUsize::new_unchecked(count.get() - 1) };
-                        }
-                    } else {
-                        warn!(chunk, "Attempted to remove a chunk from global interest that wasn't already in the interest");
-                        unload.send(UnloadChunk::new(chunk));
-                    }
-                }
-                for chunk in change.added.iter() {
-                    if !set.insert(chunk) {
-                        warn!(player = %change.player, chunk, "Attempted to add a chunk that was already in the interest");
-                    }
-                    chunks
-                        .entry(chunk)
-                        .and_modify(|(_, count)| {
-                            // SAFETY: the count only increases here
-                            *count = unsafe { NonZeroUsize::new_unchecked(count.get() + 1) };
-                        })
-                        .or_insert_with(|| {
-                            load.send(ChunkRequest::new(chunk));
-                            // SAFETY: 1 is not 0
-                            (ChunkLoadingState::Queued, unsafe {
-                                NonZeroUsize::new_unchecked(1)
-                            })
-                        });
-                }
-            } else {
-                for chunk in change.removed.iter() {
-                    if let Some((_, count)) = chunks.get_mut(&chunk) {
-                        if count.get() == 1 {
-                            chunks.remove(&chunk);
-                            unload.send(UnloadChunk::new(chunk));
-                        } else {
-                            // SAFETY: we already checked this
-                            *count = unsafe { NonZeroUsize::new_unchecked(count.get() - 1) };
-                        }
-                    } else {
-                        warn!(chunk, "Attempted to remove a chunk from global interest that wasn't already in the interest");
-                        unload.send(UnloadChunk::new(chunk));
-                    }
-                }
-                for chunk in change.added.iter() {
-                    chunks
-                        .entry(chunk)
-                        .and_modify(|(_, count)| {
-                            // SAFETY: the count only increases here
-                            *count = unsafe { NonZeroUsize::new_unchecked(count.get() + 1) };
-                        })
-                        .or_insert_with(|| {
-                            load.send(ChunkRequest::new(chunk));
-                            // SAFETY: 1 is not 0
-                            (ChunkLoadingState::Queued, unsafe {
-                                NonZeroUsize::new_unchecked(1)
-                            })
-                        });
-                }
-            }
+            };
+            update_interest(change, &mut interest, &mut chunks, &mut handle, &mut prune);
         }
         _ => {
             let mut lookup = query
                 .iter_mut()
                 .map(|(p, i)| (*p, i))
                 .collect::<HashMap<_, _>>();
+
             for change in changes.read() {
-                if change.added.is_empty() && change.removed.is_empty() {
-                    warn!("No chunks changed in event");
+                let Some(interest) = lookup.get_mut(&change.player) else {
+                    warn!(player = %change.player, "Interests changed for non-existent player");
                     continue;
-                }
-                let chunks = &mut chunks.chunks;
-                if change.needs_update {
-                    let Some(interest) = lookup.get_mut(&change.player) else {
-                        warn!(player = %change.player, "Interests changed for non-existent player");
-                        return;
-                    };
-                    let set = &mut interest.chunks;
-                    for chunk in change.removed.iter() {
-                        if !set.remove(chunk) {
-                            warn!(player = %change.player, chunk, "Attempted to remove a chunk that wasn't already in the interest");
-                        }
-                        if let Some((_, count)) = chunks.get_mut(&chunk) {
-                            if count.get() == 1 {
-                                chunks.remove(&chunk);
-                                unload.send(UnloadChunk::new(chunk));
-                            } else {
-                                // SAFETY: we already checked this
-                                *count = unsafe { NonZeroUsize::new_unchecked(count.get() - 1) };
-                            }
-                        } else {
-                            warn!(chunk, "Attempted to remove a chunk from global interest that wasn't already in the interest");
-                            unload.send(UnloadChunk::new(chunk));
-                        }
-                    }
-                    for chunk in change.added.iter() {
-                        if !set.insert(chunk) {
-                            warn!(player = %change.player, chunk, "Attempted to add a chunk that was already in the interest");
-                        }
-                        chunks
-                            .entry(chunk)
-                            .and_modify(|(_, count)| {
-                                // SAFETY: the count only increases here
-                                *count = unsafe { NonZeroUsize::new_unchecked(count.get() + 1) };
-                            })
-                            .or_insert_with(|| {
-                                load.send(ChunkRequest::new(chunk));
-                                // SAFETY: 1 is not 0
-                                (ChunkLoadingState::Queued, unsafe {
-                                    NonZeroUsize::new_unchecked(1)
-                                })
-                            });
-                    }
-                } else {
-                    for chunk in change.removed.iter() {
-                        if let Some((_, count)) = chunks.get_mut(&chunk) {
-                            if count.get() == 1 {
-                                chunks.remove(&chunk);
-                                unload.send(UnloadChunk::new(chunk));
-                            } else {
-                                // SAFETY: we already checked this
-                                *count = unsafe { NonZeroUsize::new_unchecked(count.get() - 1) };
-                            }
-                        } else {
-                            warn!(chunk, "Attempted to remove a chunk from global interest that wasn't already in the interest");
-                            unload.send(UnloadChunk::new(chunk));
-                        }
-                    }
-                    for chunk in change.added.iter() {
-                        chunks
-                            .entry(chunk)
-                            .and_modify(|(_, count)| {
-                                // SAFETY: the count only increases here
-                                *count = unsafe { NonZeroUsize::new_unchecked(count.get() + 1) };
-                            })
-                            .or_insert_with(|| {
-                                commands.trigger(ChunkRequest::new(chunk));
-                                // SAFETY: 1 is not 0
-                                (ChunkLoadingState::Queued, unsafe {
-                                    NonZeroUsize::new_unchecked(1)
-                                })
-                            });
-                    }
-                }
+                };
+                update_interest(change, interest, &mut chunks, &mut handle, &mut prune);
             }
+        }
+    }
+    for chunk in prune {
+        handle.queue.remove(&chunk);
+        if let Some((ChunkLoadingState::Loaded(_), _)) = chunks.chunks.remove(&chunk) {
+            unload.send(UnloadChunk::new(chunk));
         }
     }
 }
@@ -290,57 +294,59 @@ const BUF_SIZE: usize = 4;
 
 struct RingBufferBody {
     cancel: AtomicBool,
-    start: AtomicUsize,
-    end: AtomicUsize,
-    body: [UnsafeCell<u64>; BUF_SIZE],
+    head: AtomicUsize,
+    tail: AtomicUsize,
+    body: [AtomicU64; BUF_SIZE],
 }
 impl RingBufferBody {
     const fn new() -> Self {
         Self {
             cancel: AtomicBool::new(false),
-            start: AtomicUsize::new(0),
-            end: AtomicUsize::new(0),
-            body: [const { UnsafeCell::new(0) }; BUF_SIZE],
+            head: AtomicUsize::new(0),
+            tail: AtomicUsize::new(0),
+            body: [const { AtomicU64::new(0) }; BUF_SIZE],
         }
-    }
-    #[allow(clippy::mut_from_ref)]
-    unsafe fn get(&self, idx: usize) -> &mut u64 {
-        &mut *self.body[idx].get()
     }
     /// Pop an element from the buffer.
     fn pop(&self) -> Option<u64> {
         loop {
-            let start = self.start.load(Ordering::Acquire);
-            let end = self.end.load(Ordering::Acquire);
-            if start == end {
+            let head = self.head.load(Ordering::Acquire);
+            let tail = self.tail.load(Ordering::Acquire);
+            if head == tail {
                 return None;
             }
-            let new_start = (start + 1) % BUF_SIZE;
+            let new_start = (head + 1) % BUF_SIZE;
             if self
-                .start
-                .compare_exchange_weak(start, new_start, Ordering::AcqRel, Ordering::Acquire)
+                .head
+                .compare_exchange_weak(head, new_start, Ordering::Release, Ordering::Relaxed)
                 .is_err()
             {
                 continue;
             }
-            return Some(unsafe { *self.get(start) });
+            info!(idx = head, "Pop");
+            return Some(self.body[head].load(Ordering::Acquire));
         }
     }
     /// Fill with an iterator, this can cause logic errors if there are multiple writers.
     fn fill(&self, iter: &mut dyn Iterator<Item = u64>) -> usize {
-        let start = self.start.load(Ordering::Acquire);
-        let end = self.end.load(Ordering::Acquire);
-        let rect_start = if start < end { start + BUF_SIZE } else { start };
         let mut count = 0;
-        ((end + 1)..rect_start)
-            .map(|i| i % BUF_SIZE)
-            .zip(iter)
-            .for_each(|(i, v)| {
-                count += 1;
-                unsafe { *self.get(i) = v };
-            });
-        self.end.store((end + count) % BUF_SIZE, Ordering::Release);
-        count
+        let mut tail = self.tail.load(Ordering::Acquire);
+        loop {
+            let head = self.head.load(Ordering::Acquire);
+            let new_tail = (tail + 1) % BUF_SIZE;
+            if new_tail == head {
+                break;
+            }
+            let Some(value) = iter.next() else {
+                break;
+            };
+            self.body[tail].store(value, Ordering::Release);
+            self.tail.store(new_tail, Ordering::Release);
+            info!(idx = tail, "Push");
+            tail = new_tail;
+            count += 1;
+        }
+        dbg!(count)
     }
 }
 unsafe impl Sync for RingBufferBody {}
@@ -349,7 +355,7 @@ unsafe impl Sync for RingBufferBody {}
 pub struct ChunkloaderHandle {
     finished: Receiver<(u64, ChunkData)>,
     pool: CtxPool<Box<RingBufferBody>>,
-    queue: PriorityQueue<u64, i32>,
+    queue: PriorityQueue<u64, OrderedFloat<f32>>,
 }
 impl ChunkloaderHandle {
     pub fn spawn(config: &WorldConfig, db: &Database) -> Self {
@@ -400,32 +406,21 @@ impl Drop for ChunkloaderHandle {
     }
 }
 
-pub fn load_chunks(
+pub fn loader_interface(
     mut commands: Commands,
     mut loaded_chunks: ResMut<LoadedChunks>,
-    mut to_load: EventReader<ChunkRequest>,
     mut loader: ResMut<ChunkloaderHandle>,
 ) {
-    for &ChunkRequest { id } in to_load.read() {
-        if let Some((state, _)) = loaded_chunks.chunks.get_mut(&id) {
-            match *state {
-                ChunkLoadingState::Loaded(entity) => {
-                    commands.trigger(ChunkLoaded { id, entity });
-                    continue;
-                }
-                ChunkLoadingState::Loading => continue,
-                ChunkLoadingState::Queued => *state = ChunkLoadingState::Loading,
-            }
-        }
-
-        // TODO: priority queue
-        loader.queue.push(id, 0);
-        let loader = &mut *loader;
-        loader
-            .pool
-            .ctx()
-            .fill(&mut std::iter::from_fn(|| loader.queue.pop().map(|v| v.0)));
-    }
+    let loader = &mut *loader;
+    // info!(
+    //     head = loader.pool.ctx().head.load(Ordering::Relaxed),
+    //     tail = loader.pool.ctx().head.load(Ordering::Relaxed),
+    //     "ringbuf state"
+    // );
+    loader
+        .pool
+        .ctx()
+        .fill(&mut std::iter::from_fn(|| loader.queue.pop().map(|v| v.0)));
     for (id, data) in loader.finished() {
         let entity = commands
             .spawn((

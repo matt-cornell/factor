@@ -10,6 +10,7 @@ bytemuck.workspace = true
 cdshealpix.workspace = true
 hex.workspace = true
 itertools.workspace = true
+ordered-float.workspace = true
 postcard.workspace = true
 rand.workspace = true
 serde.workspace = true

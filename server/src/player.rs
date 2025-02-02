@@ -1,10 +1,10 @@
-use crate::chunk::{chunk_height, ChunkCorners, ChunkLoaded, InterestChanged};
+use crate::chunk::{chunk_height, ChunkCorners, ChunkInterest, ChunkLoaded, InterestChanged};
 use crate::config::WorldConfig;
 use crate::tables::PLAYERS;
 use crate::utils::database::{self as redb, Database};
 use crate::utils::random_point_in_quadrilateral;
 use bevy::prelude::*;
-use factor_common::data::{ChunkInterest, PlayerId, Position};
+use factor_common::data::{PlayerId, Position};
 use factor_common::mesh::MeshData;
 use rand::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -121,7 +121,7 @@ pub fn load_player(
             let txn = db.begin_write()?;
             let mut table = txn.open_table(PLAYERS)?;
             let data = PlayerData {
-                pos: PlayerPosition::Pending(chunk << 8 | thread_rng().gen_range(0..256)),
+                pos: PlayerPosition::Pending((chunk << 8) | thread_rng().gen_range(0..256)),
             };
             let opt = Some(data);
             table.insert(id, &opt)?;
@@ -135,10 +135,7 @@ pub fn load_player(
     }
     let res = match res {
         Ok(PlayerData { pos }) => {
-            let mut interest = ChunkInterest::new();
-            let chunk = pos.get_chunk();
-            interest.chunks.insert(chunk);
-            let mut cmd = commands.spawn((id, interest));
+            let mut cmd = commands.spawn((id, ChunkInterest::default()));
             let res = match pos {
                 PlayerPosition::Resolved(pos) => {
                     cmd.insert(pos);
@@ -151,9 +148,7 @@ pub fn load_player(
             };
             commands.send_event(InterestChanged {
                 player: id,
-                needs_update: false,
-                added: tinyset::SetU64::from_iter([chunk]),
-                removed: tinyset::SetU64::new(),
+                new: vec![pos.get_chunk()],
             });
             res
         }
