@@ -45,16 +45,16 @@ impl<T: StableDeref<Target: Sync>> CtxPool<T> {
     /// Create a new thread pool with the given context and callback factory.
     ///
     /// This takes a factory callback to create the callbacks, to handle cloning
-    pub fn new<F: Fn(&T::Target, usize) + Clone + Send + 'static>(
+    pub fn new<F: Fn(&T::Target) + Clone + Send + 'static>(
         context: T,
         num_threads: usize,
-        mut factory: impl FnMut() -> F,
+        mut factory: impl FnMut(usize) -> (std::thread::Builder, F),
     ) -> Self {
         let ptr = SendablePointer(T::deref(&context));
         let threads = (0..num_threads)
             .filter_map(|i| unsafe {
-                let func = factory();
-                match std::thread::Builder::new().spawn_unchecked(move || func(ptr.deref(), i)) {
+                let (builder, func) = factory(i);
+                match builder.spawn_unchecked(move || func(ptr.deref())) {
                     Ok(handle) => Some(handle),
                     Err(err) => {
                         bevy::log::error!(%err, "Failed to spawn thread");
@@ -68,19 +68,17 @@ impl<T: StableDeref<Target: Sync>> CtxPool<T> {
     /// Add more threads to this thread pool that share the context.
     ///
     /// This takes a factory callback to create the callbacks, to handle cloning
-    pub fn add<F: Fn(&T::Target, usize) + Clone + Send + 'static>(
+    pub fn add<F: Fn(&T::Target) + Clone + Send + 'static>(
         &mut self,
         num_threads: usize,
-        mut factory: impl FnMut() -> F,
+        mut factory: impl FnMut(usize) -> (std::thread::Builder, F),
     ) -> std::io::Result<()> {
         let l = self.threads.len();
         let ptr = SendablePointer(T::deref(&self.context));
         self.threads.reserve(num_threads);
         (l..(l + num_threads)).try_for_each(|i| {
-            let func = factory();
-            let handle = unsafe {
-                std::thread::Builder::new().spawn_unchecked(move || func(ptr.deref(), i))?
-            };
+            let (builder, func) = factory(i);
+            let handle = unsafe { builder.spawn_unchecked(move || func(ptr.deref()))? };
             self.threads.push(handle);
             Ok(())
         })

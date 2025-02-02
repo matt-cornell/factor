@@ -346,7 +346,7 @@ impl RingBufferBody {
             tail = new_tail;
             count += 1;
         }
-        dbg!(count)
+        count
     }
 }
 unsafe impl Sync for RingBufferBody {}
@@ -363,28 +363,31 @@ impl ChunkloaderHandle {
         let pool = CtxPool::new(
             Box::new(RingBufferBody::new()),
             std::thread::available_parallelism().map_or(1, |n| n.get()),
-            || {
+            |i| {
                 let config = config.clone();
                 let db = db.clone();
                 let finished_tx = finished_tx.clone();
-                move |queue, _| {
-                    while !queue.cancel.load(Ordering::Acquire) {
-                        if let Some(req) = queue.pop() {
-                            match load_chunk(&config, &db, req) {
-                                Ok(data) => {
-                                    if finished_tx.send((req, data)).is_err() {
-                                        break;
+                (
+                    std::thread::Builder::new().name(format!("chunkload-{i}")),
+                    move |queue| {
+                        while !queue.cancel.load(Ordering::Acquire) {
+                            if let Some(req) = queue.pop() {
+                                match load_chunk(&config, &db, req) {
+                                    Ok(data) => {
+                                        if finished_tx.send((req, data)).is_err() {
+                                            break;
+                                        }
+                                    }
+                                    Err(err) => {
+                                        error!(id = req, %err, "Error loading chunk");
                                     }
                                 }
-                                Err(err) => {
-                                    error!(id = req, %err, "Error loading chunk");
-                                }
+                            } else {
+                                std::thread::sleep(std::time::Duration::from_millis(10));
                             }
-                        } else {
-                            std::thread::sleep(std::time::Duration::from_millis(10));
                         }
-                    }
-                }
+                    },
+                )
             },
         );
         Self {
