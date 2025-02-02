@@ -1,6 +1,7 @@
 #![feature(
     array_chunks,
     array_try_map,
+    box_as_ptr,
     iter_array_chunks,
     path_add_extension,
     try_blocks
@@ -104,7 +105,7 @@ fn start_server(
     db: Res<utils::database::Database>,
 ) {
     commands.init_resource::<chunk::LoadedChunks>();
-    let handle = chunk::ChunkloaderHandle::spawn(cfg.clone(), db.clone());
+    let handle = chunk::ChunkloaderHandle::spawn(&cfg, &db);
     commands.insert_resource(handle);
 }
 

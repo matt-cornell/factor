@@ -28,6 +28,8 @@ redb = { version = "2.2.0", features = ["logging"] }
 wasm-timer = "0.2.5"
 rayon = "1.10.0"
 either = "1.13.0"
+priority-queue = "2.1.1"
+stable_deref_trait = "1.2.0"
 
 [dev-dependencies]
 bevy = { workspace = true, features = ["bevy_gizmos", "bevy_pbr", "bevy_render", "bevy_window", "bevy_winit", "tonemapping_luts", "webgl2", "x11"] }

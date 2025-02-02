@@ -1,19 +1,22 @@
 use crate::config::WorldConfig;
 use crate::tables::{NoiseLocation, CHUNKS, HIGH_GRAD_NOISE, HIGH_VALUE_NOISE, TERRAIN};
+use crate::utils::ctx_pool::CtxPool;
 use crate::utils::database::Database;
 use crate::utils::mesh::*;
 use bevy::prelude::*;
 use bevy::utils::HashMap;
-use crossbeam_channel::{Receiver, Sender};
+use crossbeam_channel::Receiver;
 use factor_common::coords::{get_absolute, get_relative, LonLat};
 use factor_common::data::{ChunkId, ChunkInterest, PlayerId};
 use factor_common::{healpix, PLANET_RADIUS};
+use priority_queue::PriorityQueue;
 use rand::prelude::*;
 use redb::ReadableTable as _;
 use serde::{Deserialize, Serialize};
+use std::cell::UnsafeCell;
 use std::io;
 use std::num::NonZeroUsize;
-use std::time::Duration;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 /// The server and client need to have separate chunks, this component marks the server's
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, Component)]
@@ -283,49 +286,112 @@ pub fn unload_chunks(
     }
 }
 
-#[derive(Resource)]
-pub struct ChunkloaderHandle {
-    cancel: Sender<()>,
-    requests: Sender<u64>,
-    finished: Receiver<(u64, ChunkData)>,
+const BUF_SIZE: usize = 4;
+
+struct RingBufferBody {
+    cancel: AtomicBool,
+    start: AtomicUsize,
+    end: AtomicUsize,
+    body: [UnsafeCell<u64>; BUF_SIZE],
 }
-impl ChunkloaderHandle {
-    pub fn spawn(config: WorldConfig, db: Database) -> Self {
-        let (cancel_tx, cancel_rx) = crossbeam_channel::bounded(1);
-        let (requests_tx, requests_rx) = crossbeam_channel::bounded(256);
-        let (finished_tx, finished_rx) = crossbeam_channel::bounded(8);
-        std::thread::spawn(move || loop {
-            match cancel_rx.recv_timeout(Duration::from_millis(1)) {
-                Ok(()) | Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break,
-                Err(crossbeam_channel::RecvTimeoutError::Timeout) => {}
-            }
-            for req in requests_rx.try_iter() {
-                match load_chunk(&config, &db, req) {
-                    Ok(data) => {
-                        if finished_tx.send((req, data)).is_err() {
-                            break;
-                        }
-                    }
-                    Err(err) => {
-                        error!(id = req, %err, "Error loading chunk");
-                    }
-                }
-            }
-        });
+impl RingBufferBody {
+    const fn new() -> Self {
         Self {
-            cancel: cancel_tx,
-            requests: requests_tx,
-            finished: finished_rx,
+            cancel: AtomicBool::new(false),
+            start: AtomicUsize::new(0),
+            end: AtomicUsize::new(0),
+            body: [const { UnsafeCell::new(0) }; BUF_SIZE],
         }
     }
-    pub fn request(&self, chunk: u64) {
-        let _ = self.requests.send(chunk);
+    #[allow(clippy::mut_from_ref)]
+    unsafe fn get(&self, idx: usize) -> &mut u64 {
+        &mut *self.body[idx].get()
+    }
+    /// Pop an element from the buffer.
+    fn pop(&self) -> Option<u64> {
+        loop {
+            let start = self.start.load(Ordering::Acquire);
+            let end = self.end.load(Ordering::Acquire);
+            if start == end {
+                return None;
+            }
+            let new_start = (start + 1) % BUF_SIZE;
+            if self
+                .start
+                .compare_exchange_weak(start, new_start, Ordering::AcqRel, Ordering::Acquire)
+                .is_err()
+            {
+                continue;
+            }
+            return Some(unsafe { *self.get(start) });
+        }
+    }
+    /// Fill with an iterator, this can cause logic errors if there are multiple writers.
+    fn fill(&self, iter: &mut dyn Iterator<Item = u64>) -> usize {
+        let start = self.start.load(Ordering::Acquire);
+        let end = self.end.load(Ordering::Acquire);
+        let rect_start = if start < end { start + BUF_SIZE } else { start };
+        let mut count = 0;
+        ((end + 1)..rect_start)
+            .map(|i| i % BUF_SIZE)
+            .zip(iter)
+            .for_each(|(i, v)| {
+                count += 1;
+                unsafe { *self.get(i) = v };
+            });
+        self.end.store((end + count) % BUF_SIZE, Ordering::Release);
+        count
+    }
+}
+unsafe impl Sync for RingBufferBody {}
+
+#[derive(Resource)]
+pub struct ChunkloaderHandle {
+    finished: Receiver<(u64, ChunkData)>,
+    pool: CtxPool<Box<RingBufferBody>>,
+    queue: PriorityQueue<u64, i32>,
+}
+impl ChunkloaderHandle {
+    pub fn spawn(config: &WorldConfig, db: &Database) -> Self {
+        let (finished_tx, finished_rx) = crossbeam_channel::bounded(8);
+        let pool = CtxPool::new(
+            Box::new(RingBufferBody::new()),
+            std::thread::available_parallelism().map_or(1, |n| n.get()),
+            || {
+                let config = config.clone();
+                let db = db.clone();
+                let finished_tx = finished_tx.clone();
+                move |queue, _| {
+                    while !queue.cancel.load(Ordering::Acquire) {
+                        if let Some(req) = queue.pop() {
+                            match load_chunk(&config, &db, req) {
+                                Ok(data) => {
+                                    if finished_tx.send((req, data)).is_err() {
+                                        break;
+                                    }
+                                }
+                                Err(err) => {
+                                    error!(id = req, %err, "Error loading chunk");
+                                }
+                            }
+                        } else {
+                            std::thread::sleep(std::time::Duration::from_millis(10));
+                        }
+                    }
+                }
+            },
+        );
+        Self {
+            pool,
+            finished: finished_rx,
+            queue: PriorityQueue::new(),
+        }
     }
     pub fn finished(&self) -> impl Iterator<Item = (u64, ChunkData)> + '_ {
         self.finished.try_iter()
     }
     pub fn cancel(&self) {
-        let _ = self.cancel.try_send(());
+        self.pool.ctx().cancel.store(true, Ordering::Release);
     }
 }
 impl Drop for ChunkloaderHandle {
@@ -338,7 +404,7 @@ pub fn load_chunks(
     mut commands: Commands,
     mut loaded_chunks: ResMut<LoadedChunks>,
     mut to_load: EventReader<ChunkRequest>,
-    loader: Res<ChunkloaderHandle>,
+    mut loader: ResMut<ChunkloaderHandle>,
 ) {
     for &ChunkRequest { id } in to_load.read() {
         if let Some((state, _)) = loaded_chunks.chunks.get_mut(&id) {
@@ -351,7 +417,14 @@ pub fn load_chunks(
                 ChunkLoadingState::Queued => *state = ChunkLoadingState::Loading,
             }
         }
-        loader.request(id);
+
+        // TODO: priority queue
+        loader.queue.push(id, 0);
+        let loader = &mut *loader;
+        loader
+            .pool
+            .ctx()
+            .fill(&mut std::iter::from_fn(|| loader.queue.pop().map(|v| v.0)));
     }
     for (id, data) in loader.finished() {
         let entity = commands
@@ -369,10 +442,11 @@ pub fn load_chunks(
                 error!(id, %old, new = %entity, "Duplicate loaded chunk");
             }
             *tracked = ChunkLoadingState::Loaded(entity);
+            commands.trigger(ChunkLoaded { id, entity });
         } else {
             error!(id, %entity, "Loaded chunk that's not in interest");
+            commands.entity(entity).despawn();
         }
-        commands.trigger(ChunkLoaded { id, entity });
     }
 }
 
