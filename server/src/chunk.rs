@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use std::io;
 use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use triomphe::Arc;
+use triomphe::{Arc, HeaderSlice};
 
 /// The server and client need to have separate chunks, this component marks the server's
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, Component)]
@@ -290,32 +290,22 @@ pub fn unload_chunks(
     }
 }
 
-const BUF_SIZE: usize = 4;
-
-struct RingBufferBody {
+#[derive(Default)]
+struct RingBufferHeader {
     cancel: AtomicBool,
     head: AtomicUsize,
     tail: AtomicUsize,
-    body: [AtomicU64; BUF_SIZE],
 }
-impl RingBufferBody {
-    const fn new() -> Self {
-        Self {
-            cancel: AtomicBool::new(false),
-            head: AtomicUsize::new(0),
-            tail: AtomicUsize::new(0),
-            body: [const { AtomicU64::new(0) }; BUF_SIZE],
-        }
-    }
+impl RingBufferHeader {
     /// Pop an element from the buffer.
-    fn pop(&self) -> Option<u64> {
+    fn pop(&self, slice: &[AtomicU64]) -> Option<u64> {
         loop {
             let head = self.head.load(Ordering::Acquire);
             let tail = self.tail.load(Ordering::Acquire);
             if head == tail {
                 return None;
             }
-            let new_start = (head + 1) % BUF_SIZE;
+            let new_start = (head + 1) % slice.len();
             if self
                 .head
                 .compare_exchange_weak(head, new_start, Ordering::Release, Ordering::Relaxed)
@@ -323,23 +313,23 @@ impl RingBufferBody {
             {
                 continue;
             }
-            return Some(self.body[head].load(Ordering::Acquire));
+            return Some(slice[head].load(Ordering::Acquire));
         }
     }
     /// Fill with an iterator, this can cause logic errors if there are multiple writers.
-    fn fill(&self, iter: &mut dyn Iterator<Item = u64>) -> usize {
+    fn fill(&self, slice: &[AtomicU64], iter: &mut dyn Iterator<Item = u64>) -> usize {
         let mut count = 0;
         let mut tail = self.tail.load(Ordering::Acquire);
         loop {
             let head = self.head.load(Ordering::Acquire);
-            let new_tail = (tail + 1) % BUF_SIZE;
+            let new_tail = (tail + 1) % slice.len();
             if new_tail == head {
                 break;
             }
             let Some(value) = iter.next() else {
                 break;
             };
-            self.body[tail].store(value, Ordering::Release);
+            slice[tail].store(value, Ordering::Release);
             self.tail.store(new_tail, Ordering::Release);
             tail = new_tail;
             count += 1;
@@ -347,19 +337,22 @@ impl RingBufferBody {
         count
     }
 }
-unsafe impl Sync for RingBufferBody {}
 
 #[derive(Resource)]
 pub struct ChunkloaderHandle {
     finished: Receiver<(u64, ChunkData)>,
-    shared: Arc<RingBufferBody>,
+    shared: Arc<HeaderSlice<RingBufferHeader, [AtomicU64]>>,
     queue: PriorityQueue<u64, OrderedFloat<f32>>,
 }
 impl ChunkloaderHandle {
     pub fn spawn(config: &WorldConfig, db: &Database) -> Self {
-        let (finished_tx, finished_rx) = crossbeam_channel::bounded(8);
-        let shared = Arc::new(RingBufferBody::new());
-        for i in 0..std::thread::available_parallelism().map_or(1, |n| n.get()) {
+        let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
+        let (finished_tx, finished_rx) = crossbeam_channel::bounded(threads * 4);
+        let shared = Arc::from_header_and_iter(
+            RingBufferHeader::default(),
+            std::iter::repeat_with(|| AtomicU64::new(u64::MAX)).take(threads * 2 + 1),
+        );
+        for i in 0..threads {
             let queue = Arc::clone(&shared);
             let config = config.clone();
             let db = db.clone();
@@ -367,8 +360,8 @@ impl ChunkloaderHandle {
             let res = std::thread::Builder::new()
                 .name(format!("chunkload-{i}"))
                 .spawn(move || {
-                    while !queue.cancel.load(Ordering::Acquire) {
-                        if let Some(req) = queue.pop() {
+                    while !queue.header.cancel.load(Ordering::Acquire) {
+                        if let Some(req) = queue.header.pop(&queue.slice) {
                             match load_chunk(&config, &db, req) {
                                 Ok(data) => {
                                     if finished_tx.send((req, data)).is_err() {
@@ -398,7 +391,7 @@ impl ChunkloaderHandle {
         self.finished.try_iter()
     }
     pub fn cancel(&self) {
-        self.shared.cancel.store(true, Ordering::Release);
+        self.shared.header.cancel.store(true, Ordering::Release);
     }
 }
 impl Drop for ChunkloaderHandle {
@@ -413,9 +406,10 @@ pub fn loader_interface(
     mut loader: ResMut<ChunkloaderHandle>,
 ) {
     let loader = &mut *loader;
-    loader
-        .shared
-        .fill(&mut std::iter::from_fn(|| loader.queue.pop().map(|v| v.0)));
+    loader.shared.header.fill(
+        &loader.shared.slice,
+        &mut std::iter::from_fn(|| loader.queue.pop().map(|v| v.0)),
+    );
     for (id, data) in loader.finished() {
         let entity = commands
             .spawn((
