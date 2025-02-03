@@ -357,7 +357,7 @@ impl ChunkloaderHandle {
         let (finished_tx, finished_rx) = crossbeam_channel::bounded(threads * 4);
         let shared = Arc::from_header_and_iter(
             RingBufferHeader::default(),
-            std::iter::repeat_with(|| AtomicU64::new(u64::MAX)).take(threads * 3 / 2 + 1),
+            std::iter::repeat_with(|| AtomicU64::new(u64::MAX)).take(threads + 4 + 1),
         );
         for i in 0..threads {
             let queue = Arc::clone(&shared);
