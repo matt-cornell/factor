@@ -191,8 +191,10 @@ fn update_interest(
     interest: &mut ChunkInterest,
     chunks: &mut LoadedChunks,
     handle: &mut ChunkloaderHandle,
-    prune: &mut tinyset::SetU64,
+    prune: &mut HashMap<u64, bool>,
 ) {
+    prune.reserve(change.new.len());
+    prune.reserve(interest.chunks.len());
     let mut weight = 0.5;
     for pair in change.new.iter().zip_longest(&mut interest.chunks) {
         match pair {
@@ -200,20 +202,20 @@ fn update_interest(
                 if *l == *r {
                     continue;
                 }
-                prune.remove(*l);
+                prune.insert(*l, false);
                 if rem_interest(change.player, *r, chunks, handle) {
-                    prune.insert(*r);
+                    let _ = prune.try_insert(*r, true);
                 }
                 add_interest(change.player, *l, chunks, &mut weight, handle);
                 *r = *l;
             }
             EitherOrBoth::Left(l) => {
-                prune.remove(*l);
+                prune.insert(*l, false);
                 add_interest(change.player, *l, chunks, &mut weight, handle)
             }
             EitherOrBoth::Right(r) => {
                 if rem_interest(change.player, *r, chunks, handle) {
-                    prune.remove(*r);
+                    let _ = prune.try_insert(*r, true);
                 }
             }
         }
@@ -234,7 +236,7 @@ pub fn handle_interests(
     mut handle: ResMut<ChunkloaderHandle>,
     mut unload: EventWriter<UnloadChunk>,
 ) {
-    let mut prune = tinyset::SetU64::new();
+    let mut prune = HashMap::new();
     match changes.len() {
         0 => {}
         1 => {
@@ -263,7 +265,10 @@ pub fn handle_interests(
             }
         }
     }
-    for chunk in prune {
+    for (chunk, rem) in prune {
+        if !rem {
+            continue;
+        }
         handle.queue.remove(&chunk);
         if let Some((ChunkLoadingState::Loaded(_), _)) = chunks.chunks.remove(&chunk) {
             unload.send(UnloadChunk::new(chunk));
@@ -346,11 +351,13 @@ pub struct ChunkloaderHandle {
 }
 impl ChunkloaderHandle {
     pub fn spawn(config: &WorldConfig, db: &Database) -> Self {
-        let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
+        let threads = std::thread::available_parallelism()
+            .map_or(1, |n| n.get())
+            .div_ceil(2);
         let (finished_tx, finished_rx) = crossbeam_channel::bounded(threads * 4);
         let shared = Arc::from_header_and_iter(
             RingBufferHeader::default(),
-            std::iter::repeat_with(|| AtomicU64::new(u64::MAX)).take(threads * 2 + 1),
+            std::iter::repeat_with(|| AtomicU64::new(u64::MAX)).take(threads * 3 / 2 + 1),
         );
         for i in 0..threads {
             let queue = Arc::clone(&shared);
@@ -360,8 +367,11 @@ impl ChunkloaderHandle {
             let res = std::thread::Builder::new()
                 .name(format!("chunkload-{i}"))
                 .spawn(move || {
+                    let _guard = info_span!("chunkloader", thread = i).entered();
                     while !queue.header.cancel.load(Ordering::Acquire) {
                         if let Some(req) = queue.header.pop(&queue.slice) {
+                            let _guard = info_span!("Loading chunk", id = req).entered();
+                            debug!("Loading");
                             match load_chunk(&config, &db, req) {
                                 Ok(data) => {
                                     if finished_tx.send((req, data)).is_err() {
@@ -428,7 +438,7 @@ pub fn loader_interface(
             *tracked = ChunkLoadingState::Loaded(entity);
             commands.trigger(ChunkLoaded { id, entity });
         } else {
-            error!(id, %entity, "Loaded chunk that's not in interest");
+            warn!(id, %entity, "Loaded chunk that's not in interest");
             commands.entity(entity).despawn();
         }
     }
