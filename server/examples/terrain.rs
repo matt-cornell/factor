@@ -14,10 +14,8 @@ use std::cell::UnsafeCell;
 use std::f32::consts::*;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
-#[cfg(not(target_arch = "wasm32"))]
-use std::time::{Duration, Instant};
-#[cfg(target_arch = "wasm32")]
-use web_time::{Duration, Instant};
+use std::time::Duration;
+use wasm_timer::Instant;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, States)]
 enum AppState {
