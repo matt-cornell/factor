@@ -11,7 +11,7 @@ env:
 
 jobs:
   native:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     steps:
       - name: Install system libraries
         run: sudo apt install -y libasound2-dev libudev-dev libwayland-dev
