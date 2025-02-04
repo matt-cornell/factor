@@ -1,3 +1,5 @@
+use crate::coords::{get_absolute, LonLat};
+use crate::PLANET_RADIUS;
 use bevy::ecs::archetype::Archetype;
 use bevy::ecs::component::{ComponentId, Components, Tick};
 use bevy::ecs::query::{FilteredAccess, QueryFilter, WorldQuery};
@@ -113,26 +115,11 @@ impl<'de> Deserialize<'de> for PlayerId {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Component)]
 pub struct ChunkId(pub u64);
 
-#[derive(Debug, Clone, Component)]
-pub struct ChunkInterest {
-    pub chunks: tinyset::SetU64,
-}
-impl ChunkInterest {
-    pub fn new() -> Self {
-        Self {
-            chunks: tinyset::SetU64::new(),
-        }
-    }
-}
-impl Default for ChunkInterest {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 #[derive(Debug, Default, Clone, Copy, PartialEq, Serialize, Deserialize, Component)]
 pub struct Position {
-    pub chunk: u64,
+    /// Depth 12 cell that this is contained in
+    pub frame: u64,
+    /// Position relative to the center of the frame
     pub pos: Vec3,
     pub rot: Quat,
 }
@@ -146,6 +133,16 @@ impl Position {
             rotation: self.rot,
             scale: Vec3::splat(1.0),
         }
+    }
+    pub fn get_absolute(&self) -> LonLat {
+        get_absolute(
+            crate::healpix::Layer::new(12).center(self.frame),
+            self.pos.xz().as_dvec2() / PLANET_RADIUS,
+        )
+    }
+    /// Get the containing depth 16 frame, i.e. the chunk
+    pub fn get_chunk(&self) -> u64 {
+        crate::healpix::Layer::new(16).hash(self.get_absolute()) // TODO: use inverse bilinear
     }
 }
 

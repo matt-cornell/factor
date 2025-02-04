@@ -1,35 +1,39 @@
 //! This file re-exports all of `redb`, along with a wrapper type that is a `Resource`.
 
 use bevy::prelude::Resource;
-use std::ops::{Deref, DerefMut};
+use std::ops::Deref;
+use triomphe::Arc;
 
 pub use redb::{Database as InnerDatabase, *};
 
 /// A wrapper around a `Database` that can be used as a `Resource`.
-#[derive(Debug, Resource)]
+#[derive(Debug, Clone, Resource)]
 pub struct Database {
-    inner: InnerDatabase,
+    inner: Arc<InnerDatabase>,
 }
 impl Database {
     /// Create a temporary database in memory.
     pub fn temporary() -> Self {
         Self {
-            inner: InnerDatabase::builder()
+            inner: Arc::new(InnerDatabase::builder()
                 .create_with_backend(backends::InMemoryBackend::new())
-                .unwrap(),
+                .unwrap()),
         }
     }
     /// Create a persistent database with a given name.
     pub fn persistent(name: String) -> Result<Self, DatabaseError> {
         Ok(Self {
-            inner: InnerDatabase::builder()
+            inner: Arc::new(InnerDatabase::builder()
                 .create_with_backend(crate::storage::PersistentBackend::new(name)?)
-                .inspect_err(|err| bevy::log::error!(%err, "Error opening database"))?,
+                .inspect_err(|err| bevy::log::error!(%err, "Error opening database"))?),
         })
     }
     /// Get the inner database.
-    pub fn into_inner(self) -> InnerDatabase {
+    pub fn into_inner(self) -> Arc<InnerDatabase> {
         self.inner
+    }
+    pub fn get_mut(&mut self) -> Option<&mut InnerDatabase> {
+        Arc::get_mut(&mut self.inner)
     }
 }
 impl Deref for Database {
@@ -38,8 +42,17 @@ impl Deref for Database {
         &self.inner
     }
 }
-impl DerefMut for Database {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.inner
+impl From<InnerDatabase> for Database {
+    fn from(value: InnerDatabase) -> Self {
+        Self {
+            inner: Arc::new(value)
+        }
+    }
+}
+impl From<Arc<InnerDatabase>> for Database {
+    fn from(value: Arc<InnerDatabase>) -> Self {
+        Self {
+            inner: value
+        }
     }
 }

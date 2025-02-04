@@ -288,7 +288,7 @@ pub fn render_loading(
         .times_finished_this_tick();
     *dots += ticks;
     *dots %= 4;
-    egui::Area::new(egui::Id::new("Loading Failed"))
+    egui::Area::new(egui::Id::new("Loading"))
         .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
         .show(contexts.ctx_mut(), |ui| {
             ui.set_style(config.egui_style.clone());

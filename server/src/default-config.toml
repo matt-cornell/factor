@@ -1,11 +1,11 @@
 [orbit]
 day-length = 360
 year-length = 864000
-obliquity = 0.0
+obliquity = 0.1
 
 [climate]
 depth = 5
-intensity = 4500
+intensity = 4250
 init-steps = 250
 time-step = 0.01
 
@@ -27,13 +27,13 @@ shift = 0.100
 scale = 0.090
 
 [[noise.global]]
-gradient = false
+gradient = true
 depth = 2
 shift = 0.200
 scale = 0.177
 
 [[noise.global]]
-gradient = false
+gradient = true
 depth = 2
 shift = 0.300
 scale = 0.177
@@ -50,14 +50,27 @@ depth = 3
 shift = 0.700
 scale = 0.030
 
-[[noise.global]]
-gradient = true
-depth = 5
-shift = 0.0
-scale = 0.006
-
 [[noise.local]]
 gradient = true
 depth = 10
 shift = 0.0
+scale = 0.010
+
+[[noise.local]]
+gradient = true
+depth = 14
+shift = 0.000001
 scale = 0.001
+
+[[noise.local]]
+gradient = false
+depth = 14
+shift = 0.000002
+scale = 0.002
+
+[[noise.local]]
+gradient = true
+depth = 15
+shift = 0.000005
+scale = 0.0005
+

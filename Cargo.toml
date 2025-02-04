@@ -52,6 +52,7 @@ futures-util = "0.3.31"
 futures-sink = "0.3.31"
 hex = { version = "0.4.3", features = ["serde"] }
 itertools = "0.13.0"
+ordered-float = "4.6.0"
 postcard = { version = "1.0.10", default-features = false, features = ["use-std"] }
 quick_cache = "0.6.9"
 rand = "0.8.5"
