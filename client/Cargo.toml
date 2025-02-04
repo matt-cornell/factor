@@ -10,6 +10,7 @@ factor-common.workspace = true
 futures-sink.workspace = true
 futures-util.workspace = true
 leafwing-input-manager = "0.16.0"
+ordered-float.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 tinyset.workspace = true

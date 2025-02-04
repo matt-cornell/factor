@@ -115,23 +115,6 @@ impl<'de> Deserialize<'de> for PlayerId {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Component)]
 pub struct ChunkId(pub u64);
 
-#[derive(Debug, Clone, Component)]
-pub struct ChunkInterest {
-    pub chunks: tinyset::SetU64,
-}
-impl ChunkInterest {
-    pub fn new() -> Self {
-        Self {
-            chunks: tinyset::SetU64::new(),
-        }
-    }
-}
-impl Default for ChunkInterest {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 #[derive(Debug, Default, Clone, Copy, PartialEq, Serialize, Deserialize, Component)]
 pub struct Position {
     /// Depth 12 cell that this is contained in

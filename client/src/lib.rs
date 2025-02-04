@@ -74,18 +74,11 @@ impl Plugin for ClientPlugin {
             .add_systems(OnExit(RenderGame), render::pause_world_render)
             .add_systems(
                 OnEnter(ClientState::Running),
-                (
-                    setup_target_fps,
-                    render::grab_mouse,
-                ),
+                (setup_target_fps, render::grab_mouse),
             )
             .add_systems(
                 OnExit(ClientState::Running),
-                (
-                    limit_target_fps,
-                    clear_motion,
-                    render::release_mouse,
-                )
+                (limit_target_fps, clear_motion, render::release_mouse)
                     .before(render::cleanup_world_render),
             );
         #[cfg(not(target_family = "wasm"))]

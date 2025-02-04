@@ -1,4 +1,4 @@
-use crate::chunk::ChunkData;
+use crate::chunks::ChunkData;
 use crate::player::{PlayerData, PlayerIdKey};
 use crate::terrain::climate::ClimateCell;
 use crate::utils::db_value::{ErasedValue, PostcardValue};

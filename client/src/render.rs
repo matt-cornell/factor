@@ -1,4 +1,5 @@
 use crate::action::Action;
+use crate::chunks::ChunkInterest;
 use crate::player::AttemptedMotion;
 use crate::settings::{ClientSettings, DebugSettings};
 use crate::ClientState;
@@ -23,6 +24,7 @@ pub fn setup_world_render(mut commands: Commands, pos: Single<&Position, Default
     transform.translation.y += 1.5;
     commands.spawn((Camera3d::default(), transform));
     commands.init_resource::<AttemptedMotion>();
+    commands.init_resource::<ChunkInterest>();
 }
 pub fn pause_world_render(mut camera: Single<&mut Camera, With<Camera3d>>) {
     camera.is_active = false;
@@ -30,7 +32,11 @@ pub fn pause_world_render(mut camera: Single<&mut Camera, With<Camera3d>>) {
 pub fn resume_world_render(mut camera: Single<&mut Camera, With<Camera3d>>) {
     camera.is_active = true;
 }
-pub fn cleanup_world_render(mut commands: Commands, camera: Single<Entity, With<Camera3d>>, wireframes: Option<ResMut<WireframeConfig>>) {
+pub fn cleanup_world_render(
+    mut commands: Commands,
+    camera: Single<Entity, With<Camera3d>>,
+    wireframes: Option<ResMut<WireframeConfig>>,
+) {
     commands.entity(*camera).despawn();
     if let Some(mut wireframes) = wireframes {
         wireframes.global = false;
@@ -79,7 +85,12 @@ pub fn handle_keypresses(
     look *= settings.mouse_sensitivity * scale;
     let jump = state.pressed(&Action::Jump);
     let crouch = state.pressed(&Action::Crouch);
-    *attempted = AttemptedMotion { walk, look, jump, crouch };
+    *attempted = AttemptedMotion {
+        walk,
+        look,
+        jump,
+        crouch,
+    };
 }
 
 pub fn local_reflect_attempts(

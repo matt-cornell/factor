@@ -1,13 +1,13 @@
 use bevy::ecs::system::SystemChangeTick;
 use bevy::prelude::*;
 use bevy::utils::HashMap;
-use factor_client::chunks::{ClientChunk, InterestChanged as ClientInterestChanged};
+use factor_client::chunks::{ChunkInterest, ClientChunk, InterestChanged as ClientInterestChanged};
 use factor_client::core_ui::ClientState;
 use factor_client::settings::DebugSettings;
 use factor_common::cell::transforms_for;
-use factor_common::data::{ChunkId, ChunkInterest, DefaultPlayer, PlayerId, Position};
+use factor_common::data::{ChunkId, DefaultPlayer, PlayerId, Position};
 use factor_common::mesh::MeshData;
-use factor_server::chunk::{InterestChanged as ServerInterestChanged, ServerChunk};
+use factor_server::chunks::{InterestChanged as ServerInterestChanged, ServerChunk};
 use factor_server::player::{PlayerLoaded, PlayerRequest};
 use factor_server::terrain::bevy::TerrainReady;
 use factor_server::utils::database::Database;
@@ -71,15 +71,13 @@ pub fn player_loaded(
 }
 
 pub fn interest_changed(
-    mut trig: Trigger<ClientInterestChanged>,
+    _trig: Trigger<ClientInterestChanged>,
+    interest: Res<ChunkInterest>,
     mut events: EventWriter<ServerInterestChanged>,
 ) {
-    let ClientInterestChanged { added, removed } = std::mem::take(trig.event_mut());
     events.send(ServerInterestChanged {
         player: PlayerId::DEFAULT,
-        needs_update: false,
-        added,
-        removed,
+        new: interest.chunks.clone(),
     });
 }
 
@@ -87,7 +85,7 @@ pub fn surface_mesh(
     tick: SystemChangeTick,
     mut commands: Commands,
     pos: Single<&Position, DefaultPlayer>,
-    player_interest: Single<&ChunkInterest, DefaultPlayer>,
+    player_interest: Res<ChunkInterest>,
     mut client_chunks: Query<
         (Entity, &ChunkId, Option<Ref<MeshData>>),
         (With<ClientChunk>, Without<ServerChunk>),
@@ -110,7 +108,7 @@ pub fn surface_mesh(
                     .entity(entity)
                     .insert((mesh.clone(), Mesh3d(meshes.add(mesh.clone().build_bevy()))));
             }
-        } else if player_interest.chunks.contains(*id) {
+        } else if player_interest.chunks.contains(id) {
             commands.spawn((
                 ChunkId(*id),
                 mesh.clone(),
