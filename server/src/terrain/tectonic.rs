@@ -1,7 +1,7 @@
 use bevy::math::Vec2;
 use factor_common::healpix;
-use rand::distributions::Standard;
 use rand::prelude::*;
+use rand_distr::StandardUniform;
 use rand_distr::{Normal, StandardNormal};
 use tinyset::{SetU64, SetUsize};
 
@@ -60,14 +60,14 @@ pub struct TectonicPlate {
     pub count: u32,
 }
 
-impl Distribution<TectonicPlate> for Standard {
+impl Distribution<TectonicPlate> for StandardUniform {
     fn sample<R: Rng + ?Sized>(&self, rng: &mut R) -> TectonicPlate {
         use std::f32::consts::PI;
-        let density = rng.gen_range(100..=200) + u32::from(rng.gen_bool(0.6)) * 125;
-        let height = rng.gen_range(-0.05..=0.05) - (density - 100) as f32 * 0.00005;
+        let density = rng.random_range(100..=200) + u32::from(rng.random_bool(0.6)) * 125;
+        let height = rng.random_range(-0.05..=0.05) - (density - 100) as f32 * 0.00005;
         TectonicPlate {
-            center_lat: rng.gen_range(-1.0f32..1.0).asin(),
-            center_long: rng.gen_range(-PI..=PI),
+            center_lat: rng.random_range(-1.0f32..1.0).asin(),
+            center_long: rng.random_range(-PI..=PI),
             base_height: height,
             height,
             density,
@@ -111,7 +111,7 @@ fn init_terrain_impl<R: Rng + ?Sized>(depth: u8, rng: &mut R) -> TectonicState {
     let noise = Normal::new(0.0, 0.5).unwrap();
     let layer = healpix::nested::get(depth);
     let len = layer.n_hash() as _;
-    let nplates = rng.gen_range(12..=14);
+    let nplates = rng.random_range(12..=14);
     let mut changes = rng
         .sample_iter(noise)
         .array_chunks()
@@ -128,7 +128,7 @@ fn init_terrain_impl<R: Rng + ?Sized>(depth: u8, rng: &mut R) -> TectonicState {
                 * 0.8;
         }
     }
-    let mut plates: Box<[TectonicPlate]> = rng.sample_iter(Standard).take(nplates).collect();
+    let mut plates: Box<[TectonicPlate]> = rng.sample_iter(StandardUniform).take(nplates).collect();
     // let mut updated = true;
     // while updated {
     //     updated = false;
@@ -181,7 +181,7 @@ fn init_terrain_impl<R: Rng + ?Sized>(depth: u8, rng: &mut R) -> TectonicState {
                 .unwrap();
             let cell = TectonicCell {
                 plate,
-                height: rng.gen_range(-0.025..=0.025),
+                height: rng.random_range(-0.025..=0.025),
                 density: 0,
                 feats: CellFeature::NONE,
             };
@@ -417,7 +417,7 @@ fn step_terrain_impl<R: Rng + ?Sized>(
                     };
                 }
             } else if cell.feats.kind == CellFeatureKind::Mountain
-                && rng.gen_ratio(cell.feats.dist as _, 4)
+                && rng.random_ratio(cell.feats.dist as _, 4)
             {
                 state.cells[i].feats = CellFeature::NONE;
             }
@@ -451,7 +451,7 @@ fn step_terrain_impl<R: Rng + ?Sized>(
             cell.density =
                 (cell.density as f32 * (1.0 - scale) + dens_sum / neigh_count * scale) as _;
             cell.height = (cell.height * (1.0 - scale)
-                + height_sum.mul_add(neigh_count.recip(), rng.gen_range(-0.1..=0.1)) * scale)
+                + height_sum.mul_add(neigh_count.recip(), rng.random_range(-0.1..=0.1)) * scale)
                 .mul_add(0.95, h);
         }
     }

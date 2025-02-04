@@ -53,9 +53,7 @@ impl Plugin for ClientPlugin {
                     render_settings.run_if(in_state(ClientState::Settings)),
                     render_loading.run_if(in_state(ClientState::WorldLoading)),
                     render_loading_failed.run_if(in_state(LoadingFailed)),
-                    render_paused
-                        .after(bevy_egui::EguiSet::InitContexts)
-                        .run_if(in_state(ClientState::Paused)),
+                    render_paused.run_if(in_state(ClientState::Paused)),
                     (
                         render::handle_keypresses,
                         render::local_reflect_attempts,

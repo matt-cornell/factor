@@ -72,7 +72,7 @@ struct RecolorPlates;
 struct RandomColor;
 impl Distribution<LinearRgba> for RandomColor {
     fn sample<R: Rng + ?Sized>(&self, rng: &mut R) -> LinearRgba {
-        LinearRgba::rgb(rng.gen(), rng.gen(), rng.gen())
+        LinearRgba::rgb(rng.random(), rng.random(), rng.random())
     }
 }
 
@@ -219,8 +219,8 @@ fn setup(
 }
 
 fn setup_terrain(mut commands: Commands, depth: Res<HealpixDepth>) {
-    let state = init_terrain(depth.0, &mut thread_rng());
-    let colors: Box<[LinearRgba]> = thread_rng()
+    let state = init_terrain(depth.0, &mut rand::rng());
+    let colors: Box<[LinearRgba]> = rand::rng()
         .sample_iter(RandomColor)
         .take(state.plates().len())
         .collect();
@@ -228,7 +228,7 @@ fn setup_terrain(mut commands: Commands, depth: Res<HealpixDepth>) {
 }
 
 fn recolor_plates(mut terr: ResMut<TerrainData>) {
-    terr.1.fill_with(|| thread_rng().sample(RandomColor));
+    terr.1.fill_with(|| rand::rng().sample(RandomColor));
 }
 
 fn update_colors(
@@ -276,7 +276,7 @@ fn update_terrain(
     state: Res<State<AppState>>,
     mut next_state: ResMut<NextState<AppState>>,
 ) {
-    step_terrain(&mut terr.0, &mut thread_rng());
+    step_terrain(&mut terr.0, &mut rand::rng());
     let AppState::Simulate { running, iter } = **state else {
         panic!("Invalid state for terrain update")
     };
@@ -372,7 +372,7 @@ fn handle_keypresses(
 }
 
 fn update_healpix(mut commands: Commands, depth: Res<HealpixDepth>) {
-    let start_data = thread_rng()
+    let start_data = rand::rng()
         .sample_iter(RandomColor)
         .take(cdshealpix::n_hash(depth.0) as _)
         .collect::<Box<[_]>>();

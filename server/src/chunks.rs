@@ -598,7 +598,7 @@ fn get_height(config: &WorldConfig, coords: LonLat, db: &Database) -> Result<f32
                                 v
                             } else {
                                 let mut rng = get_rng(config.seed.unwrap(), loc.layer, loc.cell);
-                                let v = rng.gen();
+                                let v = rng.random();
                                 value.insert(loc, v)?;
                                 v
                             };
@@ -614,7 +614,7 @@ fn get_height(config: &WorldConfig, coords: LonLat, db: &Database) -> Result<f32
                             v
                         } else {
                             let mut rng = get_rng(config.seed.unwrap(), loc.layer, loc.cell);
-                            let v = rng.gen();
+                            let v = rng.random();
                             value.insert(loc, v)?;
                             v
                         };

@@ -176,7 +176,7 @@ pub fn setup_terrain(
         ClimatePhase::None,
         "attempted to run multiple climate simulations at once!"
     );
-    let seed = *config.seed.get_or_insert_with(|| thread_rng().gen());
+    let seed = *config.seed.get_or_insert_with(rand::random);
     let rng = RandSource::from_seed(seed);
     next_state.set(ClimatePhase::NoiseSetup);
     commands.insert_resource(ClimateInit { rng });
@@ -207,7 +207,7 @@ pub(crate) fn setup_noise(
             } else {
                 ValueOrGradient::Value(ValueCellNoise {
                     depth: layer.depth,
-                    hasher: rand_distr::Standard
+                    hasher: rand_distr::StandardUniform
                         .sample_iter(&mut init.rng)
                         .take(healpix::n_hash(layer.depth) as _)
                         .collect::<Box<[f32]>>(),
@@ -414,7 +414,7 @@ pub(crate) fn finalize(
             .choose(&mut init.rng)
             .unwrap();
         let spawn = if let Some(depth_diff) = 12u8.checked_sub(climate.depth) {
-            let additional = init.rng.gen_range(0..(1 << (depth_diff * 2)));
+            let additional = init.rng.random_range(0..(1 << (depth_diff * 2)));
             clim_cell << (depth_diff * 2) | additional
         } else {
             clim_cell >> ((climate.depth - 12) * 2)
@@ -539,7 +539,7 @@ pub fn update_climate(
             config.climate.intensity * rot.mul_vec3(point).dot(-trans.normalize_or_zero()).max(0.0)
         },
         config.climate.time_step * time_step.delta_secs(),
-        &mut thread_rng(),
+        &mut rand::rng(),
     );
     let mut buffer = climate.cells.clone();
     buffer.sort_by(|a, b| a.temp.total_cmp(&b.temp));

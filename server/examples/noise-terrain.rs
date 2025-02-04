@@ -82,7 +82,7 @@ fn cell_noise(gradient: bool, depth: u8, shift: f32) -> Shifted<ValueOrGradient>
     let base = if gradient {
         ValueOrGradient::Gradient(GradientCellNoise {
             depth,
-            hasher: thread_rng()
+            hasher: rand::rng()
                 .sample_iter(rand_distr::UnitCircle)
                 .map(|[x, y]| Vec2::new(x, y))
                 .take(healpix::n_hash(depth) as _)
@@ -92,8 +92,8 @@ fn cell_noise(gradient: bool, depth: u8, shift: f32) -> Shifted<ValueOrGradient>
     } else {
         ValueOrGradient::Value(ValueCellNoise {
             depth,
-            hasher: thread_rng()
-                .sample_iter(rand_distr::Standard)
+            hasher: rand::rng()
+                .sample_iter(rand_distr::StandardUniform)
                 .take(healpix::n_hash(depth) as _)
                 .collect::<Box<[f32]>>(),
             scale: linear,

@@ -234,7 +234,7 @@ fn cell_noise(gradient: bool, depth: u8, shift: f32) -> Shifted<ValueOrGradient>
     let base = if gradient {
         ValueOrGradient::Gradient(GradientCellNoise {
             depth,
-            hasher: thread_rng()
+            hasher: rand::rng()
                 .sample_iter(rand_distr::UnitCircle)
                 .map(|[x, y]| Vec2::new(x, y))
                 .take(healpix::n_hash(depth) as _)
@@ -244,8 +244,8 @@ fn cell_noise(gradient: bool, depth: u8, shift: f32) -> Shifted<ValueOrGradient>
     } else {
         ValueOrGradient::Value(ValueCellNoise {
             depth,
-            hasher: thread_rng()
-                .sample_iter(rand_distr::Standard)
+            hasher: rand::rng()
+                .sample_iter(rand_distr::StandardUniform)
                 .take(healpix::n_hash(depth) as _)
                 .collect::<Box<[f32]>>(),
             scale: linear,
@@ -338,7 +338,7 @@ struct ConfigDeShim {
 struct RandomColor;
 impl Distribution<LinearRgba> for RandomColor {
     fn sample<R: Rng + ?Sized>(&self, rng: &mut R) -> LinearRgba {
-        LinearRgba::rgb(rng.gen(), rng.gen(), rng.gen())
+        LinearRgba::rgb(rng.random(), rng.random(), rng.random())
     }
 }
 
@@ -1482,8 +1482,8 @@ fn setup_tectonics(
             cdshealpix::nested::hash(depth.0, x, y) as usize
         })
         .collect();
-    let state = init_terrain(depth.0, &mut thread_rng());
-    let colors: Box<[LinearRgba]> = thread_rng()
+    let state = init_terrain(depth.0, &mut rand::rng());
+    let colors: Box<[LinearRgba]> = rand::rng()
         .sample_iter(RandomColor)
         .take(state.plates().len())
         .collect();
@@ -1503,7 +1503,7 @@ fn update_tectonics(
     let AppState::Tectonics { running, iter } = **state else {
         return;
     };
-    step_terrain(&mut terr.0, &mut thread_rng());
+    step_terrain(&mut terr.0, &mut rand::rng());
     next_state.set(AppState::Tectonics {
         running,
         iter: iter + 1,
@@ -1522,7 +1522,7 @@ fn update_tectonics_min(
     if iter < steps.0 {
         let start = Instant::now();
         while iter < steps.0 {
-            step_terrain(&mut terr.0, &mut thread_rng());
+            step_terrain(&mut terr.0, &mut rand::rng());
             iter += 1;
             if start.elapsed() > Duration::from_millis(100) {
                 break;
@@ -1635,7 +1635,7 @@ fn setup_climate(
             noise_height + tect_height
         },
         0.7,
-        &mut thread_rng(),
+        &mut rand::rng(),
     );
     commands.insert_resource(ClimateData(state));
     commands.insert_resource(ClimateMap(image_map));
@@ -1680,7 +1680,7 @@ fn update_climate(
             params.intensity * rot.mul_vec3(point).dot(-trans.normalize_or_zero()).max(0.0)
         },
         params.time_scale * time.0,
-        &mut thread_rng(),
+        &mut rand::rng(),
     );
     let mut cells = climate.0.to_vec();
     cells.sort_by(|a, b| a.temp.total_cmp(&b.temp));
