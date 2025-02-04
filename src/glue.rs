@@ -7,7 +7,7 @@ use factor_client::settings::DebugSettings;
 use factor_common::cell::transforms_for;
 use factor_common::data::{ChunkId, DefaultPlayer, PlayerId, Position};
 use factor_common::mesh::MeshData;
-use factor_server::chunk::{InterestChanged as ServerInterestChanged, ServerChunk};
+use factor_server::chunks::{InterestChanged as ServerInterestChanged, ServerChunk};
 use factor_server::player::{PlayerLoaded, PlayerRequest};
 use factor_server::terrain::bevy::TerrainReady;
 use factor_server::utils::database::Database;

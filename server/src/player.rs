@@ -1,4 +1,4 @@
-use crate::chunk::{chunk_height, ChunkCorners, ChunkInterest, ChunkLoaded, InterestChanged};
+use crate::chunks::{chunk_height, ChunkCorners, ChunkInterest, ChunkLoaded, InterestChanged};
 use crate::config::WorldConfig;
 use crate::tables::PLAYERS;
 use crate::utils::database::{self as redb, Database};

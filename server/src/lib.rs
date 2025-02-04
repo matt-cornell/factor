@@ -13,7 +13,7 @@ use factor_common::data::PlayerId;
 use orbit::OrbitPlugin;
 use terrain::bevy::*;
 
-pub mod chunk;
+pub mod chunks;
 pub mod config;
 pub mod orbit;
 pub mod player;
@@ -57,10 +57,10 @@ impl Plugin for ServerPlugin {
             .add_sub_state::<RunningClimate>()
             .add_event::<player::PlayerRequest>()
             .add_event::<player::PlayerLoaded>()
-            .add_event::<chunk::ChunkRequest>()
-            .add_event::<chunk::ChunkLoaded>()
-            .add_event::<chunk::UnloadChunk>()
-            .add_event::<chunk::InterestChanged>()
+            .add_event::<chunks::ChunkRequest>()
+            .add_event::<chunks::ChunkLoaded>()
+            .add_event::<chunks::UnloadChunk>()
+            .add_event::<chunks::InterestChanged>()
             .insert_resource(ClimateRunning(false))
             .insert_resource(ServerSystems {
                 setup_terrain,
@@ -87,9 +87,9 @@ impl Plugin for ServerPlugin {
             .add_systems(
                 Update,
                 (
-                    chunk::handle_interests,
-                    chunk::loader_interface,
-                    chunk::unload_chunks,
+                    chunks::handle_interests,
+                    chunks::loader_interface,
+                    chunks::unload_chunks,
                     player::persist_players,
                 )
                     .run_if(in_state(ServerState::Running)),
@@ -104,8 +104,8 @@ fn start_server(
     cfg: Res<config::WorldConfig>,
     db: Res<utils::database::Database>,
 ) {
-    commands.init_resource::<chunk::LoadedChunks>();
-    let handle = chunk::ChunkloaderHandle::spawn(&cfg, &db);
+    commands.init_resource::<chunks::LoadedChunks>();
+    let handle = chunks::ChunkloaderHandle::spawn(&cfg, &db);
     commands.insert_resource(handle);
 }
 
@@ -117,8 +117,8 @@ fn cleanup_server(world: &mut World) {
     for entity in to_despawn {
         world.despawn(entity);
     }
-    world.remove_resource::<chunk::LoadedChunks>();
-    if let Some(loader) = world.remove_resource::<chunk::ChunkloaderHandle>() {
+    world.remove_resource::<chunks::LoadedChunks>();
+    if let Some(loader) = world.remove_resource::<chunks::ChunkloaderHandle>() {
         loader.cancel();
     }
 }
