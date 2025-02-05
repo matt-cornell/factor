@@ -3,6 +3,7 @@ use bytemuck::*;
 use factor_common::healpix;
 use rand::prelude::*;
 use rand_distr::Normal;
+use std::fmt::{self, Debug, Formatter};
 
 const STEFAN_BOLTZMANN_CONSTANT: f32 = 5.6703744e-8;
 const WATER_HEAT_CAPACITY: f32 = 630.0;
@@ -36,17 +37,53 @@ fn saturation_pressure(temp: f32) -> f32 {
     WATER_CRIT_PRESSURE * (WATER_CRIT_TEMPERATURE / t * sum).exp()
 }
 
-bitflags::bitflags! {
-    /// Additional flags for each cell. Right now, it's just a single flag for oceans, but it needs to be like this to make `bytemuck` happy.
-    #[derive(Debug, Clone, Copy, Pod, Zeroable)]
-    #[repr(C)]
-    pub struct ClimateFlags: u32 {
-        const NONE = 0b0000;
-        const OCEAN = 0b0001;
+macro_rules! gen_as_str {
+    ($this:expr, $($name:ident)*) => {
+        match $this {
+            $(Self::$name => Ok(stringify!($name)),)*
+            Self(id) => Err(id)
+        }
+    };
+}
+
+#[derive(Default, Clone, Copy, PartialEq, Eq, Hash, Pod, Zeroable)]
+#[repr(transparent)]
+pub struct Biome(pub u32);
+impl Biome {
+    pub const PLACEHOLDER: Self = Self(0x0000);
+    pub const PLAINS: Self = Self(0x0001);
+
+    pub const SHALLOW0: Self = Self(0x1000);
+    pub const SHALLOW1: Self = Self(0x1001);
+    pub const SHALLOW2: Self = Self(0x1002);
+    pub const SHALLOW3: Self = Self(0x1003);
+    pub const DEEP_OCEAN: Self = Self(0x1004);
+
+    pub const OCEANS: &[Self] = &[
+        Self::DEEP_OCEAN,
+        Self::SHALLOW0,
+        Self::SHALLOW1,
+        Self::SHALLOW2,
+        Self::SHALLOW3,
+    ];
+
+    pub const fn as_str(&self) -> Result<&'static str, u32> {
+        gen_as_str!(*self, PLACEHOLDER PLAINS SHALLOW0 SHALLOW1 SHALLOW2 SHALLOW3 DEEP_OCEAN)
+    }
+    pub fn is_ocean(&self) -> bool {
+        Self::OCEANS.contains(self)
+    }
+}
+impl Debug for Biome {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match self.as_str() {
+            Ok(s) => f.write_str(s),
+            Err(id) => write!(f, "Biome({id})"),
+        }
     }
 }
 
-#[derive(Debug, Clone, Copy, Pod, Zeroable)]
+#[derive(Debug, Default, Clone, Copy, Pod, Zeroable)]
 #[repr(C)]
 pub struct ClimateCell {
     pub height: f32,
@@ -56,7 +93,7 @@ pub struct ClimateCell {
     pub albedo: f32,
     pub rainfall: f32,
     pub wind: Vec2,
-    pub flags: ClimateFlags,
+    pub biome: Biome,
 }
 
 impl redb::Value for ClimateCell {
@@ -80,7 +117,7 @@ impl redb::Value for ClimateCell {
             out[20..24].copy_from_slice(&value.rainfall.to_le_bytes());
             out[24..28].copy_from_slice(&value.wind.x.to_le_bytes());
             out[28..32].copy_from_slice(&value.wind.y.to_le_bytes());
-            out[32..36].copy_from_slice(&value.flags.0 .0.to_le_bytes());
+            out[32..36].copy_from_slice(&value.biome.0 .0.to_le_bytes());
         }
         out
     }
@@ -105,7 +142,7 @@ impl redb::Value for ClimateCell {
             ]) {
                 *field = f32::from_le_bytes(bytes);
             }
-            this.flags.0 .0 = u32::from_le_bytes(data[32..36].try_into().unwrap());
+            this.biome.0 .0 = u32::from_le_bytes(data[32..36].try_into().unwrap());
         }
         this
     }
@@ -137,18 +174,37 @@ pub fn init_climate<F: FnMut(u64) -> f32, R: Rng + ?Sized>(
             albedo: rng.sample(albedo_sample).abs(),
             wind: Vec2::new(rng.sample(wind_sample), rng.sample(wind_sample)),
             rainfall: 0.0,
-            flags: ClimateFlags::NONE,
+            biome: Biome::PLACEHOLDER,
         })
         .collect::<Box<_>>();
     let mut sorted = (0..(len as usize)).collect::<Box<_>>();
     sorted.sort_unstable_by(|&a, &b| cells[a].height.total_cmp(&cells[b].height));
     let num_ocean = (len as f32 * ocean_coverage) as usize;
-    for &idx in &sorted[..num_ocean] {
+    let ocean_indices = &sorted[..num_ocean];
+    for &idx in ocean_indices {
         let cell = &mut cells[idx];
         cell.humidity = 0.8 * 13.8; // 80% RH
         cell.heat_capacity = WATER_HEAT_CAPACITY;
         cell.albedo = 0.4;
-        cell.flags |= ClimateFlags::OCEAN;
+        cell.biome = Biome::DEEP_OCEAN;
+    }
+    for i in 0..=3 {
+        let prev = if i == 0 {
+            Biome::PLACEHOLDER
+        } else {
+            Biome(Biome::SHALLOW0.0 + i - 1)
+        };
+        let new = Biome(Biome::SHALLOW0.0 + i);
+        for &idx in ocean_indices {
+            if cells[idx].biome == Biome::DEEP_OCEAN
+                && healpix::Layer::new(depth)
+                    .neighbors_slice(idx as _, false)
+                    .iter()
+                    .any(|i| cells[*i as usize].biome == prev)
+            {
+                cells[idx].biome = new;
+            }
+        }
     }
     cells
 }
@@ -272,7 +328,7 @@ pub fn step_climate<F: FnMut(f32, f32) -> f32, R: Rng + ?Sized>(
             let max_humidity = saturation_pressure(cell.temp + 273.15)
                 / (WATER_GAS_CONSTANT * (cell.temp + 273.15))
                 * 100.0;
-            if cell.flags.contains(ClimateFlags::OCEAN) && cell.humidity < max_humidity {
+            if cell.biome.is_ocean() && cell.humidity < max_humidity {
                 cell.humidity += (max_humidity - cell.humidity) * 0.5;
             }
             let humid_diff = (cell.humidity - max_humidity).max(0.0) * 0.05;

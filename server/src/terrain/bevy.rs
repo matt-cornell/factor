@@ -408,14 +408,14 @@ pub(crate) fn finalize(
         let clim_cell = *climate
             .cells
             .iter()
-            .positions(|c| !c.flags.contains(ClimateFlags::OCEAN)) // TODO: better starting conditions
+            .positions(|c| !c.biome.is_ocean()) // TODO: better starting conditions
             .map(|i| i as u64)
             .collect::<Vec<_>>()
             .choose(&mut init.rng)
             .unwrap();
         let spawn = if let Some(depth_diff) = 12u8.checked_sub(climate.depth) {
             let additional = init.rng.gen_range(0..(1 << (depth_diff * 2)));
-            clim_cell << (depth_diff * 2) | additional
+            (clim_cell << (depth_diff * 2)) | additional
         } else {
             clim_cell >> ((climate.depth - 12) * 2)
         };

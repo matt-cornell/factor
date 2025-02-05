@@ -3,6 +3,7 @@ use bevy::input::mouse::*;
 use bevy::prelude::*;
 use bevy::render::render_asset::RenderAssetUsages;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
+use bevy::utils::HashMap;
 use bevy::window::PrimaryWindow;
 use bevy_egui::{egui, EguiContexts, EguiPlugin};
 use factor_common::healpix;
@@ -13,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use std::cell::UnsafeCell;
 use std::f32::consts::*;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, LazyLock, OnceLock};
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::{Duration, Instant};
 #[cfg(target_arch = "wasm32")]
@@ -117,6 +118,7 @@ struct ClimateMetrics {
 enum ColorKind {
     Plates,
     #[default]
+    Biomes,
     Height,
     Density,
     Features,
@@ -341,6 +343,33 @@ impl Distribution<LinearRgba> for RandomColor {
         LinearRgba::rgb(rng.gen(), rng.gen(), rng.gen())
     }
 }
+
+static BIOME_COLORS: LazyLock<HashMap<Biome, (LinearRgba, f32)>> = LazyLock::new(|| {
+    [
+        (Biome::PLACEHOLDER, (LinearRgba::WHITE, 1.0)),
+        (
+            Biome::SHALLOW0,
+            (LinearRgba::from(Srgba::rgb_u8(0, 51, 102)), 5.0),
+        ),
+        (
+            Biome::SHALLOW1,
+            (LinearRgba::from(Srgba::rgb_u8(0, 51, 102)), 4.0),
+        ),
+        (
+            Biome::SHALLOW2,
+            (LinearRgba::from(Srgba::rgb_u8(0, 51, 102)), 3.0),
+        ),
+        (
+            Biome::SHALLOW3,
+            (LinearRgba::from(Srgba::rgb_u8(0, 51, 102)), 2.5),
+        ),
+        (
+            Biome::DEEP_OCEAN,
+            (LinearRgba::from(Srgba::rgb_u8(0, 51, 102)), 1.0),
+        ),
+    ]
+    .into()
+});
 
 fn make_noise<'a, I: IntoIterator<Item = &'a NoiseSourceBuilder>>(
     iter: I,
@@ -742,6 +771,7 @@ fn update_ui(
                 .selected_text(format!("{old:?}"))
                 .show_ui(ui, |ui| {
                     let r = coloring.bypass_change_detection();
+                    ui.selectable_value(r, ColorKind::Biomes, "Biomes");
                     ui.selectable_value(r, ColorKind::Plates, "Plates");
                     ui.selectable_value(r, ColorKind::Features, "Features");
                     ui.selectable_value(r, ColorKind::Height, "Height");
@@ -1787,48 +1817,25 @@ fn update_texture(
                         + cell.height.mul_add(0.1, 0.2).clamp(0.0, 1.0) * tect.2 .0;
                     ClimateCell {
                         height,
-                        temp: 20.0,
-                        humidity: 0.0,
-                        heat_capacity: 0.0,
-                        albedo: 0.0,
-                        rainfall: 0.0,
-                        wind: Vec2::ZERO,
-                        flags: if height < oceans.depth {
-                            ClimateFlags::OCEAN
+                        biome: if height < oceans.depth {
+                            Biome::DEEP_OCEAN
                         } else {
-                            ClimateFlags::NONE
+                            Biome::PLACEHOLDER
                         },
+                        ..default()
                     }
                 }
                 LayerFilter::Tectonics => ClimateCell {
                     height: cell.height.mul_add(0.1, 0.2).clamp(0.0, 1.0),
-                    temp: 20.0,
-                    humidity: 0.0,
-                    heat_capacity: 0.0,
-                    albedo: 0.0,
-                    rainfall: 0.0,
-                    wind: Vec2::ZERO,
-                    flags: ClimateFlags::NONE,
+                    ..default()
                 },
                 LayerFilter::AllNoise => ClimateCell {
                     height: noise.0 .0[noise.1 .0[n]],
-                    temp: 20.0,
-                    humidity: 0.0,
-                    heat_capacity: 0.0,
-                    albedo: 0.0,
-                    rainfall: 0.0,
-                    wind: Vec2::ZERO,
-                    flags: ClimateFlags::NONE,
+                    ..default()
                 },
                 LayerFilter::NoiseLayer(idx) => ClimateCell {
                     height: noise.2 .0[idx].get_height(x, y),
-                    temp: 20.0,
-                    humidity: 0.0,
-                    heat_capacity: 0.0,
-                    albedo: 0.0,
-                    rainfall: 0.0,
-                    wind: Vec2::ZERO,
-                    flags: ClimateFlags::NONE,
+                    ..default()
                 },
             },
             AppState::Climate { .. } => {
@@ -1870,7 +1877,7 @@ fn update_texture(
                 )
             }
             c @ (ColorKind::Height | ColorKind::Density) => {
-                if climate.flags.contains(ClimateFlags::OCEAN) && oceans.show {
+                if climate.biome.is_ocean() && oceans.show {
                     if climate.temp < 0.0 {
                         LinearRgba::WHITE
                     } else {
@@ -1885,6 +1892,13 @@ fn update_texture(
                 } else {
                     LinearRgba::gray(climate.height)
                 }
+            }
+            ColorKind::Biomes => {
+                let (base, scale) = BIOME_COLORS
+                    .get(&climate.biome)
+                    .copied()
+                    .unwrap_or((LinearRgba::rgb(0.0, 1.0, 1.0), 1.0));
+                base * climate.height * scale
             }
             ColorKind::Temperature => {
                 let rotation = Vec2::from_angle(
