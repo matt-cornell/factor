@@ -348,25 +348,50 @@ static BIOME_COLORS: LazyLock<HashMap<Biome, (LinearRgba, f32)>> = LazyLock::new
     [
         (Biome::PLACEHOLDER, (LinearRgba::WHITE, 1.0)),
         (
-            Biome::SHALLOW0,
+            Biome::WARM_SHALLOW0,
             (LinearRgba::from(Srgba::rgb_u8(0, 51, 102)), 5.0),
         ),
         (
-            Biome::SHALLOW1,
+            Biome::WARM_SHALLOW1,
             (LinearRgba::from(Srgba::rgb_u8(0, 51, 102)), 4.0),
         ),
         (
-            Biome::SHALLOW2,
+            Biome::WARM_SHALLOW2,
             (LinearRgba::from(Srgba::rgb_u8(0, 51, 102)), 3.0),
         ),
         (
-            Biome::SHALLOW3,
+            Biome::WARM_SHALLOW3,
             (LinearRgba::from(Srgba::rgb_u8(0, 51, 102)), 2.5),
         ),
         (
-            Biome::DEEP_OCEAN,
+            Biome::WARM_DEEP_OCEAN,
             (LinearRgba::from(Srgba::rgb_u8(0, 51, 102)), 1.0),
         ),
+        (
+            Biome::COLD_SHALLOW0,
+            (LinearRgba::from(Srgba::rgb_u8(0, 25, 102)), 5.0),
+        ),
+        (
+            Biome::COLD_SHALLOW1,
+            (LinearRgba::from(Srgba::rgb_u8(0, 25, 102)), 4.0),
+        ),
+        (
+            Biome::COLD_SHALLOW2,
+            (LinearRgba::from(Srgba::rgb_u8(0, 25, 102)), 3.0),
+        ),
+        (
+            Biome::COLD_SHALLOW3,
+            (LinearRgba::from(Srgba::rgb_u8(0, 25, 102)), 2.5),
+        ),
+        (
+            Biome::COLD_DEEP_OCEAN,
+            (LinearRgba::from(Srgba::rgb_u8(0, 25, 102)), 1.0),
+        ),
+        (Biome::ICE_SHALLOW0, (LinearRgba::WHITE, 5.0)),
+        (Biome::ICE_SHALLOW1, (LinearRgba::WHITE, 4.0)),
+        (Biome::ICE_SHALLOW2, (LinearRgba::WHITE, 3.0)),
+        (Biome::ICE_SHALLOW3, (LinearRgba::WHITE, 2.5)),
+        (Biome::ICE_DEEP_OCEAN, (LinearRgba::WHITE, 1.0)),
     ]
     .into()
 });
@@ -1818,7 +1843,7 @@ fn update_texture(
                     ClimateCell {
                         height,
                         biome: if height < oceans.depth {
-                            Biome::DEEP_OCEAN
+                            Biome::WARM_DEEP_OCEAN
                         } else {
                             Biome::PLACEHOLDER
                         },
@@ -1897,7 +1922,7 @@ fn update_texture(
                 let (base, scale) = BIOME_COLORS
                     .get(&climate.biome)
                     .copied()
-                    .unwrap_or((LinearRgba::rgb(0.0, 1.0, 1.0), 1.0));
+                    .unwrap_or((LinearRgba::rgb(1.0, 0.0, 1.0), 1.0));
                 base * climate.height * scale
             }
             ColorKind::Temperature => {

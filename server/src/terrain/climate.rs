@@ -53,25 +53,90 @@ impl Biome {
     pub const PLACEHOLDER: Self = Self(0x0000);
     pub const PLAINS: Self = Self(0x0001);
 
-    pub const SHALLOW0: Self = Self(0x1000);
-    pub const SHALLOW1: Self = Self(0x1001);
-    pub const SHALLOW2: Self = Self(0x1002);
-    pub const SHALLOW3: Self = Self(0x1003);
-    pub const DEEP_OCEAN: Self = Self(0x1004);
+    pub const WARM_SHALLOW0: Self = Self(0x1000);
+    pub const WARM_SHALLOW1: Self = Self(0x1001);
+    pub const WARM_SHALLOW2: Self = Self(0x1002);
+    pub const WARM_SHALLOW3: Self = Self(0x1003);
+    pub const WARM_DEEP_OCEAN: Self = Self(0x1004);
+
+    pub const COLD_SHALLOW0: Self = Self(0x1005);
+    pub const COLD_SHALLOW1: Self = Self(0x1006);
+    pub const COLD_SHALLOW2: Self = Self(0x1007);
+    pub const COLD_SHALLOW3: Self = Self(0x1008);
+    pub const COLD_DEEP_OCEAN: Self = Self(0x1009);
+
+    pub const ICE_SHALLOW0: Self = Self(0x100a);
+    pub const ICE_SHALLOW1: Self = Self(0x100b);
+    pub const ICE_SHALLOW2: Self = Self(0x100c);
+    pub const ICE_SHALLOW3: Self = Self(0x100d);
+    pub const ICE_DEEP_OCEAN: Self = Self(0x100e);
 
     pub const OCEANS: &[Self] = &[
-        Self::DEEP_OCEAN,
-        Self::SHALLOW0,
-        Self::SHALLOW1,
-        Self::SHALLOW2,
-        Self::SHALLOW3,
+        Self::WARM_DEEP_OCEAN,
+        Self::WARM_SHALLOW0,
+        Self::WARM_SHALLOW1,
+        Self::WARM_SHALLOW2,
+        Self::WARM_SHALLOW3,
+        Self::COLD_DEEP_OCEAN,
+        Self::COLD_SHALLOW0,
+        Self::COLD_SHALLOW1,
+        Self::COLD_SHALLOW2,
+        Self::COLD_SHALLOW3,
+        Self::ICE_DEEP_OCEAN,
+        Self::ICE_SHALLOW0,
+        Self::ICE_SHALLOW1,
+        Self::ICE_SHALLOW2,
+        Self::ICE_SHALLOW3,
     ];
 
     pub const fn as_str(&self) -> Result<&'static str, u32> {
-        gen_as_str!(*self, PLACEHOLDER PLAINS SHALLOW0 SHALLOW1 SHALLOW2 SHALLOW3 DEEP_OCEAN)
+        gen_as_str!(*self,
+            PLACEHOLDER PLAINS
+            WARM_DEEP_OCEAN WARM_SHALLOW0 WARM_SHALLOW1 WARM_SHALLOW2 WARM_SHALLOW3
+            COLD_DEEP_OCEAN COLD_SHALLOW0 COLD_SHALLOW1 COLD_SHALLOW2 COLD_SHALLOW3
+            ICE_DEEP_OCEAN ICE_SHALLOW0 ICE_SHALLOW1 ICE_SHALLOW2 ICE_SHALLOW3
+        )
     }
     pub fn is_ocean(&self) -> bool {
         Self::OCEANS.contains(self)
+    }
+    pub fn with_new_climate(self, temp: f32, _humid: f32) -> Self {
+        match self {
+            Self::WARM_DEEP_OCEAN | Self::COLD_DEEP_OCEAN | Self::ICE_DEEP_OCEAN => match temp {
+                ..=0.0 => Self::ICE_DEEP_OCEAN,
+                0.0..=15.0 => Self::COLD_DEEP_OCEAN,
+                15.0.. => Self::WARM_DEEP_OCEAN,
+                _ => unreachable!(),
+            },
+            Self::WARM_SHALLOW3 | Self::COLD_SHALLOW3 | Self::ICE_SHALLOW3 => match temp {
+                ..=0.0 => Self::ICE_SHALLOW3,
+                0.0..=16.0 => Self::COLD_SHALLOW3,
+                16.0.. => Self::WARM_SHALLOW3,
+                _ => unreachable!(),
+            },
+            Self::WARM_SHALLOW2 | Self::COLD_SHALLOW2 | Self::ICE_SHALLOW2 => match temp {
+                ..=0.0 => Self::ICE_SHALLOW2,
+                0.0..=17.0 => Self::COLD_SHALLOW2,
+                17.0.. => Self::WARM_SHALLOW2,
+                _ => unreachable!(),
+            },
+            Self::WARM_SHALLOW1 | Self::COLD_SHALLOW1 | Self::ICE_SHALLOW1 => match temp {
+                ..=0.0 => Self::ICE_SHALLOW1,
+                0.0..=18.0 => Self::COLD_SHALLOW1,
+                18.0.. => Self::WARM_SHALLOW1,
+                _ => unreachable!(),
+            },
+            Self::WARM_SHALLOW0 | Self::COLD_SHALLOW0 | Self::ICE_SHALLOW0 => match temp {
+                ..=0.0 => Self::ICE_SHALLOW0,
+                0.0..=18.0 => Self::COLD_SHALLOW0,
+                18.0.. => Self::WARM_SHALLOW0,
+                _ => unreachable!(),
+            },
+            _ => self,
+        }
+    }
+    pub fn update_new_climate(&mut self, temp: f32, humid: f32) {
+        *self = self.with_new_climate(temp, humid);
     }
 }
 impl Debug for Biome {
@@ -186,17 +251,17 @@ pub fn init_climate<F: FnMut(u64) -> f32, R: Rng + ?Sized>(
         cell.humidity = 0.8 * 13.8; // 80% RH
         cell.heat_capacity = WATER_HEAT_CAPACITY;
         cell.albedo = 0.4;
-        cell.biome = Biome::DEEP_OCEAN;
+        cell.biome = Biome::WARM_DEEP_OCEAN;
     }
     for i in 0..=3 {
         let prev = if i == 0 {
             Biome::PLACEHOLDER
         } else {
-            Biome(Biome::SHALLOW0.0 + i - 1)
+            Biome(Biome::WARM_SHALLOW0.0 + i - 1)
         };
-        let new = Biome(Biome::SHALLOW0.0 + i);
+        let new = Biome(Biome::WARM_SHALLOW0.0 + i);
         for &idx in ocean_indices {
-            if cells[idx].biome == Biome::DEEP_OCEAN
+            if cells[idx].biome == Biome::WARM_DEEP_OCEAN
                 && healpix::Layer::new(depth)
                     .neighbors_slice(idx as _, false)
                     .iter()
@@ -276,15 +341,11 @@ pub fn step_climate<F: FnMut(f32, f32) -> f32, R: Rng + ?Sized>(
                         cell.humidity *= 1.0 - scale * k;
                         cell.humidity += humid * scale * k;
                         cell.humidity *= rng.sample(humid_sample).max(-cell.humidity).exp();
+                        cell.biome.with_new_climate(cell.temp, cell.humidity);
                     }
                 }
             }
             old.copy_from_slice(cells);
-
-            // #[cfg(debug_assertions)]
-            if let Some(n) = cells.iter().position(|c| !c.humidity.is_finite()) {
-                panic!("NaN humidity in cell {n}:\n{:#?}", cells[n]);
-            }
         }
     }
 
@@ -317,35 +378,52 @@ pub fn step_climate<F: FnMut(f32, f32) -> f32, R: Rng + ?Sized>(
             cum_humid /= neighbors.len() as f32;
             cum_rain /= neighbors.len() as f32;
             assert_ne!(neighbors.len(), 0);
-            cell.temp *= 1.0 - scale;
-            cell.temp += cum_temp * scale;
+            cell.temp *= 1.0 - scale * 0.5;
+            cell.temp += cum_temp * scale * 0.5;
             cell.humidity *= 1.0 - scale * 0.1;
             cell.humidity += cum_humid * scale * 0.1;
             cell.wind *= 1.0 - scale;
             cell.wind += cum_wind * scale;
             cell.rainfall *= 1.0 - scale * 0.5;
             cell.rainfall += cum_rain * scale * 0.5;
-            let max_humidity = saturation_pressure(cell.temp + 273.15)
-                / (WATER_GAS_CONSTANT * (cell.temp + 273.15))
-                * 100.0;
-            if cell.biome.is_ocean() && cell.humidity < max_humidity {
-                cell.humidity += (max_humidity - cell.humidity) * 0.5;
-            }
-            let humid_diff = (cell.humidity - max_humidity).max(0.0) * 0.05;
-            cell.humidity -= humid_diff;
-            cell.rainfall *= 0.09;
-            cell.rainfall += humid_diff * 0.8;
-            cell.rainfall += cell.humidity
-                * 0.1
-                * f32::from(rng.gen_bool((cell.humidity as f64 * 0.1).clamp(0.0, 1.0)));
-            cell.humidity = cell.humidity.clamp(0.0, 200.0);
-            cell.temp = cell.temp.clamp(-50.0, 50.0);
         }
         old.copy_from_slice(cells);
     }
-
-    // #[cfg(debug_assertions)]
-    if let Some(n) = cells.iter().position(|c| !c.humidity.is_finite()) {
-        panic!("NaN humidity in cell {n}:\n{:#?}", cells[n]);
+    // more smoothing
+    for cell in &mut *cells {
+        let max_humidity = saturation_pressure(cell.temp + 273.15)
+            / (WATER_GAS_CONSTANT * (cell.temp + 273.15))
+            * 100.0;
+        if cell.biome.is_ocean() && cell.humidity < max_humidity {
+            cell.humidity += (max_humidity - cell.humidity) * 0.05;
+        }
+        let humid_diff = (cell.humidity - max_humidity).max(0.0).powi(2) * 0.5;
+        cell.humidity -= humid_diff;
+        cell.rainfall *= 0.09;
+        cell.rainfall += humid_diff;
+        cell.rainfall += cell.humidity
+            * 2.5
+            * (rng.gen::<f32>().powi(2) + (cell.humidity * 0.1).clamp(0.0, 1.0));
+    }
+    for _ in 0..(num_iters / 2) {
+        for (i, cell) in cells.iter_mut().enumerate() {
+            let neighbors = healpix::neighbors(depth, i as _, true);
+            let mut cum_humid = 0.0;
+            let mut cum_rain = 0.0;
+            for &n in &neighbors {
+                let cell = &old[n as usize];
+                cum_humid += cell.humidity;
+                cum_rain += cell.rainfall;
+            }
+            cum_humid /= neighbors.len() as f32;
+            cum_rain /= neighbors.len() as f32;
+            assert_ne!(neighbors.len(), 0);
+            cell.humidity = cell.humidity.clamp(0.0, 100.0);
+            cell.humidity *= 1.0 - scale * 0.1;
+            cell.humidity += cum_humid * scale * 0.1;
+            cell.rainfall *= 1.0 - scale * 0.5;
+            cell.rainfall += cum_rain * scale * 0.5;
+        }
+        old.copy_from_slice(cells);
     }
 }
