@@ -1732,7 +1732,7 @@ fn update_climate(
             let (ysin, ycos) = y.sin_cos();
             let point = Vec3::new(xcos * ycos, xsin * ycos, ysin);
             let (_, rot, trans) = planet.to_scale_rotation_translation();
-            params.intensity * rot.mul_vec3(point).dot(-trans.normalize_or_zero()).max(0.0)
+            params.intensity * rot.mul_vec3(point).dot(trans.normalize_or_zero()).max(0.0)
         },
         params.time_scale * time.0,
         &mut thread_rng(),
