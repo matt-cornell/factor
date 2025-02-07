@@ -263,7 +263,7 @@ pub fn init_climate<F: FnMut(u64) -> f32, R: Rng + ?Sized>(
         for &idx in ocean_indices {
             if cells[idx].biome == Biome::WARM_DEEP_OCEAN
                 && healpix::Layer::new(depth)
-                    .neighbors_slice(idx as _, false)
+                    .neighbors_slice(idx as _, true)
                     .iter()
                     .any(|i| cells[*i as usize].biome == prev)
             {
@@ -291,13 +291,17 @@ pub fn step_climate<F: FnMut(f32, f32) -> f32, R: Rng + ?Sized>(
     let mut old = cells.to_vec().into_boxed_slice();
 
     // radiation
+    let mut avg_rainfall = 0.0;
     for (idx, cell) in cells.iter_mut().enumerate() {
         let (lon, lat) = layer.center(idx as _);
         let sun = solar_intensity(lon as _, lat as _);
         let energy =
             sun * cell.albedo - 0.9 * (cell.temp + 273.15).powi(4) * STEFAN_BOLTZMANN_CONSTANT;
         cell.temp += (energy / cell.heat_capacity * time_scale).max(-200.0);
+        avg_rainfall += cell.rainfall;
+        cell.rainfall *= 0.2; // clean this up too
     }
+    avg_rainfall /= cells.len() as f32;
 
     let scale = 1.0 - (1.0 - 0.995f32.powi(1 << depth.saturating_sub(2))) * time_scale;
 
@@ -389,7 +393,7 @@ pub fn step_climate<F: FnMut(f32, f32) -> f32, R: Rng + ?Sized>(
         }
         old.copy_from_slice(cells);
     }
-    // more smoothing
+
     for cell in &mut *cells {
         let max_humidity = saturation_pressure(cell.temp + 273.15)
             / (WATER_GAS_CONSTANT * (cell.temp + 273.15))
@@ -397,14 +401,16 @@ pub fn step_climate<F: FnMut(f32, f32) -> f32, R: Rng + ?Sized>(
         if cell.biome.is_ocean() && cell.humidity < max_humidity {
             cell.humidity += (max_humidity - cell.humidity) * 0.05;
         }
-        let humid_diff = (cell.humidity - max_humidity).max(0.0).powi(2) * 0.5;
-        cell.humidity -= humid_diff;
+        let humid_diff = (cell.humidity - max_humidity).max(0.0).powi(2);
+        cell.humidity -= humid_diff * 0.1;
         cell.rainfall *= 0.09;
-        cell.rainfall += humid_diff;
+        cell.rainfall += humid_diff * 1.0;
         cell.rainfall += cell.humidity
-            * 2.5
+            * 1.5
             * (rng.gen::<f32>().powi(2) + (cell.humidity * 0.1).clamp(0.0, 1.0));
     }
+
+    // rain clustering
     for _ in 0..(num_iters / 2) {
         for (i, cell) in cells.iter_mut().enumerate() {
             let neighbors = healpix::neighbors(depth, i as _, true);
@@ -417,7 +423,6 @@ pub fn step_climate<F: FnMut(f32, f32) -> f32, R: Rng + ?Sized>(
             }
             cum_humid /= neighbors.len() as f32;
             cum_rain /= neighbors.len() as f32;
-            assert_ne!(neighbors.len(), 0);
             cell.humidity = cell.humidity.clamp(0.0, 100.0);
             cell.humidity *= 1.0 - scale * 0.1;
             cell.humidity += cum_humid * scale * 0.1;
@@ -425,5 +430,49 @@ pub fn step_climate<F: FnMut(f32, f32) -> f32, R: Rng + ?Sized>(
             cell.rainfall += cum_rain * scale * 0.5;
         }
         old.copy_from_slice(cells);
+    }
+    let mut total_rain = 0.0;
+    let mut div = 0.0;
+    for (i, cell) in cells.iter_mut().enumerate() {
+        let prob = cell.rainfall as f64 * 0.05
+            + healpix::Layer::new(depth)
+                .neighbors_slice(i as _, true)
+                .into_iter()
+                .map(|n| old[n as usize].rainfall as f64 * 0.1)
+                .sum::<f64>();
+        if rng.gen_bool(prob.clamp(0.1, 0.85)) {
+            cell.rainfall =
+                1.1f32.powf(cell.rainfall).min(20.0) / avg_rainfall.clamp(0.2, 1.5) * 50.0;
+            total_rain += cell.rainfall;
+            div += 1.0;
+        } else {
+            cell.rainfall = 0.0;
+            div += 5.0;
+        }
+    }
+    for _ in 0..(num_iters * 2) {
+        for (i, cell) in cells.iter_mut().enumerate() {
+            let neighbors = healpix::neighbors(depth, i as _, true);
+            let mut cum_humid = 0.0;
+            let mut cum_rain = 0.0;
+            for &n in &neighbors {
+                let cell = &old[n as usize];
+                cum_humid += cell.humidity;
+                cum_rain += cell.rainfall;
+            }
+            cum_humid /= neighbors.len() as f32;
+            cum_rain /= neighbors.len() as f32;
+            cell.humidity = cell.humidity.clamp(0.0, 100.0);
+            cell.humidity *= 1.0 - scale * 0.1;
+            cell.humidity += cum_humid * scale * 0.1;
+            cell.rainfall *= 1.0 - scale * 0.5;
+            cell.rainfall += cum_rain * scale * 0.5;
+        }
+        old.copy_from_slice(cells);
+    }
+
+    let avg_rain = total_rain / div;
+    for cell in cells.iter_mut() {
+        cell.rainfall = (cell.rainfall - avg_rain).max(0.0);
     }
 }
