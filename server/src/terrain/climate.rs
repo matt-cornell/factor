@@ -2,7 +2,8 @@ use bevy::math::*;
 use bytemuck::*;
 use factor_common::healpix;
 use rand::prelude::*;
-use rand_distr::Normal;
+use rand_distr::{Normal, Standard};
+use rayon::prelude::*;
 use std::fmt::{self, Debug, Formatter};
 
 const STEFAN_BOLTZMANN_CONSTANT: f32 = 5.6703744e-8;
@@ -355,7 +356,7 @@ pub fn step_climate<F: FnMut(f32, f32) -> f32, R: Rng + ?Sized>(
 
     // conduction
     for _ in 0..(num_iters * 3 / 2) {
-        for (i, cell) in cells.iter_mut().enumerate() {
+        cells.par_iter_mut().enumerate().for_each(|(i, cell)| {
             let neighbors = healpix::neighbors(depth, i as _, true);
             let mut cum_temp = 0.0;
             let mut cum_humid = 0.0;
@@ -390,11 +391,16 @@ pub fn step_climate<F: FnMut(f32, f32) -> f32, R: Rng + ?Sized>(
             cell.wind += cum_wind * scale;
             cell.rainfall *= 1.0 - scale * 0.5;
             cell.rainfall += cum_rain * scale * 0.5;
-        }
+        });
         old.copy_from_slice(cells);
     }
 
-    for cell in &mut *cells {
+    let mut rand_vals = rng
+        .sample_iter(Standard)
+        .take(cells.len())
+        .collect::<Box<[f32]>>();
+
+    cells.par_iter_mut().enumerate().for_each(|(i, cell)| {
         let max_humidity = saturation_pressure(cell.temp + 273.15)
             / (WATER_GAS_CONSTANT * (cell.temp + 273.15))
             * 100.0;
@@ -405,14 +411,13 @@ pub fn step_climate<F: FnMut(f32, f32) -> f32, R: Rng + ?Sized>(
         cell.humidity -= humid_diff * 0.1;
         cell.rainfall *= 0.09;
         cell.rainfall += humid_diff * 1.0;
-        cell.rainfall += cell.humidity
-            * 1.5
-            * (rng.gen::<f32>().powi(2) + (cell.humidity * 0.1).clamp(0.0, 1.0));
-    }
+        cell.rainfall +=
+            cell.humidity * 1.5 * (rand_vals[i].powi(2) + (cell.humidity * 0.1).clamp(0.0, 1.0));
+    });
 
     // rain clustering
     for _ in 0..(num_iters / 2) {
-        for (i, cell) in cells.iter_mut().enumerate() {
+        cells.par_iter_mut().enumerate().for_each(|(i, cell)| {
             let neighbors = healpix::neighbors(depth, i as _, true);
             let mut cum_humid = 0.0;
             let mut cum_rain = 0.0;
@@ -428,30 +433,35 @@ pub fn step_climate<F: FnMut(f32, f32) -> f32, R: Rng + ?Sized>(
             cell.humidity += cum_humid * scale * 0.1;
             cell.rainfall *= 1.0 - scale * 0.5;
             cell.rainfall += cum_rain * scale * 0.5;
-        }
+        });
         old.copy_from_slice(cells);
     }
-    let mut total_rain = 0.0;
-    let mut div = 0.0;
-    for (i, cell) in cells.iter_mut().enumerate() {
-        let prob = cell.rainfall as f64 * 0.05
-            + healpix::Layer::new(depth)
-                .neighbors_slice(i as _, true)
-                .into_iter()
-                .map(|n| old[n as usize].rainfall as f64 * 0.1)
-                .sum::<f64>();
-        if rng.gen_bool(prob.clamp(0.1, 0.85)) {
-            cell.rainfall =
-                1.1f32.powf(cell.rainfall).min(20.0) / avg_rainfall.clamp(0.2, 1.5) * 50.0;
-            total_rain += cell.rainfall;
-            div += 1.0;
-        } else {
-            cell.rainfall = 0.0;
-            div += 5.0;
-        }
-    }
+    rand_vals.fill_with(|| rng.gen());
+    let Vec2 {
+        x: total_rain,
+        y: div,
+    } = cells
+        .par_iter_mut()
+        .enumerate()
+        .map(|(i, cell)| {
+            let prob = cell.rainfall * 0.05
+                + healpix::Layer::new(depth)
+                    .neighbors_slice(i as _, true)
+                    .into_iter()
+                    .map(|n| old[n as usize].rainfall * 0.1)
+                    .sum::<f32>();
+            if rand_vals[i] < prob.clamp(0.1, 0.85) {
+                cell.rainfall =
+                    1.1f32.powf(cell.rainfall).min(20.0) / avg_rainfall.clamp(0.2, 1.5) * 50.0;
+                Vec2::new(cell.rainfall, 1.0)
+            } else {
+                cell.rainfall = 0.0;
+                Vec2::new(0.0, 5.0)
+            }
+        })
+        .sum();
     for _ in 0..(num_iters * 2) {
-        for (i, cell) in cells.iter_mut().enumerate() {
+        cells.par_iter_mut().enumerate().for_each(|(i, cell)| {
             let neighbors = healpix::neighbors(depth, i as _, true);
             let mut cum_humid = 0.0;
             let mut cum_rain = 0.0;
@@ -467,7 +477,7 @@ pub fn step_climate<F: FnMut(f32, f32) -> f32, R: Rng + ?Sized>(
             cell.humidity += cum_humid * scale * 0.1;
             cell.rainfall *= 1.0 - scale * 0.5;
             cell.rainfall += cum_rain * scale * 0.5;
-        }
+        });
         old.copy_from_slice(cells);
     }
 
