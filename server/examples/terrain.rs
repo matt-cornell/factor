@@ -26,6 +26,11 @@ enum AppState {
         iter: u16,
         running: bool,
     },
+    InitClimate {
+        iter: u16,
+        running: bool,
+        tect_steps: u16,
+    },
     Climate {
         iter: u16,
         running: bool,
@@ -46,12 +51,20 @@ impl Default for AppState {
 struct SimulatingTectonics;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, SubStates)]
+#[source(AppState = AppState::InitClimate { running: true, .. })]
+struct InitializingClimate;
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, SubStates)]
 #[source(AppState = AppState::Climate { running: true, .. })]
 struct SimulatingClimate;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, SubStates)]
 #[source(AppState = AppState::Tectonics { .. })]
 struct TectonicsPhase;
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, SubStates)]
+#[source(AppState = AppState::InitClimate { .. })]
+struct InitClimatePhase;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, SubStates)]
 #[source(AppState = AppState::Climate { .. })]
@@ -416,8 +429,10 @@ fn main() {
         .init_state::<AppState>()
         .add_sub_state::<SimulatingTectonics>()
         .add_sub_state::<SimulatingClimate>()
+        .add_sub_state::<InitializingClimate>()
         .add_sub_state::<TectonicsPhase>()
         .add_sub_state::<ClimatePhase>()
+        .add_sub_state::<InitClimatePhase>()
         .add_event::<ReloadTerrain>()
         .add_event::<RecolorPlates>()
         .add_event::<ResetClimate>()
@@ -497,11 +512,12 @@ fn main() {
             FixedUpdate,
             (
                 update_tectonics.run_if(in_state(SimulatingTectonics)),
+                update_init_climate.run_if(in_state(InitializingClimate)),
                 update_climate.run_if(in_state(SimulatingClimate)),
             ),
         )
         .add_systems(OnEnter(TectonicsPhase), setup_tectonics)
-        .add_systems(OnEnter(ClimatePhase), setup_climate)
+        .add_systems(OnEnter(InitClimatePhase), setup_climate)
         .run();
 }
 
@@ -648,10 +664,30 @@ fn handle_keypresses(
                 });
             }
             if keys.just_pressed(KeyCode::Enter) {
-                next_state.set(AppState::Climate {
+                next_state.set(AppState::InitClimate {
                     iter: 0,
                     running: false,
                     tect_steps: iter,
+                });
+            }
+        }
+        AppState::InitClimate {
+            iter,
+            running,
+            tect_steps,
+        } => {
+            if keys.just_pressed(KeyCode::Space) {
+                next_state.set(AppState::InitClimate {
+                    iter,
+                    tect_steps,
+                    running: !running,
+                });
+            }
+            if keys.just_pressed(KeyCode::Enter) {
+                next_state.set(AppState::Climate {
+                    iter: 0,
+                    running: false,
+                    tect_steps,
                 });
             }
         }
@@ -802,7 +838,10 @@ fn update_ui(
                     ui.selectable_value(r, ColorKind::Height, "Height");
                     ui.selectable_value(r, ColorKind::Density, "Density");
                     ui.selectable_value(r, ColorKind::Intensity, "Intensity");
-                    if matches!(**state, AppState::Climate { .. }) {
+                    if matches!(
+                        **state,
+                        AppState::InitClimate { .. } | AppState::Climate { .. }
+                    ) {
                         ui.selectable_value(r, ColorKind::Temperature, "Temperature");
                         ui.selectable_value(r, ColorKind::Humidity, "Humidity");
                         ui.selectable_value(r, ColorKind::Rainfall, "Rainfall");
@@ -941,7 +980,7 @@ fn update_ui(
                         let _ = &mut **oceans;
                     }
                 }
-                AppState::Climate { .. } => {
+                AppState::InitClimate { .. } | AppState::Climate { .. } => {
                     ui.label("Can't set ocean depth in climate phase");
                 }
             }
@@ -1232,7 +1271,10 @@ fn update_ui(
         }
     };
     let render_climate = 'render: {
-        if !matches!(**state, AppState::Climate { .. }) {
+        if !matches!(
+            **state,
+            AppState::InitClimate { .. } | AppState::Climate { .. }
+        ) {
             break 'render None;
         }
         let docked = *dock_climate;
@@ -1526,7 +1568,10 @@ fn setup_tectonics(
     depth: Res<TectonicDepth>,
     mut color: ResMut<ColorKind>,
 ) {
-    if *color == ColorKind::Temperature {
+    if matches!(
+        *color,
+        ColorKind::Temperature | ColorKind::Humidity | ColorKind::Rainfall
+    ) {
         *color = ColorKind::Height;
     }
     let image_map = (0..(WIDTH * HEIGHT))
@@ -1659,11 +1704,14 @@ fn setup_climate(
     state: Res<State<AppState>>,
     mut next_state: ResMut<NextState<AppState>>,
 ) {
-    next_state.set(AppState::Climate {
+    println!("setup climate");
+    next_state.set(AppState::InitClimate {
         iter: 0,
         running: false,
         tect_steps: match **state {
-            AppState::Climate { tect_steps, .. } => tect_steps,
+            AppState::InitClimate { tect_steps, .. } | AppState::Climate { tect_steps, .. } => {
+                tect_steps
+            }
             AppState::Tectonics { iter, .. } => iter,
         },
     });
@@ -1704,6 +1752,69 @@ fn setup_climate(
         avg_wind: 0.0,
         max_rain: 0.0,
         avg_rain: 0.0,
+    });
+}
+
+fn update_init_climate(
+    mut climate: ResMut<ClimateData>,
+    params: Res<ClimateParams>,
+    time: Res<TimeScale>,
+    planet: Query<&GlobalTransform, With<Planet>>,
+    state: Res<State<AppState>>,
+    mut next_state: ResMut<NextState<AppState>>,
+    mut metrics: ResMut<ClimateMetrics>,
+) {
+    let AppState::InitClimate {
+        running,
+        iter,
+        tect_steps,
+    } = **state
+    else {
+        return;
+    };
+    let planet = planet.single();
+    init_step_climate(
+        &mut climate.0,
+        |x: f32, y: f32| {
+            let (xsin, xcos) = x.sin_cos();
+            let (ysin, ycos) = y.sin_cos();
+            let point = Vec3::new(xcos * ycos, xsin * ycos, ysin);
+            let (_, rot, trans) = planet.to_scale_rotation_translation();
+            params.intensity * rot.mul_vec3(point).dot(trans.normalize_or_zero()).max(0.0)
+        },
+        params.time_scale * time.0,
+        &mut thread_rng(),
+    );
+    let mut cells = climate.0.to_vec();
+    cells.sort_by(|a, b| a.temp.total_cmp(&b.temp));
+    let l = cells.len();
+    metrics.min_temp = cells[0].temp;
+    metrics.max_temp = cells[l - 1].temp;
+    metrics.med_temp = cells[l / 2].temp;
+    Vec3 {
+        x: metrics.avg_temp,
+        y: metrics.avg_wind,
+        z: metrics.avg_rain,
+    } = cells
+        .iter()
+        .map(|c| Vec3::new(c.temp, c.wind.length(), c.rainfall))
+        .sum::<Vec3>()
+        / l as f32;
+    (metrics.min_wind, metrics.max_wind) = cells
+        .iter()
+        .map(|c| c.wind.length())
+        .minmax_by(f32::total_cmp)
+        .into_option()
+        .unwrap();
+    metrics.max_rain = cells
+        .iter()
+        .map(|c| c.rainfall)
+        .max_by(f32::total_cmp)
+        .unwrap();
+    next_state.set(AppState::InitClimate {
+        running,
+        iter: iter + 1,
+        tect_steps,
     });
 }
 
@@ -1863,8 +1974,12 @@ fn update_texture(
                     ..default()
                 },
             },
-            AppState::Climate { .. } => {
-                climate.0.as_ref().unwrap().0[climate.1.as_ref().unwrap().0[n]]
+            AppState::InitClimate { .. } | AppState::Climate { .. } => {
+                if let (Some(cells), Some(map)) = &climate {
+                    cells.0[map.0[n]]
+                } else {
+                    default()
+                }
             }
         };
         *d = match *colors {
@@ -1927,7 +2042,15 @@ fn update_texture(
             }
             ColorKind::Temperature => {
                 let rotation = Vec2::from_angle(
-                    climate.temp.mul_add(0.0125, 0.5).clamp(0.0, 1.0) * FRAC_PI_3 * 4.0,
+                    if matches!(**state, AppState::InitClimate { .. }) {
+                        climate.avg_temp
+                    } else {
+                        climate.temp
+                    }
+                    .mul_add(0.0125, 0.5)
+                    .clamp(0.0, 1.0)
+                        * FRAC_PI_3
+                        * 4.0,
                 );
                 LinearRgba::rgb(
                     rotation
@@ -1941,7 +2064,15 @@ fn update_texture(
             }
             ColorKind::Humidity => {
                 let rotation = Vec2::from_angle(
-                    climate.humidity.mul_add(0.1, 0.0).clamp(0.0, 1.0) * FRAC_PI_3 * 4.0,
+                    if matches!(**state, AppState::InitClimate { .. }) {
+                        climate.avg_humidity
+                    } else {
+                        climate.humidity
+                    }
+                    .mul_add(0.1, 0.0)
+                    .clamp(0.0, 1.0)
+                        * FRAC_PI_3
+                        * 4.0,
                 );
                 LinearRgba::rgb(
                     rotation
@@ -1955,7 +2086,15 @@ fn update_texture(
             }
             ColorKind::Rainfall => {
                 let rotation = Vec2::from_angle(
-                    climate.rainfall.mul_add(0.1, 0.0).clamp(0.0, 1.0) * FRAC_PI_3 * 4.0,
+                    if matches!(**state, AppState::InitClimate { .. }) {
+                        climate.avg_rainfall
+                    } else {
+                        climate.rainfall
+                    }
+                    .mul_add(0.1, 0.0)
+                    .clamp(0.0, 1.0)
+                        * FRAC_PI_3
+                        * 4.0,
                 );
                 LinearRgba::rgb(
                     rotation

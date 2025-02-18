@@ -14,6 +14,7 @@ use factor_common::util::UpdateStates;
 use itertools::Itertools;
 use rand::prelude::*;
 use rand_xoshiro::Xoshiro256PlusPlus as RandSource;
+use std::f32::consts::TAU;
 use std::io;
 
 #[derive(Debug, Clone)]
@@ -294,6 +295,14 @@ pub(crate) fn run_tect(
     }
 }
 
+pub(crate) enum ClimateMessage {
+    Step(u16),
+    Done { data: ClimateData, rng: RandSource },
+}
+
+#[derive(Resource)]
+pub(crate) struct ClimateThreadReceiver(Receiver<ClimateMessage>);
+
 pub(crate) fn setup_climate(
     mut commands: Commands,
     mut init: ResMut<ClimateInit>,
@@ -309,7 +318,7 @@ pub(crate) fn setup_climate(
         scale: Identity,
         hasher: |cell: usize| tect.state.cells()[cell].height,
     };
-    let cells = init_climate(
+    let mut cells = init_climate(
         climate_depth,
         |cell| {
             let (lon, lat) = healpix::nested::center(climate_depth, cell);
@@ -321,78 +330,71 @@ pub(crate) fn setup_climate(
     );
     commands.remove_resource::<ClimateNoise>();
     commands.remove_resource::<TectonicData>();
-    commands.insert_resource(ClimateData::new(cells));
     next_state.set(ClimatePhase::ClimateStep(0));
+
+    let steps = config.climate.init_steps;
+    let intensity = config.climate.intensity;
+    let year_len = config.orbit.year_length;
+    let day_len = config.orbit.day_length;
+    let obliquity = config.orbit.obliquity;
+
+    let (climate_tx, climate_rx) =
+        crossbeam_channel::bounded(std::cmp::max(config.climate.init_steps as usize / 4, 16));
+
+    let mut rng = init.rng.clone();
+
+    std::thread::spawn(move || {
+        let time = year_len.max(day_len) * 2.0;
+        let step_len = time / steps as f32;
+        let rot_step = TAU * step_len / day_len;
+        let rev_step = TAU * step_len / year_len;
+        let mut rot = 0.0;
+        let mut rev = 0.0;
+        for step in 0..steps {
+            init_step_climate(
+                &mut cells,
+                OrbitState {
+                    intensity,
+                    rotation: rot,
+                    revolution: rev,
+                    obliquity,
+                },
+                step_len,
+                &mut rng,
+            );
+            rot = (rot + rot_step) % TAU;
+            rev += (rev + rev_step) % TAU;
+            let _ = climate_tx.try_send(ClimateMessage::Step(step));
+        }
+        climate_tx
+            .send(ClimateMessage::Done {
+                data: ClimateData::new(cells),
+                rng,
+            })
+            .unwrap();
+    });
+
+    commands.insert_resource(ClimateThreadReceiver(climate_rx));
 }
 
 pub(crate) fn run_climate(
-    config: Res<WorldConfig>,
+    mut commands: Commands,
     mut init: ResMut<ClimateInit>,
-    mut climate: ResMut<ClimateData>,
-    mut center: Query<&mut Transform, With<PlanetCenter>>,
-    mut planet: Query<
-        (&mut Transform, &mut PlanetSurface, &GlobalTransform),
-        Without<PlanetCenter>,
-    >,
-    state: Res<State<ClimatePhase>>,
     mut next_state: ResMut<NextState<ClimatePhase>>,
-    mut channel: Local<Option<Receiver<(ClimateData, ClimateInit)>>>,
+    channel: Res<ClimateThreadReceiver>,
 ) {
-    let ClimatePhase::ClimateStep(step) = **state else {
-        unreachable!()
-    };
-    if step == 0 && channel.is_none() {
-        debug!("Beginning climate simulation");
-    }
-    if let Some(rx) = &mut *channel {
-        if let Ok(data) = rx.try_recv() {
-            *channel = None;
-            *climate = data.0;
-            *init = data.1;
-            next_state.set(ClimatePhase::ClimateStep(step + 1));
-        } else {
-            return;
+    match channel.0.try_recv() {
+        Ok(ClimateMessage::Step(step)) => next_state.set(ClimatePhase::ClimateStep(step)),
+        Ok(ClimateMessage::Done { data, rng }) => {
+            init.rng = rng;
+            commands.insert_resource(data);
+            commands.remove_resource::<ClimateThreadReceiver>();
+            next_state.set(ClimatePhase::Finalize);
         }
-    }
-    trace!(step, "Climate step");
-    if step >= config.climate.init_steps {
-        next_state.set(ClimatePhase::Finalize);
-    } else {
-        let dt = 20.0 * config.orbit.day_length / config.climate.init_steps as f32;
-        update_planet_transforms(
-            In(dt),
-            center.transmute_lens_filtered().query(),
-            planet.transmute_lens_filtered().query(),
-            Res::clone(&config),
-        );
-        let planet_transform = *planet.single().2;
-        let mut climate = climate.clone();
-        let time_scale = config.climate.time_step * dt;
-        let intensity = config.climate.intensity;
-        let mut init = init.clone();
-        let (tx, rx) = crossbeam_channel::bounded(1);
-        *channel = Some(rx);
-        AsyncComputeTaskPool::get()
-            .spawn(async move {
-                step_climate(
-                    &mut climate.cells,
-                    |x, y| {
-                        let (xsin, xcos) = x.sin_cos();
-                        let (ysin, ycos) = y.sin_cos();
-                        let point = Vec3::new(xcos * ycos, xsin * ycos, ysin);
-                        let (_, rot, trans) = planet_transform.to_scale_rotation_translation();
-                        intensity * rot.mul_vec3(point).dot(-trans.normalize_or_zero()).max(0.0)
-                    },
-                    time_scale,
-                    &mut init.rng,
-                );
-                std::future::ready(()).await;
-                climate.update();
-                if let Err(_err) = tx.send((climate, init)) {
-                    error!("Somehow this channel closed?");
-                }
-            })
-            .detach();
+        Err(crossbeam_channel::TryRecvError::Disconnected) => unreachable!(
+            "we shouldn't be running this again because we should be in a different state"
+        ),
+        Err(crossbeam_channel::TryRecvError::Empty) => {}
     }
 }
 
