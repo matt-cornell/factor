@@ -1290,6 +1290,11 @@ fn update_ui(
                     iter,
                     mut running,
                     tect_steps,
+                }
+                | AppState::InitClimate {
+                    iter,
+                    mut running,
+                    tect_steps,
                 } => {
                     ui.label(format!("Simulating\nStep: {iter}"));
                     ui.horizontal(|ui| {
@@ -1758,6 +1763,7 @@ fn setup_climate(
 fn update_init_climate(
     mut climate: ResMut<ClimateData>,
     params: Res<ClimateParams>,
+    orbit: Res<OrbitParams>,
     time: Res<TimeScale>,
     planet: Query<&GlobalTransform, With<Planet>>,
     state: Res<State<AppState>>,
@@ -1780,24 +1786,26 @@ fn update_init_climate(
             let (ysin, ycos) = y.sin_cos();
             let point = Vec3::new(xcos * ycos, xsin * ycos, ysin);
             let (_, rot, trans) = planet.to_scale_rotation_translation();
-            params.intensity * rot.mul_vec3(point).dot(trans.normalize_or_zero()).max(0.0)
+            params.intensity
+                * (rot.mul_vec3(point).dot(trans.normalize_or_zero()).max(0.0) * 0.5
+                    + (orbit.axial_tilt - y).cos().max(0.0) * 0.5)
         },
-        params.time_scale * time.0,
+        params.time_scale * time.0 * 10.0,
         &mut thread_rng(),
     );
     let mut cells = climate.0.to_vec();
-    cells.sort_by(|a, b| a.temp.total_cmp(&b.temp));
+    cells.sort_by(|a, b| a.avg_temp.total_cmp(&b.avg_temp));
     let l = cells.len();
-    metrics.min_temp = cells[0].temp;
-    metrics.max_temp = cells[l - 1].temp;
-    metrics.med_temp = cells[l / 2].temp;
+    metrics.min_temp = cells[0].avg_temp;
+    metrics.max_temp = cells[l - 1].avg_temp;
+    metrics.med_temp = cells[l / 2].avg_temp;
     Vec3 {
         x: metrics.avg_temp,
         y: metrics.avg_wind,
         z: metrics.avg_rain,
     } = cells
         .iter()
-        .map(|c| Vec3::new(c.temp, c.wind.length(), c.rainfall))
+        .map(|c| Vec3::new(c.avg_temp, c.wind.length(), c.avg_rainfall))
         .sum::<Vec3>()
         / l as f32;
     (metrics.min_wind, metrics.max_wind) = cells
@@ -1808,7 +1816,7 @@ fn update_init_climate(
         .unwrap();
     metrics.max_rain = cells
         .iter()
-        .map(|c| c.rainfall)
+        .map(|c| c.avg_rainfall)
         .max_by(f32::total_cmp)
         .unwrap();
     next_state.set(AppState::InitClimate {

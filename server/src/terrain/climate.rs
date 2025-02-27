@@ -6,9 +6,9 @@ use rand_distr::{Normal, Standard};
 use rayon::prelude::*;
 use std::fmt::{self, Debug, Formatter};
 
-const STEFAN_BOLTZMANN_CONSTANT: f32 = 5.6703744e-8;
-const WATER_HEAT_CAPACITY: f32 = 630.0;
-const ROCK_HEAT_CAPACITY: f32 = 22.5;
+const STEFAN_BOLTZMANN_CONSTANT: f64 = 5.6703744e-8;
+const WATER_HEAT_CAPACITY: f32 = 250.0; // real: 630 (unknown units)
+const ROCK_HEAT_CAPACITY: f32 = 150.0; // real: 22.5 (unknown units)
 const ROCK_HEAT_CAPACITY_DEV: f32 = 4.5;
 const WATER_GAS_CONSTANT: f32 = 461.5; // J/(kg K)
 const WATER_CRIT_PRESSURE: f32 = 22064000.0; // Pa
@@ -313,7 +313,7 @@ pub fn init_climate<F: FnMut(u64) -> f32, R: Rng + ?Sized>(
         let cell = &mut cells[idx];
         cell.avg_humidity = 0.8 * 13.8; // 80% RH
         cell.heat_capacity = WATER_HEAT_CAPACITY;
-        cell.albedo = 0.4;
+        cell.albedo = 0.3; // real value: 0.4
         cell.biome = Biome::WARM_DEEP_OCEAN;
     }
     for i in 0..=3 {
@@ -357,8 +357,11 @@ pub fn init_step_climate<I: IntensityFunction, R: Rng + ?Sized>(
     for (idx, cell) in cells.iter_mut().enumerate() {
         let (lon, lat) = layer.center(idx as _).as_f32();
         let sun = intensity.intensity(lon as _, lat as _);
-        let energy =
-            sun * cell.albedo - 0.9 * (cell.temp + 273.15).powi(4) * STEFAN_BOLTZMANN_CONSTANT;
+        let energy = sun * cell.albedo
+            - 0.4
+                * ((cell.temp as f64 + 273.15).powi(4).min(1_000_000_000.0)
+                    * STEFAN_BOLTZMANN_CONSTANT) as f32
+                * time_scale.powf(0.8);
         cell.avg_temp += (energy / cell.heat_capacity * time_scale).max(-200.0);
     }
 
@@ -367,7 +370,7 @@ pub fn init_step_climate<I: IntensityFunction, R: Rng + ?Sized>(
     let num_iters = 1 << depth.saturating_sub(3);
     let mut old = cells.to_vec().into_boxed_slice();
     {
-        let scale = scale / num_iters as f32 * 0.4;
+        let scale = scale / num_iters as f32 * 0.8;
         for _ in 0..num_iters {
             for (i, old) in old.iter().enumerate() {
                 let neighbors = healpix::neighbors(depth, i as _, true);
@@ -391,14 +394,24 @@ pub fn init_step_climate<I: IntensityFunction, R: Rng + ?Sized>(
                         let temp = cell.temp.clamp(-100.0, 100.0);
                         let humid = cell.humidity.clamp(0.0, 200.0);
                         let cell = &mut cells[i];
-                        cell.avg_temp *= 1.0 - scale * 0.5 * k;
-                        cell.avg_temp += temp * scale * 0.5 * k;
+                        cell.avg_temp *= 1.0 - scale * k;
+                        cell.avg_temp += temp * scale * k;
                         cell.avg_temp += rng.sample(temp_sample).max(-cell.temp);
+                        if !(0.0..=1000.0).contains(&cell.avg_humidity) {
+                            panic!("NaN Humidity");
+                        }
                         cell.avg_humidity *= 1.0 - scale * k;
+                        if !(0.0..=1000.0).contains(&cell.avg_humidity) {
+                            panic!("NaN Humidity");
+                        }
                         cell.avg_humidity += humid * scale * k;
+                        if !(0.0..=1000.0).contains(&cell.avg_humidity) {
+                            panic!("NaN Humidity");
+                        }
                         cell.avg_humidity *= rng.sample(humid_sample).max(-cell.avg_humidity).exp();
-                        cell.biome
-                            .update_new_climate(cell.avg_temp, cell.avg_humidity);
+                        if !(0.0..=1000.0).contains(&cell.avg_humidity) {
+                            panic!("NaN Humidity");
+                        }
                     }
                 }
             }
@@ -435,10 +448,19 @@ pub fn init_step_climate<I: IntensityFunction, R: Rng + ?Sized>(
             assert_ne!(neighbors.len(), 0);
             cell.wind *= 1.0 - scale;
             cell.wind += cum_wind * scale;
-            cell.avg_temp *= 1.0 - scale * 0.5;
-            cell.avg_temp += cum_temp * scale * 0.5;
+            cell.avg_temp *= 1.0 - scale * 0.25;
+            cell.avg_temp += cum_temp * scale * 0.25;
+            if !(0.0..=1000.0).contains(&cell.avg_humidity) {
+                panic!("NaN Humidity");
+            }
             cell.avg_humidity *= 1.0 - scale * 0.1;
+            if !(0.0..=1000.0).contains(&cell.avg_humidity) {
+                panic!("NaN Humidity");
+            }
             cell.avg_humidity += cum_humid * scale * 0.1;
+            if !(0.0..=1000.0).contains(&cell.avg_humidity) {
+                panic!("NaN Humidity");
+            }
             cell.avg_rainfall *= 1.0 - scale * 0.5;
             cell.avg_rainfall += cum_rain * scale * 0.5;
         });
@@ -459,11 +481,17 @@ pub fn init_step_climate<I: IntensityFunction, R: Rng + ?Sized>(
         }
         let humid_diff = (cell.avg_humidity - max_humidity).max(0.0).powi(2);
         cell.avg_humidity -= humid_diff * 0.1;
+        if !(0.0..=1000.0).contains(&cell.avg_humidity) {
+            panic!("NaN Humidity");
+        }
         cell.avg_rainfall *= 0.09;
         cell.avg_rainfall += humid_diff * 1.0;
         cell.avg_rainfall += cell.avg_humidity
             * 1.5
             * (rand_vals[i].powi(2) + (cell.avg_humidity * 0.1).clamp(0.0, 1.0));
+
+        cell.biome
+            .update_new_climate(cell.avg_temp, cell.avg_humidity);
     });
 }
 
@@ -488,8 +516,8 @@ pub fn step_climate<F: FnMut(f32, f32) -> f32, R: Rng + ?Sized>(
     for (idx, cell) in cells.iter_mut().enumerate() {
         let (lon, lat) = layer.center(idx as _);
         let sun = solar_intensity(lon as _, lat as _);
-        let energy =
-            sun * cell.albedo - 0.9 * (cell.temp + 273.15).powi(4) * STEFAN_BOLTZMANN_CONSTANT;
+        let energy = sun * cell.albedo
+            - 0.9 * ((cell.temp as f64 + 273.15).powi(4) * STEFAN_BOLTZMANN_CONSTANT) as f32;
         cell.temp += (energy / cell.heat_capacity * time_scale).max(-200.0);
         rain_pen += cell.rainfall;
         cell.rainfall *= 0.75; // clean this up too
@@ -539,7 +567,6 @@ pub fn step_climate<F: FnMut(f32, f32) -> f32, R: Rng + ?Sized>(
                         cell.humidity *= 1.0 - scale * k;
                         cell.humidity += humid * scale * k;
                         cell.humidity *= rng.sample(humid_sample).max(-cell.humidity).exp();
-                        cell.biome.update_new_climate(cell.temp, cell.humidity);
                     }
                 }
             }
