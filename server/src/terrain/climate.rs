@@ -156,6 +156,7 @@ pub struct ClimateCell {
     pub height: f32,
     pub heat_capacity: f32,
     pub albedo: f32,
+    pub heat_loss: f32,
 
     pub avg_temp: f32,
     pub avg_humidity: f32,
@@ -176,7 +177,7 @@ impl redb::Value for ClimateCell {
         Self: 'a,
         Self: 'b,
     {
-        let mut out = [0u8; 12 * 4];
+        let mut out = [0u8; 13 * 4];
         #[cfg(target_endian = "little")]
         out.copy_from_slice(bytes_of(value));
         #[cfg(target_endian = "big")]
@@ -185,6 +186,7 @@ impl redb::Value for ClimateCell {
                 this.height,
                 this.heat_capacity,
                 this.albedo,
+                this.heat_loss,
                 this.avg_temp,
                 this.avg_humidity,
                 this.avg_rainfall,
@@ -196,7 +198,7 @@ impl redb::Value for ClimateCell {
             ]) {
                 *bytes = f32::to_le_bytes(field);
             }
-            out[44..48].copy_from_slice(&value.biome.0 .0.to_le_bytes());
+            out[48..52].copy_from_slice(&value.biome.0 .0.to_le_bytes());
         }
         out
     }
@@ -213,6 +215,7 @@ impl redb::Value for ClimateCell {
                 &mut this.height,
                 &mut this.heat_capacity,
                 &mut this.albedo,
+                &mut this.heat_loss,
                 &mut this.avg_temp,
                 &mut this.avg_humidity,
                 &mut this.avg_rainfall,
@@ -224,7 +227,7 @@ impl redb::Value for ClimateCell {
             ]) {
                 *field = f32::from_le_bytes(bytes);
             }
-            this.biome.0 .0 = u32::from_le_bytes(data[44..48].try_into().unwrap());
+            this.biome.0 .0 = u32::from_le_bytes(data[48..52].try_into().unwrap());
         }
         this
     }
@@ -293,6 +296,7 @@ pub fn init_climate<F: FnMut(u64) -> f32, R: Rng + ?Sized>(
             height: heights(n),
             heat_capacity: rng.sample(heat_sample).abs(),
             albedo: rng.sample(albedo_sample).abs(),
+            heat_loss: 0.5,
 
             avg_temp: rng.sample(temp_sample),
             avg_humidity: 0.0,
@@ -314,6 +318,7 @@ pub fn init_climate<F: FnMut(u64) -> f32, R: Rng + ?Sized>(
         cell.avg_humidity = 0.8 * 13.8; // 80% RH
         cell.heat_capacity = WATER_HEAT_CAPACITY;
         cell.albedo = 0.3; // real value: 0.4
+        cell.heat_loss = 1.5;
         cell.biome = Biome::WARM_DEEP_OCEAN;
     }
     for i in 0..=3 {
@@ -343,8 +348,8 @@ pub fn init_step_climate<I: IntensityFunction, R: Rng + ?Sized>(
     time_scale: f32,
     rng: &mut R,
 ) {
-    let temp_sample = Normal::new(0.0f32, 2.0).unwrap();
-    let humid_sample = Normal::new(0.0f32, 0.1).unwrap();
+    let temp_sample = Normal::new(0.0f32, 1.0).unwrap();
+    let humid_sample = Normal::new(0.0f32, 0.05).unwrap();
 
     let depth = {
         let per_square = cells.len() as u32 / 12;
@@ -359,9 +364,10 @@ pub fn init_step_climate<I: IntensityFunction, R: Rng + ?Sized>(
         let sun = intensity.intensity(lon as _, lat as _);
         let energy = sun * cell.albedo
             - 0.4
-                * ((cell.temp as f64 + 273.15).powi(4).min(1_000_000_000.0)
+                * ((cell.temp as f64 + 273.15).powi(4).min(2_000_000_000.0)
                     * STEFAN_BOLTZMANN_CONSTANT) as f32
-                * time_scale.powf(0.8);
+                * time_scale.powf(0.8)
+            - (cell.temp + 273.15) * cell.heat_loss;
         cell.avg_temp += (energy / cell.heat_capacity * time_scale).max(-200.0);
     }
 
@@ -397,21 +403,9 @@ pub fn init_step_climate<I: IntensityFunction, R: Rng + ?Sized>(
                         cell.avg_temp *= 1.0 - scale * k;
                         cell.avg_temp += temp * scale * k;
                         cell.avg_temp += rng.sample(temp_sample).max(-cell.temp);
-                        if !(0.0..=1000.0).contains(&cell.avg_humidity) {
-                            panic!("NaN Humidity");
-                        }
                         cell.avg_humidity *= 1.0 - scale * k;
-                        if !(0.0..=1000.0).contains(&cell.avg_humidity) {
-                            panic!("NaN Humidity");
-                        }
                         cell.avg_humidity += humid * scale * k;
-                        if !(0.0..=1000.0).contains(&cell.avg_humidity) {
-                            panic!("NaN Humidity");
-                        }
                         cell.avg_humidity *= rng.sample(humid_sample).max(-cell.avg_humidity).exp();
-                        if !(0.0..=1000.0).contains(&cell.avg_humidity) {
-                            panic!("NaN Humidity");
-                        }
                     }
                 }
             }
@@ -450,17 +444,8 @@ pub fn init_step_climate<I: IntensityFunction, R: Rng + ?Sized>(
             cell.wind += cum_wind * scale;
             cell.avg_temp *= 1.0 - scale * 0.25;
             cell.avg_temp += cum_temp * scale * 0.25;
-            if !(0.0..=1000.0).contains(&cell.avg_humidity) {
-                panic!("NaN Humidity");
-            }
-            cell.avg_humidity *= 1.0 - scale * 0.1;
-            if !(0.0..=1000.0).contains(&cell.avg_humidity) {
-                panic!("NaN Humidity");
-            }
-            cell.avg_humidity += cum_humid * scale * 0.1;
-            if !(0.0..=1000.0).contains(&cell.avg_humidity) {
-                panic!("NaN Humidity");
-            }
+            cell.avg_humidity *= 1.0 - scale * 0.2;
+            cell.avg_humidity += cum_humid * scale * 0.2;
             cell.avg_rainfall *= 1.0 - scale * 0.5;
             cell.avg_rainfall += cum_rain * scale * 0.5;
         });
@@ -479,13 +464,11 @@ pub fn init_step_climate<I: IntensityFunction, R: Rng + ?Sized>(
         if cell.biome.is_ocean() && cell.avg_humidity < max_humidity {
             cell.humidity += (max_humidity - cell.avg_humidity) * 0.05;
         }
-        let humid_diff = (cell.avg_humidity - max_humidity).max(0.0).powi(2);
-        cell.avg_humidity -= humid_diff * 0.1;
-        if !(0.0..=1000.0).contains(&cell.avg_humidity) {
-            panic!("NaN Humidity");
-        }
+        let humid_diff =
+            ((cell.avg_humidity - max_humidity).max(0.0).powi(2) * 0.1).min(cell.avg_humidity);
+        cell.avg_humidity -= humid_diff;
         cell.avg_rainfall *= 0.09;
-        cell.avg_rainfall += humid_diff * 1.0;
+        cell.avg_rainfall += humid_diff * 10.0;
         cell.avg_rainfall += cell.avg_humidity
             * 1.5
             * (rand_vals[i].powi(2) + (cell.avg_humidity * 0.1).clamp(0.0, 1.0));
