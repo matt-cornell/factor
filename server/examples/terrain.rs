@@ -512,7 +512,6 @@ fn main() {
             FixedUpdate,
             (
                 update_tectonics.run_if(in_state(SimulatingTectonics)),
-                update_init_climate.run_if(in_state(InitializingClimate)),
                 update_climate.run_if(in_state(SimulatingClimate)),
             ),
         )
@@ -1703,10 +1702,13 @@ fn update_noise_terrain(
 
 fn setup_climate(
     mut commands: Commands,
+    params: Res<ClimateParams>,
+    orbit: Res<OrbitParams>,
     depth: Res<ClimateDepth>,
     noise: (Res<NoiseHeights>, Res<NoiseSourceRes>),
     tect: (Res<TerrainData>, Res<TectonicScale>, Res<TectonicDepth>),
     state: Res<State<AppState>>,
+    planet: Single<&GlobalTransform, With<Planet>>,
     mut next_state: ResMut<NextState<AppState>>,
 ) {
     println!("setup climate");
@@ -1728,7 +1730,7 @@ fn setup_climate(
             cdshealpix::nested::hash(depth.0, x, y) as usize
         })
         .collect();
-    let state = init_climate(
+    let mut state = init_climate(
         depth.0,
         |hash| {
             let (lon, lat) = healpix::nested::center(depth.0, hash);
@@ -1745,9 +1747,17 @@ fn setup_climate(
         0.7,
         &mut thread_rng(),
     );
-    commands.insert_resource(ClimateData(state));
-    commands.insert_resource(ClimateMap(image_map));
-    commands.insert_resource(ClimateMetrics {
+    set_averages(
+        &mut state,
+        OrbitState {
+            intensity: params.intensity,
+            rotation: 0.0,
+            revolution: planet.translation().xz().to_angle(),
+            obliquity: orbit.axial_tilt,
+        },
+        orbit.year_length / orbit.day_length,
+    );
+    let mut metrics = ClimateMetrics {
         min_temp: START_TEMPERATURE,
         max_temp: START_TEMPERATURE,
         med_temp: START_TEMPERATURE,
@@ -1757,43 +1767,8 @@ fn setup_climate(
         avg_wind: 0.0,
         max_rain: 0.0,
         avg_rain: 0.0,
-    });
-}
-
-fn update_init_climate(
-    mut climate: ResMut<ClimateData>,
-    params: Res<ClimateParams>,
-    orbit: Res<OrbitParams>,
-    time: Res<TimeScale>,
-    planet: Query<&GlobalTransform, With<Planet>>,
-    state: Res<State<AppState>>,
-    mut next_state: ResMut<NextState<AppState>>,
-    mut metrics: ResMut<ClimateMetrics>,
-) {
-    let AppState::InitClimate {
-        running,
-        iter,
-        tect_steps,
-    } = **state
-    else {
-        return;
     };
-    let planet = planet.single();
-    init_step_climate(
-        &mut climate.0,
-        |x: f32, y: f32| {
-            let (xsin, xcos) = x.sin_cos();
-            let (ysin, ycos) = y.sin_cos();
-            let point = Vec3::new(xcos * ycos, xsin * ycos, ysin);
-            let (_, rot, trans) = planet.to_scale_rotation_translation();
-            params.intensity
-                * (rot.mul_vec3(point).dot(trans.normalize_or_zero()).max(0.0) * 0.5
-                    + (orbit.axial_tilt - y).cos().max(0.0) * 0.5)
-        },
-        params.time_scale * time.0 * 10.0,
-        &mut thread_rng(),
-    );
-    let mut cells = climate.0.to_vec();
+    let mut cells = state.clone();
     cells.sort_by(|a, b| a.avg_temp.total_cmp(&b.avg_temp));
     let l = cells.len();
     metrics.min_temp = cells[0].avg_temp;
@@ -1819,11 +1794,9 @@ fn update_init_climate(
         .map(|c| c.avg_rainfall)
         .max_by(f32::total_cmp)
         .unwrap();
-    next_state.set(AppState::InitClimate {
-        running,
-        iter: iter + 1,
-        tect_steps,
-    });
+    commands.insert_resource(ClimateData(state));
+    commands.insert_resource(ClimateMap(image_map));
+    commands.insert_resource(metrics);
 }
 
 fn update_climate(
@@ -1846,7 +1819,7 @@ fn update_climate(
     let planet = planet.single();
     step_climate(
         &mut climate.0,
-        |x, y| {
+        |x: f32, y: f32| {
             let (xsin, xcos) = x.sin_cos();
             let (ysin, ycos) = y.sin_cos();
             let point = Vec3::new(xcos * ycos, xsin * ycos, ysin);

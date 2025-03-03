@@ -480,6 +480,8 @@ pub fn try_init_terrain<R: Rng + ?Sized>(depth: u8, rng: &mut R) -> Option<Tecto
         diverge = metrics.diverge / scale,
         "sampling terrain"
     );
+    return Some(state); // DEBUG
+    #[allow(unreachable_code)]
     if metrics.converge / scale > 30
         && metrics.diverge / scale > 15
         && (metrics.converge + metrics.diverge) / scale > 60

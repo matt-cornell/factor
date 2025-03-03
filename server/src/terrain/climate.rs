@@ -1,9 +1,11 @@
 use bevy::math::*;
 use bytemuck::*;
+use cdshealpix::compass_point::MainWind;
 use factor_common::healpix;
 use rand::prelude::*;
 use rand_distr::{Normal, Standard};
 use rayon::prelude::*;
+use std::f32::consts::{FRAC_1_SQRT_2, PI, SQRT_2};
 use std::fmt::{self, Debug, Formatter};
 
 const STEFAN_BOLTZMANN_CONSTANT: f64 = 5.6703744e-8;
@@ -13,6 +15,29 @@ const ROCK_HEAT_CAPACITY_DEV: f32 = 4.5;
 const WATER_GAS_CONSTANT: f32 = 461.5; // J/(kg K)
 const WATER_CRIT_PRESSURE: f32 = 22064000.0; // Pa
 const WATER_CRIT_TEMPERATURE: f32 = 647.096; // K
+
+const WINDS_VECS: [Vec2; 8] = [
+    Vec2::new(0.0, -1.0),
+    Vec2::new(FRAC_1_SQRT_2, -FRAC_1_SQRT_2),
+    Vec2::new(1.0, 0.0),
+    Vec2::new(-FRAC_1_SQRT_2, -FRAC_1_SQRT_2),
+    Vec2::new(FRAC_1_SQRT_2, FRAC_1_SQRT_2),
+    Vec2::new(-1.0, 0.0),
+    Vec2::new(-FRAC_1_SQRT_2, FRAC_1_SQRT_2),
+    Vec2::new(0.0, 1.0),
+];
+const WINDS_OFFS: [Vec2; 8] = [
+    Vec2::new(0.0, -1.0),
+    Vec2::new(1.0, -1.0),
+    Vec2::new(1.0, 0.0),
+    Vec2::new(-1.0, -1.0),
+    Vec2::new(1.0, 1.0),
+    Vec2::new(-1.0, 0.0),
+    Vec2::new(-1.0, 1.0),
+    Vec2::new(0.0, 1.0),
+];
+
+const ROT_TO_WIND: [u8; 8] = [2, 4, 7, 6, 5, 3, 0, 1];
 
 pub const START_TEMPERATURE: f32 = 20.0;
 
@@ -162,6 +187,9 @@ pub struct ClimateCell {
     pub avg_humidity: f32,
     pub avg_rainfall: f32,
 
+    pub hi_temp: f32,
+    pub lo_temp: f32,
+
     pub temp: f32,
     pub humidity: f32,
     pub rainfall: f32,
@@ -177,58 +205,26 @@ impl redb::Value for ClimateCell {
         Self: 'a,
         Self: 'b,
     {
-        let mut out = [0u8; 13 * 4];
-        #[cfg(target_endian = "little")]
-        out.copy_from_slice(bytes_of(value));
-        #[cfg(target_endian = "big")]
-        {
-            for (bytes, field) in data.array_chunks_mut().zip([
-                this.height,
-                this.heat_capacity,
-                this.albedo,
-                this.heat_loss,
-                this.avg_temp,
-                this.avg_humidity,
-                this.avg_rainfall,
-                this.temp,
-                this.humidity,
-                this.rainfall,
-                this.wind.x,
-                this.wind.y,
-            ]) {
-                *bytes = f32::to_le_bytes(field);
-            }
-            out[48..52].copy_from_slice(&value.biome.0 .0.to_le_bytes());
-        }
-        out
+        let mut buf = [0u8; 15 * 4];
+        buf.copy_from_slice(bytes_of(value));
+        #[cfg(any(debug_assertions, target_endian = "big"))]
+        cast_slice_mut::<_, u32>(&mut buf)
+            .iter_mut()
+            .for_each(|v| *v = v.to_le());
+        buf
     }
     fn from_bytes<'a>(data: &'a [u8]) -> Self::SelfType<'a>
     where
         Self: 'a,
     {
         let mut this = Self::zeroed();
-        #[cfg(target_endian = "little")]
-        bytes_of_mut(&mut this).copy_from_slice(&data[..size_of::<ClimateCell>()]);
-        #[cfg(target_endian = "big")]
-        {
-            for (&bytes, field) in data.array_chunks().zip([
-                &mut this.height,
-                &mut this.heat_capacity,
-                &mut this.albedo,
-                &mut this.heat_loss,
-                &mut this.avg_temp,
-                &mut this.avg_humidity,
-                &mut this.avg_rainfall,
-                &mut this.temp,
-                &mut this.humidity,
-                &mut this.rainfall,
-                &mut this.wind.x,
-                &mut this.wind.y,
-            ]) {
-                *field = f32::from_le_bytes(bytes);
-            }
-            this.biome.0 .0 = u32::from_le_bytes(data[48..52].try_into().unwrap());
-        }
+        let mut buf = [0u8; 15 * 4];
+        buf.copy_from_slice(data);
+        #[cfg(any(debug_assertions, target_endian = "big"))]
+        cast_slice_mut::<_, u32>(&mut buf)
+            .iter_mut()
+            .for_each(|v| *v = v.to_le());
+        bytes_of_mut(&mut this).copy_from_slice(&buf);
         this
     }
     fn fixed_width() -> Option<usize> {
@@ -292,21 +288,27 @@ pub fn init_climate<F: FnMut(u64) -> f32, R: Rng + ?Sized>(
     let albedo_sample: Normal<f32> = Normal::new(0.2, 0.05).unwrap();
     let wind_sample: Normal<f32> = Normal::new(0.0, 0.01).unwrap();
     let mut cells = (0..len)
-        .map(|n| ClimateCell {
-            height: heights(n),
-            heat_capacity: rng.sample(heat_sample).abs(),
-            albedo: rng.sample(albedo_sample).abs(),
-            heat_loss: 0.5,
+        .map(|n| {
+            let temp = rng.sample(temp_sample);
+            ClimateCell {
+                height: heights(n),
+                heat_capacity: rng.sample(heat_sample).abs(),
+                albedo: rng.sample(albedo_sample).abs(),
+                heat_loss: 0.5,
 
-            avg_temp: rng.sample(temp_sample),
-            avg_humidity: 0.0,
-            avg_rainfall: 0.0,
+                avg_temp: temp,
+                avg_humidity: 0.0,
+                avg_rainfall: 0.0,
 
-            temp: START_TEMPERATURE,
-            humidity: 0.0,
-            rainfall: 0.0,
-            wind: Vec2::new(rng.sample(wind_sample), rng.sample(wind_sample)),
-            biome: Biome::PLACEHOLDER,
+                hi_temp: temp,
+                lo_temp: temp,
+
+                temp: START_TEMPERATURE,
+                humidity: 0.0,
+                rainfall: 0.0,
+                wind: Vec2::new(rng.sample(wind_sample), rng.sample(wind_sample)),
+                biome: Biome::PLACEHOLDER,
+            }
         })
         .collect::<Box<_>>();
     let mut sorted = (0..(len as usize)).collect::<Box<_>>();
@@ -342,145 +344,157 @@ pub fn init_climate<F: FnMut(u64) -> f32, R: Rng + ?Sized>(
     cells
 }
 
-pub fn init_step_climate<I: IntensityFunction, R: Rng + ?Sized>(
-    cells: &mut [ClimateCell],
-    intensity: I,
-    time_scale: f32,
-    rng: &mut R,
-) {
-    let temp_sample = Normal::new(0.0f32, 1.0).unwrap();
-    let humid_sample = Normal::new(0.0f32, 0.05).unwrap();
+fn conduct(cells: &mut [ClimateCell], old: &mut [ClimateCell], depth: u8, scale: f32) {
+    cells.par_iter_mut().enumerate().for_each(|(i, cell)| {
+        let neighbors = healpix::neighbors(depth, i as _, true);
+        let mut cum_temp = 0.0;
+        let mut cum_humid = 0.0;
+        let mut cum_rain = 0.0;
+        let mut cum_wind = Vec2::ZERO;
+        let base_pressure = cell.avg_temp;
+        for (dir, &n) in neighbors.iter().enumerate() {
+            let ncell = &old[n as usize];
+            cum_temp += ncell.temp;
+            cum_humid += ncell.humidity;
+            cum_rain += ncell.rainfall;
 
+            let pressure_diff = base_pressure - ncell.avg_temp;
+            cum_wind += WINDS_VECS[dir] * pressure_diff * scale;
+        }
+        cum_temp /= neighbors.len() as f32;
+        cum_humid /= neighbors.len() as f32;
+        cum_rain /= neighbors.len() as f32;
+        assert_ne!(neighbors.len(), 0);
+        cell.temp *= 1.0 - scale * 0.5;
+        cell.temp += cum_temp * scale * 0.5;
+        cell.humidity *= 1.0 - scale * 0.1;
+        cell.humidity += cum_humid * scale * 0.1;
+        cell.wind *= 1.0 - scale;
+        cell.wind += cum_wind * scale;
+        cell.rainfall *= 1.0 - scale * 0.5;
+        cell.rainfall += cum_rain * scale * 0.5;
+    });
+}
+
+fn wind(cells: &mut [ClimateCell], old: &mut [ClimateCell], layer: healpix::Layer, scale: f32) {
+    for (i, cell) in old.iter().enumerate() {
+        let mut w = 0.0;
+        let mag = cell.wind.length();
+        if mag.abs() < f32::EPSILON {
+            continue;
+        }
+        let dir = cell.wind / mag * SQRT_2;
+        let mut d = Vec2::ZERO;
+        let mut n = i as u64;
+        let mut c = 0;
+        let base_temp = cell.avg_temp;
+        let base_humid = cell.avg_humidity;
+        while w < mag {
+            w += c as f32 * 0.8;
+            c += 1;
+            let f = (dir * c as f32 - d).to_angle() / PI * 4.0;
+            let rf = f.round();
+            let mut idx = (rf as i8).rem_euclid(8);
+            let mut wind = ROT_TO_WIND[idx as usize];
+            n = layer
+                .neighbor(n, MainWind::from_index(wind))
+                .unwrap_or_else(|| {
+                    if rf > f {
+                        idx -= 1;
+                    } else {
+                        idx += 1;
+                    }
+                    wind = ROT_TO_WIND[idx as usize % 8];
+                    layer.neighbor(n, MainWind::from_index(wind)).unwrap()
+                });
+            d += WINDS_OFFS[wind as usize];
+            let old_cell = cell;
+            let Ok([cell, ncell]) = cells.get_disjoint_mut([i, n as usize]) else {
+                continue;
+            };
+            let scale = (scale * (mag - w + 0.25) * 0.001).clamp(0.0, 0.6);
+            let avg_temp = (base_temp + ncell.avg_temp) * 0.5;
+            cell.avg_temp *= scale * 0.5;
+            cell.avg_temp += (1.0 - scale * 0.5) * START_TEMPERATURE;
+            ncell.avg_temp *= scale * 0.5;
+            ncell.avg_temp += (1.0 - scale * 0.5) * avg_temp;
+            let avg_humid = (base_humid + ncell.avg_humidity) * 0.5;
+            cell.avg_humidity *= scale;
+            if cell.biome.is_ocean() {
+                cell.avg_humidity +=
+                    (1.0 - scale) * 0.01 * saturation_pressure(cell.avg_temp + 273.15);
+            }
+            ncell.avg_humidity *= scale;
+            ncell.avg_humidity += (1.0 - scale) * avg_humid;
+            ncell.wind += 0.1 * old_cell.wind * 0.5f32.powi(c);
+        }
+    }
+}
+
+pub fn set_averages(cells: &mut [ClimateCell], state: OrbitState, year_day_ratio: f32) {
     let depth = {
         let per_square = cells.len() as u32 / 12;
         debug_assert_eq!(per_square.count_ones(), 1);
         per_square.trailing_zeros() as u8 / 2
     };
-
     let layer = healpix::Layer::new(depth);
+    let rcos = state.revolution.cos();
 
+    let mut sum = 0.0;
     for (idx, cell) in cells.iter_mut().enumerate() {
-        let (lon, lat) = layer.center(idx as _).as_f32();
-        let sun = intensity.intensity(lon as _, lat as _);
-        let energy = sun * cell.albedo
-            - 0.4
-                * ((cell.temp as f64 + 273.15).powi(4).min(2_000_000_000.0)
-                    * STEFAN_BOLTZMANN_CONSTANT) as f32
-                * time_scale.powf(0.8)
-            - (cell.temp + 273.15) * cell.heat_loss;
-        cell.avg_temp += (energy / cell.heat_capacity * time_scale).max(-200.0);
-    }
+        let (_lon, lat) = layer.center(idx as _).as_f32();
 
-    let scale = 1.0 - (1.0 - 0.995f32.powi(1 << depth.saturating_sub(2))) * time_scale;
+        // steady state of the temperature at the given orbital position
+        let sun = state.intensity
+            * (lat + (state.obliquity.cos() * rcos).acos()).cos().max(0.0)
+            * cell.albedo
+            * 0.5;
+        let constant = STEFAN_BOLTZMANN_CONSTANT as f32 * 0.4;
+        let roots =
+            roots::find_roots_quartic_depressed(0.0, cell.heat_loss / constant, -sun / constant);
+        let daily_avg = *roots.as_ref().last().unwrap() - 273.15;
+
+        let sun = state.intensity * lat.cos() * cell.albedo * 0.5;
+        let constant = STEFAN_BOLTZMANN_CONSTANT as f32 * 0.4;
+        let roots =
+            roots::find_roots_quartic_depressed(0.0, cell.heat_loss / constant, -sun / constant);
+        let yearly_avg = *roots.as_ref().last().unwrap() - 273.15;
+
+        let year_weight = 0.8f32.powf(year_day_ratio.sqrt() / cell.heat_capacity);
+
+        cell.avg_temp = year_weight * yearly_avg + (1.0 - year_weight) * daily_avg;
+        sum += cell.avg_temp;
+    }
 
     let num_iters = 1 << depth.saturating_sub(3);
-    let mut old = cells.to_vec().into_boxed_slice();
-    {
-        let scale = scale / num_iters as f32 * 0.8;
-        for _ in 0..num_iters {
-            for (i, old) in old.iter().enumerate() {
-                let neighbors = healpix::neighbors(depth, i as _, true);
-                let (clon, clat) = layer.center(i as _).as_f32();
-                let (asin1, acos1) = clat.sin_cos();
-                for &n in &neighbors {
-                    let cell = &mut cells[n as usize];
-                    let (lon, lat) = layer.center(n).as_f32();
-                    let (asin2, acos2) = lat.sin_cos();
-                    let (osin, ocos) = (clon - lon).sin_cos();
-                    let base = Vec2::new(osin * acos2, acos1 * asin2 - asin1 * acos2 * ocos);
-                    let dot = base.normalize_or_zero().dot(old.wind);
-                    cell.wind += old.wind.normalize() * dot.abs() * 0.1;
-                    if dot > 0.1 {
-                        let k = (dot.sqrt() * 0.01).clamp(0.0, 1.0);
-                        cell.avg_temp *= 1.0 - scale * k;
-                        cell.avg_temp += old.avg_temp * scale * k;
-                        cell.avg_humidity *= 1.0 - scale * k.min(old.avg_humidity);
-                        cell.avg_humidity += old.avg_humidity * scale * k.min(old.avg_humidity);
-
-                        let temp = cell.temp.clamp(-100.0, 100.0);
-                        let humid = cell.humidity.clamp(0.0, 200.0);
-                        let cell = &mut cells[i];
-                        cell.avg_temp *= 1.0 - scale * k;
-                        cell.avg_temp += temp * scale * k;
-                        cell.avg_temp += rng.sample(temp_sample).max(-cell.temp);
-                        cell.avg_humidity *= 1.0 - scale * k;
-                        cell.avg_humidity += humid * scale * k;
-                        cell.avg_humidity *= rng.sample(humid_sample).max(-cell.avg_humidity).exp();
-                    }
-                }
-            }
+    let mut old = cells.to_vec();
+    let scale = 0.99f32.powi(1 << depth.saturating_sub(2));
+    for _ in 0..num_iters {
+        for _ in 0..2 {
+            conduct(cells, &mut old, depth, scale);
             old.copy_from_slice(cells);
         }
+        wind(cells, &mut old, layer, scale);
+        old.copy_from_slice(cells);
     }
-
-    // conduction
-    for _ in 0..(num_iters * 3 / 2) {
-        cells.par_iter_mut().enumerate().for_each(|(i, cell)| {
-            let neighbors = healpix::neighbors(depth, i as _, true);
-            let mut cum_temp = 0.0;
-            let mut cum_humid = 0.0;
-            let mut cum_rain = 0.0;
-            let mut cum_wind = Vec2::ZERO;
-            let (clon, clat) = layer.center(i as _).as_f32();
-            let (asin1, acos1) = clat.sin_cos();
-            let base_pressure = cell.temp;
-            for &n in &neighbors {
-                let cell = &old[n as usize];
-                cum_temp += cell.temp;
-                cum_humid += cell.humidity;
-                cum_rain += cell.rainfall;
-                let pressure_diff = base_pressure - cell.temp;
-                let (lon, lat) = layer.center(n).as_f32();
-                let (asin2, acos2) = lat.sin_cos();
-                let (osin, ocos) = (clon - lon).sin_cos();
-                let base = Vec2::new(osin * acos2, acos1 * asin2 - asin1 * acos2 * ocos);
-                cum_wind += base.normalize_or_zero() * pressure_diff * scale * scale;
-            }
-            cum_temp /= neighbors.len() as f32;
-            cum_humid /= neighbors.len() as f32;
-            cum_rain /= neighbors.len() as f32;
-            assert_ne!(neighbors.len(), 0);
-            cell.wind *= 1.0 - scale;
-            cell.wind += cum_wind * scale;
-            cell.avg_temp *= 1.0 - scale * 0.25;
-            cell.avg_temp += cum_temp * scale * 0.25;
-            cell.avg_humidity *= 1.0 - scale * 0.2;
-            cell.avg_humidity += cum_humid * scale * 0.2;
-            cell.avg_rainfall *= 1.0 - scale * 0.5;
-            cell.avg_rainfall += cum_rain * scale * 0.5;
-        });
+    for _ in 0..num_iters {
+        conduct(cells, &mut old, depth, scale);
         old.copy_from_slice(cells);
     }
 
-    let rand_vals = rng
-        .sample_iter(Standard)
-        .take(cells.len())
-        .collect::<Box<[f32]>>();
-
-    cells.par_iter_mut().enumerate().for_each(|(i, cell)| {
-        let max_humidity = saturation_pressure(cell.temp + 273.15)
-            / (WATER_GAS_CONSTANT * (cell.temp + 273.15))
-            * 100.0;
-        if cell.biome.is_ocean() && cell.avg_humidity < max_humidity {
-            cell.humidity += (max_humidity - cell.avg_humidity) * 0.05;
-        }
-        let humid_diff =
-            ((cell.avg_humidity - max_humidity).max(0.0).powi(2) * 0.1).min(cell.avg_humidity);
-        cell.avg_humidity -= humid_diff;
-        cell.avg_rainfall *= 0.09;
-        cell.avg_rainfall += humid_diff * 10.0;
-        cell.avg_rainfall += cell.avg_humidity
-            * 1.5
-            * (rand_vals[i].powi(2) + (cell.avg_humidity * 0.1).clamp(0.0, 1.0));
-
+    let avg_temp = sum / cells.len() as f32;
+    for cell in cells.iter_mut() {
+        cell.avg_temp *= 0.5;
+        cell.avg_temp += avg_temp * 0.5;
+        cell.avg_rainfall = cell.avg_humidity * 2.0;
         cell.biome
             .update_new_climate(cell.avg_temp, cell.avg_humidity);
-    });
+    }
 }
 
-pub fn step_climate<F: FnMut(f32, f32) -> f32, R: Rng + ?Sized>(
+pub fn step_climate<I: IntensityFunction, R: Rng + ?Sized>(
     cells: &mut [ClimateCell],
-    mut solar_intensity: F,
+    solar_intensity: I,
     time_scale: f32,
     rng: &mut R,
 ) {
@@ -498,7 +512,7 @@ pub fn step_climate<F: FnMut(f32, f32) -> f32, R: Rng + ?Sized>(
     let mut rain_pen = 0.0;
     for (idx, cell) in cells.iter_mut().enumerate() {
         let (lon, lat) = layer.center(idx as _);
-        let sun = solar_intensity(lon as _, lat as _);
+        let sun = solar_intensity.intensity(lon as _, lat as _);
         let energy = sun * cell.albedo
             - 0.9 * ((cell.temp as f64 + 273.15).powi(4) * STEFAN_BOLTZMANN_CONSTANT) as f32;
         cell.temp += (energy / cell.heat_capacity * time_scale).max(-200.0);

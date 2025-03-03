@@ -328,6 +328,16 @@ pub(crate) fn setup_climate(
         0.7,
         &mut init.rng,
     );
+    set_averages(
+        &mut cells,
+        OrbitState {
+            intensity: config.climate.intensity,
+            rotation: 0.0,
+            revolution: 0.0,
+            obliquity: config.orbit.obliquity,
+        },
+        config.orbit.year_length / config.orbit.day_length,
+    );
     commands.remove_resource::<ClimateNoise>();
     commands.remove_resource::<TectonicData>();
     next_state.set(ClimatePhase::ClimateStep(0));
@@ -351,7 +361,7 @@ pub(crate) fn setup_climate(
         let mut rot = 0.0;
         let mut rev = 0.0;
         for step in 0..steps {
-            init_step_climate(
+            step_climate(
                 &mut cells,
                 OrbitState {
                     intensity,
@@ -533,7 +543,7 @@ pub fn update_climate(
     let planet_transform = planet.single();
     step_climate(
         &mut climate.cells,
-        |x, y| {
+        |x: f32, y: f32| {
             let (xsin, xcos) = x.sin_cos();
             let (ysin, ycos) = y.sin_cos();
             let point = Vec3::new(xcos * ycos, xsin * ycos, ysin);
