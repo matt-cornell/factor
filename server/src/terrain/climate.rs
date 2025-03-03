@@ -477,8 +477,8 @@ pub fn set_averages(cells: &mut [ClimateCell], state: OrbitState, year_day_ratio
         wind(cells, &mut old, layer, scale);
         old.copy_from_slice(cells);
     }
-    for _ in 0..num_iters {
-        conduct(cells, &mut old, depth, scale);
+    for _ in 0..(num_iters << 3) {
+        conduct(cells, &mut old, depth, scale * 0.25);
         old.copy_from_slice(cells);
     }
 
@@ -486,7 +486,9 @@ pub fn set_averages(cells: &mut [ClimateCell], state: OrbitState, year_day_ratio
     for cell in cells.iter_mut() {
         cell.avg_temp *= 0.5;
         cell.avg_temp += avg_temp * 0.5;
-        cell.avg_rainfall = cell.avg_humidity * 2.0;
+        cell.avg_rainfall = cell.avg_humidity * 0.3
+            + (cell.avg_humidity * 1.2 - saturation_pressure(cell.avg_temp + 273.15)).max(0.0);
+        cell.avg_humidity -= cell.avg_rainfall;
         cell.biome
             .update_new_climate(cell.avg_temp, cell.avg_humidity);
     }
