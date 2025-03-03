@@ -1,3 +1,4 @@
+use atomic_float::AtomicF32;
 use bevy::math::*;
 use bytemuck::*;
 use cdshealpix::compass_point::MainWind;
@@ -7,6 +8,7 @@ use rand_distr::{Normal, Standard};
 use rayon::prelude::*;
 use std::f32::consts::{FRAC_1_SQRT_2, PI, SQRT_2};
 use std::fmt::{self, Debug, Formatter};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 const STEFAN_BOLTZMANN_CONSTANT: f64 = 5.6703744e-8;
 const WATER_HEAT_CAPACITY: f32 = 250.0; // real: 630 (unknown units)
@@ -41,7 +43,7 @@ const ROT_TO_WIND: [u8; 8] = [2, 4, 7, 6, 5, 3, 0, 1];
 
 pub const START_TEMPERATURE: f32 = 20.0;
 
-fn saturation_pressure(temp: f32) -> f32 {
+pub fn saturation_pressure(temp: f32) -> f32 {
     let t = temp.clamp(0.0, WATER_CRIT_TEMPERATURE - 1.0);
     // https://www.calctool.org/atmospheric-thermodynamics/absolute-humidity
     #[allow(clippy::excessive_precision)]
@@ -344,7 +346,18 @@ pub fn init_climate<F: FnMut(u64) -> f32, R: Rng + ?Sized>(
     cells
 }
 
-fn conduct(cells: &mut [ClimateCell], old: &mut [ClimateCell], depth: u8, scale: f32) {
+fn conduct(
+    cells: &mut [ClimateCell],
+    old: &mut [ClimateCell],
+    depth: u8,
+    scale: f32,
+    do_temp: bool,
+    do_wind: bool,
+) {
+    let sums =
+        std::iter::repeat_with(|| (AtomicU64::new(0), AtomicF32::new(0.0), AtomicF32::new(0.0)))
+            .take(cells.len())
+            .collect::<Vec<_>>();
     cells.par_iter_mut().enumerate().for_each(|(i, cell)| {
         let neighbors = healpix::neighbors(depth, i as _, true);
         let mut cum_temp = 0.0;
@@ -358,22 +371,54 @@ fn conduct(cells: &mut [ClimateCell], old: &mut [ClimateCell], depth: u8, scale:
             cum_humid += ncell.humidity;
             cum_rain += ncell.rainfall;
 
-            let pressure_diff = base_pressure - ncell.avg_temp;
-            cum_wind += WINDS_VECS[dir] * pressure_diff * scale;
+            let mag = base_pressure - ncell.avg_temp;
+            cum_wind += WINDS_VECS[dir] * mag * scale;
+
+            if do_wind {
+                let scale = (scale * (mag + 0.25) * 0.001).clamp(0.0, 0.6);
+                let base_temp = cell.avg_temp;
+                let base_humid = cell.avg_humidity;
+                let avg_temp = (base_temp + ncell.avg_temp) * 0.5;
+                let (nc, nt, nh) = &sums[n as usize];
+                cell.avg_temp *= 1.0 - scale * 0.01;
+                cell.avg_temp += scale * 0.01 * START_TEMPERATURE;
+                nt.fetch_add(1.0 - scale * avg_temp, Ordering::Relaxed);
+
+                let avg_humid = (base_humid + ncell.avg_humidity) * 0.5;
+                cell.avg_humidity *= 1.0 - scale;
+                nh.fetch_add((1.0 - scale * 0.5) * avg_humid, Ordering::Relaxed);
+                nc.fetch_add(1, Ordering::Relaxed);
+            }
         }
         cum_temp /= neighbors.len() as f32;
         cum_humid /= neighbors.len() as f32;
         cum_rain /= neighbors.len() as f32;
         assert_ne!(neighbors.len(), 0);
-        cell.temp *= 1.0 - scale * 0.5;
-        cell.temp += cum_temp * scale * 0.5;
-        cell.humidity *= 1.0 - scale * 0.1;
-        cell.humidity += cum_humid * scale * 0.1;
+        if do_temp {
+            cell.avg_temp *= 1.0 - scale * 0.5;
+            cell.avg_temp += cum_temp * scale * 0.5;
+        }
+        cell.avg_humidity *= 1.0 - scale * 0.1;
+        cell.avg_humidity += cum_humid * scale * 0.1;
         cell.wind *= 1.0 - scale;
         cell.wind += cum_wind * scale;
-        cell.rainfall *= 1.0 - scale * 0.5;
-        cell.rainfall += cum_rain * scale * 0.5;
+        cell.avg_rainfall *= 1.0 - scale * 0.5;
+        cell.avg_rainfall += cum_rain * scale * 0.5;
     });
+    if do_wind {
+        cells
+            .par_iter_mut()
+            .zip(&sums)
+            .for_each(|(cell, (nc, nt, nh))| {
+                let scale = scale / (nc.load(Ordering::Relaxed) as f32);
+                if do_temp {
+                    cell.avg_temp *= 1.0 - scale;
+                    cell.avg_temp += scale * nt.load(Ordering::Relaxed);
+                }
+                cell.avg_humidity *= 1.0 - scale;
+                cell.avg_humidity += scale * nh.load(Ordering::Relaxed);
+            });
+    }
 }
 
 fn wind(cells: &mut [ClimateCell], old: &mut [ClimateCell], layer: healpix::Layer, scale: f32) {
@@ -412,12 +457,12 @@ fn wind(cells: &mut [ClimateCell], old: &mut [ClimateCell], layer: healpix::Laye
             let Ok([cell, ncell]) = cells.get_disjoint_mut([i, n as usize]) else {
                 continue;
             };
-            let scale = (scale * (mag - w + 0.25) * 0.001).clamp(0.0, 0.6);
+            let scale = (scale * (mag - w + 0.25) * 0.0001).clamp(0.0, 0.6);
             let avg_temp = (base_temp + ncell.avg_temp) * 0.5;
-            cell.avg_temp *= scale * 0.5;
-            cell.avg_temp += (1.0 - scale * 0.5) * START_TEMPERATURE;
-            ncell.avg_temp *= scale * 0.5;
-            ncell.avg_temp += (1.0 - scale * 0.5) * avg_temp;
+            cell.avg_temp *= scale * 0.1;
+            cell.avg_temp += (1.0 - scale * 0.1) * START_TEMPERATURE;
+            ncell.avg_temp *= scale * 0.1;
+            ncell.avg_temp += (1.0 - scale * 0.1) * avg_temp;
             let avg_humid = (base_humid + ncell.avg_humidity) * 0.5;
             cell.avg_humidity *= scale;
             if cell.biome.is_ocean() {
@@ -466,19 +511,15 @@ pub fn set_averages(cells: &mut [ClimateCell], state: OrbitState, year_day_ratio
         sum += cell.avg_temp;
     }
 
-    let num_iters = 1 << depth.saturating_sub(3);
+    let num_iters = 1 << depth.saturating_sub(4);
     let mut old = cells.to_vec();
-    let scale = 0.99f32.powi(1 << depth.saturating_sub(2));
+    let scale = (0.9f32.powi(1 << depth.saturating_sub(2)) * 5.0).clamp(0.0, 1.0);
     for _ in 0..num_iters {
-        for _ in 0..2 {
-            conduct(cells, &mut old, depth, scale);
-            old.copy_from_slice(cells);
-        }
-        wind(cells, &mut old, layer, scale);
+        conduct(cells, &mut old, depth, scale, true, true);
         old.copy_from_slice(cells);
     }
     for _ in 0..(num_iters << 3) {
-        conduct(cells, &mut old, depth, scale * 0.25);
+        conduct(cells, &mut old, depth, scale * 0.6, false, true);
         old.copy_from_slice(cells);
     }
 
@@ -486,8 +527,8 @@ pub fn set_averages(cells: &mut [ClimateCell], state: OrbitState, year_day_ratio
     for cell in cells.iter_mut() {
         cell.avg_temp *= 0.5;
         cell.avg_temp += avg_temp * 0.5;
-        cell.avg_rainfall = cell.avg_humidity * 0.3
-            + (cell.avg_humidity * 1.2 - saturation_pressure(cell.avg_temp + 273.15)).max(0.0);
+        cell.avg_rainfall = cell.avg_humidity * 0.1
+            + (cell.avg_humidity - saturation_pressure(cell.avg_temp + 273.15)).max(0.0) * 0.9;
         cell.avg_humidity -= cell.avg_rainfall;
         cell.biome
             .update_new_climate(cell.avg_temp, cell.avg_humidity);

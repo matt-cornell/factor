@@ -2046,11 +2046,10 @@ fn update_texture(
             ColorKind::Humidity => {
                 let rotation = Vec2::from_angle(
                     if matches!(**state, AppState::InitClimate { .. }) {
-                        climate.avg_humidity
+                        climate.avg_humidity / saturation_pressure(climate.avg_temp + 273.15)
                     } else {
-                        climate.humidity
+                        climate.humidity / saturation_pressure(climate.temp + 273.15)
                     }
-                    .mul_add(0.1, 0.0)
                     .clamp(0.0, 1.0)
                         * FRAC_PI_3
                         * 4.0,
@@ -2072,7 +2071,7 @@ fn update_texture(
                     } else {
                         climate.rainfall
                     }
-                    .mul_add(0.1, 0.0)
+                    .mul_add(0.02, 0.0)
                     .clamp(0.0, 1.0)
                         * FRAC_PI_3
                         * 4.0,
