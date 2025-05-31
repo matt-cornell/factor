@@ -16,7 +16,7 @@ jobs:
       - name: Install system libraries
         run: sudo apt install -y libasound2-dev libudev-dev libwayland-dev
       - name: Install clippy
-        run: rustup component add clippy
+        run: rustup component add --toolchain nightly clippy
       - uses: actions/checkout@v4
       # - name: Run tests
       #   run: cargo test
@@ -28,7 +28,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
       - name: Install clippy
-        run: rustup component add clippy
+        run: rustup component add --toolchain nightly clippy
       - name: Install WASM target
         run: rustup target add wasm32-unknown-unknown
       - name: Check with clippy
