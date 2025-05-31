@@ -16,10 +16,7 @@ fn path() -> io::Result<PathBuf> {
         }
         Err(err) => {
             error!(%err, "Couldn't locate home directory");
-            Err(io::Error::new(
-                io::ErrorKind::Other,
-                "Couldn't locate home directory",
-            ))
+            Err(io::Error::other("Couldn't locate home directory"))
         }
     }
 }

@@ -1,6 +1,5 @@
 use crate::state::SingleplayerState;
 use bevy::prelude::*;
-use bevy::utils::hashbrown::HashMap;
 use bevy_egui::{egui, EguiContexts};
 use factor_client::core_ui::ClientState;
 use factor_client::ClientPlugin;
@@ -10,6 +9,7 @@ use factor_server::storage::PersistentBackend;
 use factor_server::terrain::bevy::{ClimateData, ClimatePhase};
 use factor_server::utils::database::{Database, DatabaseError, StorageError};
 use factor_server::ServerSystems;
+use std::collections::HashMap;
 use std::time::Duration;
 
 pub fn render_select_sp(

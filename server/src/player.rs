@@ -1,7 +1,7 @@
 use crate::chunks::{chunk_height, ChunkCorners, ChunkInterest, ChunkLoaded, InterestChanged};
 use crate::config::WorldConfig;
 use crate::tables::PLAYERS;
-use crate::utils::database::{self as redb, Database};
+use crate::utils::database::{self as redb, Database, TableResultExt};
 use crate::utils::random_point_in_quadrilateral;
 use bevy::prelude::*;
 use factor_common::data::{PlayerId, Position};
@@ -106,22 +106,18 @@ pub fn load_player(
     let res: Result<_, redb::Error> = try {
         'load: {
             let txn = db.begin_read()?;
-            match txn.open_table(PLAYERS) {
-                Ok(table) => {
-                    if let Some(player) = table.get(id)? {
-                        if let Some(data) = player.value() {
-                            break 'load data;
-                        }
+            if let Some(table) = txn.open_table(PLAYERS).if_exists()? {
+                if let Some(player) = table.get(id)? {
+                    if let Some(data) = player.value() {
+                        break 'load data;
                     }
                 }
-                Err(redb::TableError::TableDoesNotExist(_)) => {}
-                Err(err) => Err(err)?,
             }
             txn.close()?;
             let txn = db.begin_write()?;
             let mut table = txn.open_table(PLAYERS)?;
             let data = PlayerData {
-                pos: PlayerPosition::Pending((chunk << 8) | thread_rng().gen_range(0..256)),
+                pos: PlayerPosition::Pending((chunk << 8) | rand::rng().random_range(0..256)),
             };
             let opt = Some(data);
             table.insert(id, &opt)?;
@@ -177,7 +173,7 @@ pub fn set_heights(
         if chunk != trig.id {
             continue;
         }
-        let mut rng = thread_rng();
+        let mut rng = rand::rng();
         let mut xz;
         let y = loop {
             xz = random_point_in_quadrilateral(corners, &mut rng);
@@ -188,7 +184,7 @@ pub fn set_heights(
         *pos = Position {
             frame: chunk >> 8,
             pos: xz.extend(y).xzy(),
-            rot: Quat::from_rotation_y(rng.gen_range(0.0..=TAU)) * Quat::from_rotation_x(0.2),
+            rot: Quat::from_rotation_y(rng.random_range(0.0..=TAU)) * Quat::from_rotation_x(0.2),
         };
         commands.entity(entity).remove::<PendingPosition>();
         if let Some(&id) = id {

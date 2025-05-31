@@ -3,6 +3,7 @@
     array_try_map,
     box_as_ptr,
     iter_array_chunks,
+    map_try_insert,
     path_add_extension,
     try_blocks
 )]

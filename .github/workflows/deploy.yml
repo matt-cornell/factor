@@ -12,6 +12,8 @@ env:
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      RUSTFLAGS: --cfg getrandom_backend="wasm_js"
     steps:
       - name: Checkout
         uses: actions/checkout@v4

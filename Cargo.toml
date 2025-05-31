@@ -43,27 +43,28 @@ workspace = true
 factor-common.path = "common/"
 
 async-net = "2.0.0"
-async-tungstenite = { version = "0.28.1", features = ["async-tls"] }
-bevy = { version = "0.15.0", default-features = false, features = ["bevy_color", "bevy_state", "multi_threaded", "trace"] }
-bevy_egui = { version = "0.31.1", default-features = false, features = ["default_fonts", "render"] }
-bytemuck = { version = "1.20.0", features = ["derive", "extern_crate_std"] }
+async-tungstenite = { version = "0.29.1", features = ["async-tls"] }
+bevy = { version = "0.16.1", default-features = false, features = ["bevy_color", "bevy_state", "multi_threaded", "trace"] }
+bevy_egui = { version = "0.34.1", default-features = false, features = ["default_fonts", "render"] }
+bytemuck = { version = "1.23.0", features = ["derive", "extern_crate_std"] }
 futures-util = "0.3.31"
 futures-sink = "0.3.31"
 healpix = "0.3.0"
 hex = { version = "0.4.3", features = ["serde"] }
-itertools = "0.13.0"
-ordered-float = "4.6.0"
+itertools = "0.14.0"
+ordered-float = "5.0.0"
 postcard = { version = "1.0.10", default-features = false, features = ["use-std"] }
-quick_cache = "0.6.9"
-rand = "0.8.5"
-serde = { version = "1.0.215", features = ["derive"] }
-thiserror = "2.0.6"
-toml = "0.8.19"
+quick_cache = "0.6.14"
+rand = "0.9.1"
+serde = { version = "1.0", features = ["derive"] }
+thiserror = "2.0"
+toml = "0.8.22"
 triomphe = { version = "0.1.14", features = ["unsize"] }
-tinyset = "0.5.1"
+tinyset = "0.5.2"
 unsize = "1.1.0"
 
 [workspace.lints.clippy]
 type-complexity = "allow"
 too-many-arguments = "deny"
 unnecessary-literal-unwrap = "allow"
+result-large-err = "allow"

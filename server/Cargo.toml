@@ -25,14 +25,14 @@ bitflags = { version = "2.6.0", features = ["bytemuck"] }
 crossbeam-channel = "0.5.13"
 either = "1.13.0"
 priority-queue = "2.1.1"
-rand_distr = "0.4.3"
-rand_xoshiro = "0.6.0"
+rand_distr = "0.5.0"
+rand_xoshiro = "0.7.0"
 redb = { version = "2.2.0", features = ["logging"] }
 wasm-timer = "0.2.5"
 rayon = "1.10.0"
 
 [dev-dependencies]
-bevy = { workspace = true, features = ["bevy_gizmos", "bevy_pbr", "bevy_render", "bevy_window", "bevy_winit", "tonemapping_luts", "webgl2", "x11"] }
+bevy = { workspace = true, features = ["bevy_gizmos", "bevy_pbr", "bevy_render", "bevy_sprite", "bevy_window", "bevy_winit", "tonemapping_luts", "webgl2", "x11"] }
 bevy_egui.workspace = true
 rfd = "0.15.0"
 itertools.workspace = true
@@ -41,11 +41,8 @@ itertools.workspace = true
 wasm-bindgen = "0.2.95"
 web-sys = { version = "0.3.72", features = ["Document", "Storage", "Window", "console"] }
 
-[target.'cfg(target_family = "wasm")'.dev-dependencies]
-web-time = "1.1.0"
-
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
-etcetera = "0.8.0"
+etcetera = "0.10.0"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2.162"

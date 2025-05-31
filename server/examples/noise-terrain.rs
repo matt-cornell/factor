@@ -1,7 +1,6 @@
 use bevy::prelude::*;
 use bevy::render::render_asset::RenderAssetUsages;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
-use bevy::window::PrimaryWindow;
 use bevy_egui::{egui, EguiContexts, EguiPlugin};
 use factor_common::healpix;
 use factor_server::terrain::noise::*;
@@ -82,7 +81,7 @@ fn cell_noise(gradient: bool, depth: u8, shift: f32) -> Shifted<ValueOrGradient>
     let base = if gradient {
         ValueOrGradient::Gradient(GradientCellNoise {
             depth,
-            hasher: thread_rng()
+            hasher: rand::rng()
                 .sample_iter(rand_distr::UnitCircle)
                 .map(|[x, y]| Vec2::new(x, y))
                 .take(healpix::checked::n_hash(depth) as _)
@@ -92,8 +91,8 @@ fn cell_noise(gradient: bool, depth: u8, shift: f32) -> Shifted<ValueOrGradient>
     } else {
         ValueOrGradient::Value(ValueCellNoise {
             depth,
-            hasher: thread_rng()
-                .sample_iter(rand_distr::Standard)
+            hasher: rand::rng()
+                .sample_iter(rand_distr::StandardUniform)
                 .take(healpix::checked::n_hash(depth) as _)
                 .collect::<Box<[f32]>>(),
             scale: linear,
@@ -170,7 +169,9 @@ fn main() {
             }),
             ..default()
         }))
-        .add_plugins(EguiPlugin)
+        .add_plugins(EguiPlugin {
+            enable_multipass_for_primary_context: false,
+        })
         .init_state::<AppState>()
         .add_event::<ReloadTerrain>()
         .insert_resource(Rotating(true))
@@ -279,7 +280,7 @@ fn handle_keypresses(
     if keys.any_pressed([KeyCode::ControlLeft, KeyCode::ControlRight])
         && keys.just_pressed(KeyCode::KeyW)
     {
-        exit_evt.send(AppExit::Success);
+        exit_evt.write(AppExit::Success);
     }
     if keys.just_pressed(KeyCode::KeyS) {
         rotating.0 = !rotating.0;
@@ -293,7 +294,7 @@ fn handle_keypresses(
     match *state.get() {
         AppState::Heights => {
             if keys.just_pressed(KeyCode::KeyR) {
-                reroll_rand.send(ReloadTerrain);
+                reroll_rand.write(ReloadTerrain);
             }
         }
     }
@@ -311,7 +312,6 @@ fn update_ui(
     mut reroll_rand: EventWriter<ReloadTerrain>,
     mut wip_layer: Local<Option<NoiseSourceBuilder>>,
     mut code_editing: Local<Option<String>>,
-    primary: Query<Entity, With<PrimaryWindow>>,
     minimap: Res<MiniMap>,
 ) {
     let ctrl_docked = docked_controls.0;
@@ -329,7 +329,7 @@ fn update_ui(
             });
         });
         if ui.button("Restart").clicked() {
-            reroll_rand.send(ReloadTerrain);
+            reroll_rand.write(ReloadTerrain);
         }
         if ui
             .checkbox(&mut rotating.bypass_change_detection().0, "Rotating")
@@ -550,7 +550,7 @@ fn update_ui(
             (VIEW_WIDTH as f32, VIEW_HEIGHT as f32),
         ));
     };
-    let context = contexts.ctx_for_entity_mut(primary.single());
+    let context = contexts.ctx_mut();
     if ctrl_docked {
         egui::SidePanel::left("Controls")
             .resizable(true)
@@ -611,7 +611,7 @@ fn update_texture(
     filter: Res<LayerFilter>,
     mut images: ResMut<Assets<Image>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
-    mut planet: Query<&mut MeshMaterial3d<StandardMaterial>, With<Planet>>,
+    mut planet: Single<&mut MeshMaterial3d<StandardMaterial>, With<Planet>>,
     mut minimap: ResMut<MiniMap>,
 ) {
     let mut img = Image::new(
@@ -625,7 +625,7 @@ fn update_texture(
         TextureFormat::Rgba8Unorm,
         RenderAssetUsages::RENDER_WORLD,
     );
-    for (n, d) in bytemuck::cast_slice_mut(&mut img.data)
+    for (n, d) in bytemuck::cast_slice_mut(img.data.as_mut().unwrap())
         .iter_mut()
         .enumerate()
     {
@@ -649,14 +649,13 @@ fn update_texture(
         }
     }
     let image = images.add(img);
-    planet.single_mut().0 = materials.add(StandardMaterial {
+    planet.0 = materials.add(StandardMaterial {
         base_color_texture: Some(image.clone()),
         ..default()
     });
     minimap.image = image;
 }
 
-fn rotate_sphere(mut query: Query<&mut Transform, With<Planet>>, time: Res<Time>) {
-    let mut trans = query.single_mut();
-    trans.rotate_y(time.delta_secs() / 2.0);
+fn rotate_sphere(mut query: Single<&mut Transform, With<Planet>>, time: Res<Time>) {
+    query.rotate_y(time.delta_secs() / 2.0);
 }

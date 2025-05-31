@@ -8,8 +8,8 @@ pub mod option_bytes;
 
 pub fn random_point_in_quadrilateral<R: Rng + ?Sized>(points: [Vec2; 4], rng: &mut R) -> Vec2 {
     // Generate two uniformly distributed random numbers
-    let r1 = rng.gen::<f32>();
-    let r2 = rng.gen_range(0.0..=(1.0 - r1));
+    let r1 = rng.random::<f32>();
+    let r2 = rng.random_range(0.0..=(1.0 - r1));
 
     // Compute the total area of the quadrilateral via vector cross products
     let area_triangle1 = 0.5
@@ -26,7 +26,7 @@ pub fn random_point_in_quadrilateral<R: Rng + ?Sized>(points: [Vec2; 4], rng: &m
     let split_factor = area_triangle1 / total_area;
 
     // Perform uniform point selection based on area-weighted triangulation
-    if rng.gen_bool(split_factor as _) {
+    if rng.random_bool(split_factor as _) {
         // Select point in the second triangle
         let r1 = 1.0 - r1;
         let r2 = 1.0 - r2;

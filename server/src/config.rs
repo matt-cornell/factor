@@ -107,7 +107,7 @@ impl AssetLoader for WorldConfigLoader {
         reader: &mut dyn io::Reader,
         _settings: &Self::Settings,
         _load_context: &mut LoadContext,
-    ) -> impl bevy::utils::ConditionalSendFuture<Output = Result<Self::Asset, Self::Error>> {
+    ) -> impl bevy::tasks::ConditionalSendFuture<Output = Result<Self::Asset, Self::Error>> {
         async move {
             let mut buf = Vec::new();
             reader.read_to_end(&mut buf).await?;

@@ -82,9 +82,7 @@ pub fn transforms_for(depth: u8, base: u64, neighbor: u64) -> Transform {
                 let len = (translate - trans2).length();
                 assert!(
                     len < 0.01,
-                    "translations are significantly different: {} vs {}",
-                    translate,
-                    trans2
+                    "translations are significantly different: {translate} vs {trans2}"
                 );
             }
             debug!(%translate, "found translation");

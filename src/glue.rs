@@ -1,6 +1,5 @@
 use bevy::ecs::system::SystemChangeTick;
 use bevy::prelude::*;
-use bevy::utils::HashMap;
 use factor_client::chunks::{ChunkInterest, ClientChunk, InterestChanged as ClientInterestChanged};
 use factor_client::core_ui::ClientState;
 use factor_client::settings::DebugSettings;
@@ -12,6 +11,7 @@ use factor_server::player::{PlayerLoaded, PlayerRequest};
 use factor_server::terrain::bevy::TerrainReady;
 use factor_server::utils::database::Database;
 use factor_server::ServerState;
+use std::collections::HashMap;
 use std::error::Error;
 use unsize::*;
 
@@ -75,7 +75,7 @@ pub fn interest_changed(
     interest: Res<ChunkInterest>,
     mut events: EventWriter<ServerInterestChanged>,
 ) {
-    events.send(ServerInterestChanged {
+    events.write(ServerInterestChanged {
         player: PlayerId::DEFAULT,
         new: interest.chunks.clone(),
     });

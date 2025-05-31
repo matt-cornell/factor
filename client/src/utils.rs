@@ -1,4 +1,4 @@
-use bevy::ecs::world::Command;
+use bevy::ecs::system::Command;
 use bevy::prelude::*;
 use std::future::Future;
 use std::pin::Pin;
@@ -27,7 +27,7 @@ impl Command for Cleanup {
             return;
         };
         if e.contains::<Despawnable>() {
-            e.despawn_recursive();
+            e.despawn();
         } else {
             e.remove::<ClientChunkBundle>();
         }
