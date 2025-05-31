@@ -27,7 +27,7 @@ impl Command for Cleanup {
             return;
         };
         if e.contains::<Despawnable>() {
-            e.despawn_recursive();
+            e.despawn();
         } else {
             e.remove::<ClientChunkBundle>();
         }
