@@ -1,6 +1,5 @@
 use bevy::math::*;
 use bytemuck::*;
-use factor_common::healpix;
 use rand::prelude::*;
 use rand_distr::Normal;
 
@@ -123,7 +122,7 @@ pub fn init_climate<F: FnMut(u64) -> f32, R: Rng + ?Sized>(
     ocean_coverage: f32,
     rng: &mut R,
 ) -> Box<[ClimateCell]> {
-    let len = healpix::n_hash(depth);
+    let len = healpix::checked::n_hash(depth);
     let temp_sample: Normal<f32> = Normal::new(START_TEMPERATURE, 0.5).unwrap();
     let heat_sample: Normal<f32> = Normal::new(ROCK_HEAT_CAPACITY, ROCK_HEAT_CAPACITY_DEV).unwrap();
     let albedo_sample: Normal<f32> = Normal::new(0.2, 0.05).unwrap();
@@ -166,12 +165,12 @@ pub fn step_climate<F: FnMut(f32, f32) -> f32, R: Rng + ?Sized>(
         debug_assert_eq!(per_square.count_ones(), 1);
         per_square.trailing_zeros() as u8 / 2
     };
-    let layer = healpix::nested::get(depth);
+    let layer = healpix::get(depth);
     let mut old = cells.to_vec().into_boxed_slice();
 
     // radiation
     for (idx, cell) in cells.iter_mut().enumerate() {
-        let (lon, lat) = layer.center(idx as _);
+        let [lon, lat] = layer.center(idx as _).as_f32s();
         let sun = solar_intensity(lon as _, lat as _);
         let energy =
             sun * cell.albedo - 0.9 * (cell.temp + 273.15).powi(4) * STEFAN_BOLTZMANN_CONSTANT;
@@ -191,14 +190,12 @@ pub fn step_climate<F: FnMut(f32, f32) -> f32, R: Rng + ?Sized>(
         let scale = scale / num_iters as f32 * 0.6;
         for _ in 0..num_iters {
             for (i, old) in old.iter().enumerate() {
-                let neighbors = healpix::neighbors(depth, i as _, true);
-                let (clon, clat) = layer.center(i as _);
-                let (clon, clat) = (clon as f32, clat as f32);
+                let neighbors = layer.neighbors(i as _);
+                let [clon, clat] = layer.center(i as _).as_f32s();
                 let (asin1, acos1) = clat.sin_cos();
-                for &n in &neighbors {
+                for &n in neighbors.values() {
                     let cell = &mut cells[n as usize];
-                    let (lon, lat) = layer.center(n);
-                    let (lon, lat) = (lon as f32, lat as f32);
+                    let [lon, lat] = layer.center(n).as_f32s();
                     let (asin2, acos2) = lat.sin_cos();
                     let (osin, ocos) = (clon - lon).sin_cos();
                     let base = Vec2::new(osin * acos2, acos1 * asin2 - asin1 * acos2 * ocos);
@@ -235,32 +232,32 @@ pub fn step_climate<F: FnMut(f32, f32) -> f32, R: Rng + ?Sized>(
     // conduction
     for _ in 0..(num_iters * 3 / 2) {
         for (i, cell) in cells.iter_mut().enumerate() {
-            let neighbors = healpix::neighbors(depth, i as _, true);
+            let neighbors = layer.neighbors(i as _);
             let mut cum_temp = 0.0;
             let mut cum_humid = 0.0;
             let mut cum_rain = 0.0;
             let mut cum_wind = Vec2::ZERO;
-            let (clon, clat) = layer.center(i as _);
-            let (clon, clat) = (clon as f32, clat as f32);
+            let [clon, clat] = layer.center(i as _).as_f32s();
             let (asin1, acos1) = clat.sin_cos();
             let base_pressure = cell.temp;
-            for &n in &neighbors {
+            let mut count = 0;
+            for &n in neighbors.values() {
+                count += 1;
                 let cell = &old[n as usize];
                 cum_temp += cell.temp;
                 cum_humid += cell.humidity;
                 cum_rain += cell.rainfall;
                 let pressure_diff = base_pressure - cell.temp;
-                let (lon, lat) = layer.center(n);
-                let (lon, lat) = (lon as f32, lat as f32);
+                let [lon, lat] = layer.center(n).as_f32s();
                 let (asin2, acos2) = lat.sin_cos();
                 let (osin, ocos) = (clon - lon).sin_cos();
                 let base = Vec2::new(osin * acos2, acos1 * asin2 - asin1 * acos2 * ocos);
                 cum_wind += base.normalize_or_zero() * pressure_diff * scale * scale;
             }
-            cum_temp /= neighbors.len() as f32;
-            cum_humid /= neighbors.len() as f32;
-            cum_rain /= neighbors.len() as f32;
-            assert_ne!(neighbors.len(), 0);
+            cum_temp /= count as f32;
+            cum_humid /= count as f32;
+            cum_rain /= count as f32;
+            assert_ne!(count, 0);
             cell.temp *= 1.0 - scale;
             cell.temp += cum_temp * scale;
             cell.humidity *= 1.0 - scale * 0.1;

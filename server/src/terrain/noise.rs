@@ -1,6 +1,6 @@
+use ::healpix::LonLat;
 use bevy::math::Vec2;
 use factor_common::healpix;
-use std::f64::consts::{FRAC_PI_2, TAU};
 
 fn circle_dist(a: Vec2, b: Vec2) -> Vec2 {
     use std::f32::consts::*;
@@ -116,13 +116,12 @@ impl<H, I> ValueCornerNoise<H, I> {
 }
 impl<H: ValueHash<(f32, f32), f32>, I: Interpolator> NoiseSource for ValueCornerNoise<H, I> {
     fn get_height(&self, lon: f32, lat: f32) -> f32 {
-        let layer = healpix::nested::get(self.depth);
-        let hash = layer.hash(
-            (lon as f64) % TAU,
-            (lat as f64).clamp(-FRAC_PI_2, FRAC_PI_2),
-        );
+        let layer = healpix::get(self.depth);
+        let hash = layer.hash(LonLat::from_f32s(lon, lat).normalized());
         let vec = Vec2::new(lon, lat);
-        let verts = layer.vertices(hash).map(|(x, y)| Vec2::new(x as _, y as _));
+        let verts = layer
+            .vertices(hash)
+            .map(|LonLat { lon: x, lat: y }| Vec2::new(x as _, y as _));
         let weights = verts.map(|v| self.hasher.hash((v.x, v.y)));
         let d1 = verts[0] - verts[1];
         let w1 = d1.dot(vec - verts[1]).max(0.0) / d1.length();
@@ -158,15 +157,12 @@ impl<H, I> GradientCornerNoise<H, I> {
 }
 impl<H: ValueHash<(f32, f32), Vec2>, I: Interpolator> NoiseSource for GradientCornerNoise<H, I> {
     fn get_height(&self, lon: f32, lat: f32) -> f32 {
-        let layer = healpix::nested::get(self.depth);
-        let hash = layer.hash(
-            (lon as f64) % TAU,
-            (lat as f64).clamp(-FRAC_PI_2, FRAC_PI_2),
-        );
+        let layer = healpix::get(self.depth);
+        let hash = layer.hash(LonLat::from_f32s(lon, lat).normalized());
         let vec = Vec2::new(lon, lat);
         let verts = layer
             .vertices(hash)
-            .map(|(x, y)| Vec2::new(x as f32 % std::f32::consts::TAU, y as _));
+            .map(|LonLat { lon: x, lat: y }| Vec2::new(x as f32 % std::f32::consts::TAU, y as _));
         let weights = verts.map(|v| self.hasher.hash((v.x, v.y)).dot(vec - v));
         let v1 = self.interp.interp(
             weights[0],
@@ -214,11 +210,8 @@ impl<H, S> ValueCellNoise<H, S> {
 }
 impl<H: ValueHash<usize, f32>, S: Scaler> NoiseSource for ValueCellNoise<H, S> {
     fn get_height(&self, lon: f32, lat: f32) -> f32 {
-        let layer = healpix::nested::get(self.depth);
-        let neighs = layer.bilinear_interpolation(
-            (lon as f64) % TAU,
-            (lat as f64).clamp(-FRAC_PI_2, FRAC_PI_2),
-        );
+        let layer = healpix::get(self.depth);
+        let neighs = layer.bilinear_interpolation(LonLat::from_f32s(lon, lat).normalized());
         let Vec2 { x: sum, y: scale } = neighs
             .iter()
             .map(|&(n, w)| {
@@ -256,17 +249,13 @@ impl<H, S> GradientCellNoise<H, S> {
 }
 impl<H: ValueHash<usize, Vec2>, S: Scaler> NoiseSource for GradientCellNoise<H, S> {
     fn get_height(&self, lon: f32, lat: f32) -> f32 {
-        let layer = healpix::nested::get(self.depth);
-        let neighs = layer.bilinear_interpolation(
-            (lon as f64) % TAU,
-            (lat as f64).clamp(-FRAC_PI_2, FRAC_PI_2),
-        );
+        let layer = healpix::get(self.depth);
+        let neighs = layer.bilinear_interpolation(LonLat::from_f32s(lon, lat).normalized());
         let vec = Vec2::new(lon, lat);
         let Vec2 { x: sum, y: scale } = neighs
             .iter()
             .map(|&(n, w)| {
-                let (cx, cy) = layer.center(n as _);
-                let c = Vec2::new(cx as _, cy as _);
+                let c = Vec2::from(layer.center(n as _).as_f32s());
                 let s = self.scale.scale(w as f32);
                 Vec2::new(
                     self.hasher
