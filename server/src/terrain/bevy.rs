@@ -200,7 +200,7 @@ pub(crate) fn setup_noise(
                     hasher: rand_distr::UnitCircle
                         .sample_iter(&mut init.rng)
                         .map(|[x, y]| Vec2::new(x, y))
-                        .take(healpix::n_hash(layer.depth) as _)
+                        .take(healpix::checked::n_hash(layer.depth) as _)
                         .collect::<Box<[Vec2]>>(),
                     scale: Identity,
                 })
@@ -209,7 +209,7 @@ pub(crate) fn setup_noise(
                     depth: layer.depth,
                     hasher: rand_distr::Standard
                         .sample_iter(&mut init.rng)
-                        .take(healpix::n_hash(layer.depth) as _)
+                        .take(healpix::checked::n_hash(layer.depth) as _)
                         .collect::<Box<[f32]>>(),
                     scale: Identity,
                 })
@@ -312,7 +312,7 @@ pub(crate) fn setup_climate(
     let cells = init_climate(
         climate_depth,
         |cell| {
-            let (lon, lat) = healpix::nested::center(climate_depth, cell);
+            let [lon, lat] = healpix::get(climate_depth).center(cell).as_f32s();
             height.get_height(lon as _, lat as _) * config.tectonics.scale
                 + noise.0.get_height(lon as _, lat as _)
         },

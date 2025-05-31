@@ -1,8 +1,8 @@
 #![feature(slice_split_once)]
 
 pub mod cell;
-pub mod coords;
 pub mod data;
+pub mod geo;
 pub mod glue;
 pub mod healpix;
 pub mod mesh;

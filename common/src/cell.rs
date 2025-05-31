@@ -1,8 +1,7 @@
-use crate::coords::*;
-use crate::healpix::cds::compass_point::MainWind;
-use crate::{healpix, PLANET_RADIUS};
-use bevy::math::Affine2;
+use crate::PLANET_RADIUS;
+use bevy::math::{Affine2, DVec2};
 use bevy::prelude::*;
+use healpix::dir::Direction;
 use std::convert::Infallible;
 use std::sync::{LazyLock, OnceLock};
 use triomphe::Arc;
@@ -19,10 +18,11 @@ static CACHE: [LazyLock<
 
 fn cache_data(depth: u8, hash: u64) -> ([Vec2; 4], Arc<OnceLock<[(u64, Transform); 8]>>) {
     let Ok(res) = CACHE[depth as usize].get_or_insert_with(&hash, || {
-        let layer = healpix::Layer::new(depth);
+        let layer = healpix::Layer::get(depth);
         let vertices = layer.vertices(hash);
         let center = layer.center(hash);
-        let corners = vertices.map(|c2| (get_relative(center, c2) * PLANET_RADIUS).as_vec2()); // I don't know where this 2 came from
+        let corners = vertices
+            .map(|c2| (DVec2::from(healpix::geo::relative(center, c2)) * PLANET_RADIUS).as_vec2()); // I don't know where this 2 came from
         Ok::<_, Infallible>((corners, Arc::new(OnceLock::new())))
     });
     res
@@ -34,21 +34,21 @@ pub fn transforms_for(depth: u8, base: u64, neighbor: u64) -> Transform {
     if base == neighbor {
         return Transform::IDENTITY;
     }
-    let layer = healpix::Layer::new(depth);
+    let layer = healpix::Layer::get(depth);
     let (verts, slice) = cache_data(depth, base); // verts: S E N W
     let transforms = slice.get_or_init(|| {
         let _guard = info_span!("finding transforms", depth, base).entered();
-        let neighbors = layer.neighbors(base, false);
+        let neighbors = layer.neighbors(base);
         let mut out_verts = [[Vec2::NAN; 4]; 8]; // NW NE SE SW N E S W
         let mut out = [(u64::MAX, NAN_TRANSFORM); 8]; // same order
-        for (i, wind) in [MainWind::NW, MainWind::NE, MainWind::SE, MainWind::SW]
+        for (i, wind) in [Direction::NW, Direction::NE, Direction::SE, Direction::SW]
             .into_iter()
             .enumerate()
         {
             let cell = *neighbors.get(wind).unwrap();
-            let _guard = info_span!("ordinal transform", wind = ?[MainWind::NW, MainWind::NE, MainWind::SE, MainWind::SW][i], neighbor = cell).entered();
+            let _guard = info_span!("ordinal transform", ?wind, neighbor = cell).entered();
             let mut new_verts = corners_of(depth, cell); // S E N W
-            // new_verts.rotate_left(1);
+                                                         // new_verts.rotate_left(1);
             let [na, nb, ba, bb] = match i {
                 0 => [0, 1, 3, 2],
                 1 => [3, 0, 2, 1],
@@ -105,14 +105,14 @@ pub fn transforms_for(depth: u8, base: u64, neighbor: u64) -> Transform {
             );
         }
         debug!(verts = ?out_verts[..4], "initial verticces");
-        for (i, wind) in [MainWind::N, MainWind::E, MainWind::S, MainWind::W]
+        for (i, wind) in [Direction::N, Direction::E, Direction::S, Direction::W]
             .into_iter()
             .enumerate()
         {
             let Some(&cell) = neighbors.get(wind) else {
                 continue;
             };
-            let _guard = info_span!("cardinal transform", wind = ?[MainWind::N, MainWind::E, MainWind::S, MainWind::W][i], neighbor = cell).entered();
+            let _guard = info_span!("cardinal transform", ?wind, neighbor = cell).entered();
             let prev = i % 4;
             let next = (i + 1) % 4;
             let new_verts = corners_of(depth, cell); // S E N W
@@ -138,7 +138,10 @@ pub fn transforms_for(depth: u8, base: u64, neighbor: u64) -> Transform {
             #[cfg(debug_assertions)]
             {
                 let bottom = mat3.transpose().z_axis;
-                assert!((bottom - Vec3::Z).length() < 0.001, "transform isn't affine, bottom row = {bottom}");
+                assert!(
+                    (bottom - Vec3::Z).length() < 0.001,
+                    "transform isn't affine, bottom row = {bottom}"
+                );
             }
             debug!(mat = %mat3, "found transformation");
             let (scale, angle, trans) = Affine2::from_mat3(mat3).to_scale_angle_translation();
@@ -162,7 +165,7 @@ pub fn transforms_for(depth: u8, base: u64, neighbor: u64) -> Transform {
                 depth,
                 base,
                 neighbor,
-                dist = get_relative(layer.center(base), layer.center(neighbor)).length()
+                dist = healpix::geo::distance(layer.center(base), layer.center(neighbor))
                     * PLANET_RADIUS,
                 "attempted to find transform for non-neighboring cell"
             );

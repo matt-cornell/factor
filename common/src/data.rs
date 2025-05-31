@@ -1,10 +1,10 @@
-use crate::coords::{get_absolute, LonLat};
 use crate::PLANET_RADIUS;
 use bevy::ecs::archetype::Archetype;
 use bevy::ecs::component::{ComponentId, Components, Tick};
 use bevy::ecs::query::{FilteredAccess, QueryFilter, WorldQuery};
 use bevy::ecs::storage::{Table, TableRow};
 use bevy::prelude::*;
+use healpix::coords::LonLat;
 use serde::{Deserialize, Serialize};
 use std::fmt::{self, Debug, Display, Formatter};
 
@@ -135,14 +135,14 @@ impl Position {
         }
     }
     pub fn get_absolute(&self) -> LonLat {
-        get_absolute(
-            crate::healpix::Layer::new(12).center(self.frame),
-            self.pos.xz().as_dvec2() / PLANET_RADIUS,
+        healpix::geo::absolute(
+            healpix::Layer::get(12).center(self.frame),
+            (self.pos.xz().as_dvec2() / PLANET_RADIUS).into(),
         )
     }
     /// Get the containing depth 16 frame, i.e. the chunk
     pub fn get_chunk(&self) -> u64 {
-        crate::healpix::Layer::new(16).hash(self.get_absolute()) // TODO: use inverse bilinear
+        healpix::Layer::get(16).hash(self.get_absolute()) // TODO: use inverse bilinear
     }
 }
 

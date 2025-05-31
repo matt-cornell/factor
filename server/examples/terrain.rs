@@ -237,7 +237,7 @@ fn cell_noise(gradient: bool, depth: u8, shift: f32) -> Shifted<ValueOrGradient>
             hasher: thread_rng()
                 .sample_iter(rand_distr::UnitCircle)
                 .map(|[x, y]| Vec2::new(x, y))
-                .take(healpix::n_hash(depth) as _)
+                .take(healpix::checked::n_hash(depth) as _)
                 .collect::<Box<[Vec2]>>(),
             scale: linear,
         })
@@ -246,7 +246,7 @@ fn cell_noise(gradient: bool, depth: u8, shift: f32) -> Shifted<ValueOrGradient>
             depth,
             hasher: thread_rng()
                 .sample_iter(rand_distr::Standard)
-                .take(healpix::n_hash(depth) as _)
+                .take(healpix::checked::n_hash(depth) as _)
                 .collect::<Box<[f32]>>(),
             scale: linear,
         })
@@ -1474,12 +1474,13 @@ fn setup_tectonics(
     if *color == ColorKind::Temperature {
         *color = ColorKind::Height;
     }
+    let layer = healpix::get(depth.0);
     let image_map = (0..(WIDTH * HEIGHT))
         .map(|i| {
             use std::f64::consts::*;
             let x = ((i % WIDTH) as f64).mul_add(TAU / WIDTH as f64, -PI);
             let y = ((i / WIDTH) as f64).mul_add(-PI / HEIGHT as f64, FRAC_PI_2);
-            cdshealpix::nested::hash(depth.0, x, y) as usize
+            layer.hash([x, y]) as usize
         })
         .collect();
     let state = init_terrain(depth.0, &mut thread_rng());
@@ -1537,12 +1538,13 @@ fn reload_noise(mut commands: Commands, noise: Res<NoiseSourceRes>) {
     commands.insert_resource(NoiseHeights(
         vec![0.0; 12 * (1 << (2 * noise.depth))].into_boxed_slice(),
     ));
+    let layer = healpix::get(noise.depth);
     let image_map = (0..(WIDTH * HEIGHT))
         .map(|i| {
             use std::f64::consts::*;
             let x = ((i % WIDTH) as f64).mul_add(TAU / WIDTH as f64, -PI);
             let y = ((i / WIDTH) as f64).mul_add(-PI / HEIGHT as f64, FRAC_PI_2);
-            cdshealpix::nested::hash(noise.depth, x, y) as usize
+            layer.hash([x, y]) as usize
         })
         .collect();
     commands.insert_resource(NoiseMap(image_map));
@@ -1572,10 +1574,10 @@ fn update_noise_terrain(
         terr.0
             .extend(noise.layers[start..].iter().map(NoiseSourceBuilder::build));
     }
-    let layer = healpix::nested::get(noise.depth);
+    let layer = healpix::get(noise.depth);
     for i in 0..layer.n_hash() {
-        let (lon, lat) = layer.center(i);
-        let height = terr.0.get_height(lon as _, lat as _);
+        let [lon, lat] = layer.center(i).as_f32s();
+        let height = terr.0.get_height(lon, lat);
         samples.0[i as usize] = height;
     }
     let _ = &mut *terr;
@@ -1586,7 +1588,7 @@ fn update_noise_terrain(
                 use std::f64::consts::*;
                 let x = ((i % WIDTH) as f64).mul_add(TAU / WIDTH as f64, -PI);
                 let y = ((i / WIDTH) as f64).mul_add(-PI / HEIGHT as f64, FRAC_PI_2);
-                layer.hash(x, y) as usize
+                layer.hash([x, y]) as usize
             })
             .collect();
         commands.insert_resource(NoiseMap(image_map));
@@ -1612,21 +1614,22 @@ fn setup_climate(
             AppState::Tectonics { iter, .. } => iter,
         },
     });
+    let dlayer = healpix::get(depth.0);
     let image_map = (0..(WIDTH * HEIGHT))
         .map(|i| {
             use std::f64::consts::*;
             let x = ((i % WIDTH) as f64).mul_add(TAU / WIDTH as f64, -PI);
             let y = ((i / WIDTH) as f64).mul_add(-PI / HEIGHT as f64, FRAC_PI_2);
-            cdshealpix::nested::hash(depth.0, x, y) as usize
+            dlayer.hash([x, y]) as usize
         })
         .collect();
     let state = init_climate(
         depth.0,
         |hash| {
-            let (lon, lat) = healpix::nested::center(depth.0, hash);
-            let noise_hash = healpix::nested::hash(noise.1.depth, lon, lat);
+            let c = dlayer.center(hash);
+            let noise_hash = healpix::get(noise.1.depth).hash(c);
             let noise_height = noise.0 .0[noise_hash as usize];
-            let tect_hash = healpix::nested::hash(tect.2 .0, lon, lat);
+            let tect_hash = healpix::get(tect.2 .0).hash(c);
             let tect_height = tect.0 .0.cells()[tect_hash as usize]
                 .height
                 .mul_add(0.1, 0.2)
@@ -1753,7 +1756,7 @@ fn update_texture(
                 let cx = ((n % WIDTH) as f32).mul_add(TAU / WIDTH as f32, -PI);
                 let cy = ((n / WIDTH) as f32).mul_add(-PI / HEIGHT as f32, FRAC_PI_2);
                 for (plate, color) in state.plates().iter().zip(colors) {
-                    let sqdist = (cx - plate.center_long).powi(2) + (cy - plate.center_lat).powi(2);
+                    let sqdist = Vec2::new(cx, cy).distance_squared(plate.center.as_f32s().into());
                     if sqdist < 0.005 {
                         *d = color.as_u32();
                         continue 'pixels;

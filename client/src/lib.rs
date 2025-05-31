@@ -1,4 +1,4 @@
-#![feature(trait_upcasting, try_blocks)]
+#![feature(try_blocks)]
 
 use bevy::prelude::*;
 use bevy_egui::{egui, EguiPlugin};
