@@ -19,3 +19,6 @@ triomphe.workspace = true
 
 [lints]
 workspace = true
+
+[target.'cfg(target_family = "wasm")'.dependencies]
+getrandom = { version = "0.3.1", features = ["wasm_js"] }

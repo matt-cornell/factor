@@ -38,7 +38,6 @@ rfd = "0.15.0"
 itertools.workspace = true
 
 [target.'cfg(target_family = "wasm")'.dependencies]
-getrandom = { version = "0.3.1", features = ["wasm_js"] }
 wasm-bindgen = "0.2.95"
 web-sys = { version = "0.3.72", features = ["Document", "Storage", "Window", "console"] }
 
