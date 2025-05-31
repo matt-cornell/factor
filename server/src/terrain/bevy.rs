@@ -6,7 +6,8 @@ use crate::orbit::*;
 use crate::tables::{DataEntry, MISC_DATA, TERRAIN};
 use crate::utils::database::*;
 use crate::utils::db_value::ErasedValue;
-use bevy::prelude::*;
+use bevy::prelude::{Result, *};
+use bevy::tasks::futures_lite;
 use bevy::tasks::AsyncComputeTaskPool;
 use crossbeam_channel::Receiver;
 use factor_common::healpix;
@@ -337,7 +338,7 @@ pub(crate) fn run_climate(
     state: Res<State<ClimatePhase>>,
     mut next_state: ResMut<NextState<ClimatePhase>>,
     mut channel: Local<Option<Receiver<(ClimateData, ClimateInit)>>>,
-) {
+) -> Result<()> {
     let ClimatePhase::ClimateStep(step) = **state else {
         unreachable!()
     };
@@ -351,7 +352,7 @@ pub(crate) fn run_climate(
             *init = data.1;
             next_state.set(ClimatePhase::ClimateStep(step + 1));
         } else {
-            return;
+            return Ok(());
         }
     }
     trace!(step, "Climate step");
@@ -365,7 +366,7 @@ pub(crate) fn run_climate(
             planet.transmute_lens_filtered().query(),
             Res::clone(&config),
         );
-        let planet_transform = *planet.single().2;
+        let planet_transform = *planet.single()?.2;
         let mut climate = climate.clone();
         let time_scale = config.climate.time_step * dt;
         let intensity = config.climate.intensity;
@@ -386,7 +387,7 @@ pub(crate) fn run_climate(
                     time_scale,
                     &mut init.rng,
                 );
-                std::future::ready(()).await;
+                futures_lite::future::yield_now().await;
                 climate.update();
                 if let Err(_err) = tx.send((climate, init)) {
                     error!("Somehow this channel closed?");
@@ -394,6 +395,7 @@ pub(crate) fn run_climate(
             })
             .detach();
     }
+    Ok(())
 }
 
 pub(crate) fn finalize(
@@ -525,17 +527,16 @@ pub fn update_climate(
     database: Option<Res<Database>>,
     mut climate: ResMut<ClimateData>,
     config: Res<WorldConfig>,
-    planet: Query<&GlobalTransform, With<PlanetSurface>>,
+    planet: Single<&GlobalTransform, With<PlanetSurface>>,
     time_step: Res<Time<Virtual>>,
 ) {
-    let planet_transform = planet.single();
     step_climate(
         &mut climate.cells,
         |x, y| {
             let (xsin, xcos) = x.sin_cos();
             let (ysin, ycos) = y.sin_cos();
             let point = Vec3::new(xcos * ycos, xsin * ycos, ysin);
-            let (_, rot, trans) = planet_transform.to_scale_rotation_translation();
+            let (_, rot, trans) = planet.to_scale_rotation_translation();
             config.climate.intensity * rot.mul_vec3(point).dot(-trans.normalize_or_zero()).max(0.0)
         },
         config.climate.time_step * time_step.delta_secs(),

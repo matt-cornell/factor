@@ -121,8 +121,10 @@ fn main() {
             }),
             ..default()
         }))
-        .add_plugins(EguiPlugin)
-        .add_plugins(WireframePlugin)
+        .add_plugins(EguiPlugin {
+            enable_multipass_for_primary_context: false,
+        })
+        .add_plugins(WireframePlugin::default())
         .insert_resource(HealpixParams {
             depth: 12,
             delta: 0,
@@ -133,6 +135,7 @@ fn main() {
         .insert_resource(AmbientLight {
             color: Color::WHITE,
             brightness: 100.0,
+            affects_lightmapped_meshes: true,
         })
         .add_systems(Startup, setup)
         .add_systems(FixedUpdate, handle_input)
@@ -178,7 +181,7 @@ fn setup(mut commands: Commands) {
         Transform::from_xyz(0.0, 30.0, 0.0),
     ));
     let spawn_cell = commands.register_system(spawn_cell);
-    commands.run_system_with_input(spawn_cell, (0, base));
+    commands.run_system_with(spawn_cell, (0, base));
     commands.insert_resource(Systems { spawn_cell });
 }
 
@@ -188,7 +191,7 @@ fn handle_input(
     speed: Res<MovementSpeed>,
     keys: Res<ButtonInput<KeyCode>>,
     mut mouse: EventReader<MouseMotion>,
-    mut camera: Query<&mut Transform, With<Camera3d>>,
+    mut camera: Single<&mut Transform, With<Camera3d>>,
 ) {
     if keys.just_pressed(KeyCode::Escape) {
         locked.0 = !locked.0;
@@ -196,7 +199,6 @@ fn handle_input(
     if !locked.0 {
         return;
     }
-    let mut camera = camera.single_mut();
     let mut velocity = Vec3::ZERO;
     let mut speed = speed.0;
     if keys.pressed(KeyCode::ControlLeft) {
@@ -253,7 +255,7 @@ fn show_ui(
     mut speed: ResMut<MovementSpeed>,
     mut params: ResMut<HealpixParams>,
     wireframe: Option<ResMut<WireframeConfig>>,
-    mut camera: Query<(&mut Transform, &mut OwningCell), With<Camera3d>>,
+    mut camera: Single<(&mut Transform, &mut OwningCell), With<Camera3d>>,
     cells: Query<
         (
             &OwningCell,
@@ -269,7 +271,7 @@ fn show_ui(
         egui::Area::new(egui::Id::new("HUD"))
             .anchor(egui::Align2::LEFT_TOP, egui::vec2(10.0, 10.0))
             .show(ctx, |ui| {
-                let (trans, cell) = camera.single();
+                let (trans, cell) = &*camera;
                 let layer = healpix::get(params.depth);
                 let LonLat { lon, lat } = geo::absolute(
                     layer.center(cell.0),
@@ -282,7 +284,7 @@ fn show_ui(
                 ), default(), ui.style().visuals.text_color(), 0.0));
             });
     } else {
-        let (mut trans, mut containing) = camera.single_mut();
+        let (ref mut trans, ref mut containing) = *camera;
         egui::Window::new("Position").show(ctx, |ui| {
             if ui
                 .add(
@@ -499,7 +501,7 @@ fn check_cell(
         let Some((new_parent, _)) = cells.iter().find(|c| c.1 .0 == new_hash) else {
             panic!("Cell {new_hash} doesn't exist but an entity wants to be parented to it!");
         };
-        commands.entity(entity).set_parent(new_parent);
+        commands.entity(entity).insert(ChildOf(new_parent));
     }
 }
 
@@ -578,7 +580,7 @@ fn spawn_cell(
             commands.spawn((
                 Camera2d,
                 Camera {
-                    target: bevy::render::camera::RenderTarget::Image(handle.clone()),
+                    target: handle.clone().into(),
                     ..default()
                 },
                 Transform::from_xyz(*translate, 0.0, 0.0),
@@ -594,7 +596,7 @@ fn spawn_cell(
             commands.spawn((
                 Mesh3d(assets.add(Cuboid::new(scale, scale, scale).mesh().build())),
                 MeshMaterial3d(assets.add(StandardMaterial {
-                    base_color: Color::hsv(rand::thread_rng().gen_range(0.0..=360.0), 1.0, 1.0),
+                    base_color: Color::hsv(rand::rng().random_range(0.0..=360.0), 1.0, 1.0),
                     unlit: true,
                     ..default()
                 })),
@@ -605,7 +607,7 @@ fn spawn_cell(
 
 fn load_cells(
     mut commands: Commands,
-    camera: Query<(&OwningCell, &Transform), With<Camera3d>>,
+    camera: Single<(&OwningCell, &Transform), With<Camera3d>>,
     mut cells: Query<
         (Entity, &mut Visibility, &mut Transform, &OwningCell),
         (With<CellCenter>, Without<Camera3d>),
@@ -614,7 +616,7 @@ fn load_cells(
     time: Res<Time>,
     systems: Res<Systems>,
 ) {
-    let (&OwningCell(center), camera) = camera.single();
+    let (&OwningCell(center), camera) = &*camera;
     let base_layer = healpix::get(params.depth);
     let abs = geo::absolute(
         base_layer.center(center),
@@ -659,7 +661,7 @@ fn load_cells(
             ))
             .id();
         info!(%id, hash = center, "spawning cell");
-        commands.run_system_with_input(systems.spawn_cell, (center, id));
+        commands.run_system_with(systems.spawn_cell, (center, id));
     }
     for &cell in base_layer.neighbors(center).values() {
         if set.contains(cell) {
@@ -678,13 +680,12 @@ fn load_cells(
                 ))
                 .id();
             info!(%id, hash = cell, "spawning cell");
-            commands.run_system_with_input(systems.spawn_cell, (cell, id));
+            commands.run_system_with(systems.spawn_cell, (cell, id));
         }
     }
 }
 
-fn render_axes(mut gizmos: Gizmos, camera: Query<&GlobalTransform, With<Camera3d>>) {
-    let camera = camera.single();
+fn render_axes(mut gizmos: Gizmos, camera: Single<&GlobalTransform, With<Camera3d>>) {
     let center = camera.transform_point(-Vec3::Z);
     gizmos.line(center, center + Vec3::X * 0.1, LinearRgba::RED);
     gizmos.line(center, center + Vec3::Y * 0.1, LinearRgba::GREEN);
@@ -695,7 +696,7 @@ fn despawn_system(mut commands: Commands, time: Res<Time>, query: Query<(Entity,
     for (entity, despawn) in query.iter() {
         if despawn.0 > time.elapsed() {
             info!(%entity, "despawning entity");
-            commands.entity(entity).despawn_recursive();
+            commands.entity(entity).despawn();
         }
     }
 }
@@ -717,10 +718,10 @@ fn nan_checks(query: Query<(Entity, &Transform)>) {
 
 fn test_points(
     mut gizmos: Gizmos,
-    camera: Query<&OwningCell, With<Camera3d>>,
+    camera: Single<&OwningCell, With<Camera3d>>,
     params: Res<HealpixParams>,
 ) {
-    let &OwningCell(cell) = camera.single();
+    let OwningCell(cell) = **camera;
     let layer = healpix::get(params.depth);
     let center = layer.center(cell);
     for dx in (-40..=40).map(|x| x as f64 * 0.5) {

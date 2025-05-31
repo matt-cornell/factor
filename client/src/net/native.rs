@@ -15,6 +15,7 @@ use std::task::Poll;
 
 type Inner = WebSocketStream<ClientStream<TcpStream>>;
 pub type ConnectError = tungstenite::Error;
+pub use tungstenite::Bytes;
 
 #[derive(Debug)]
 pub struct WebSocket {
@@ -63,7 +64,7 @@ impl WebSocket {
     }
 }
 impl Stream for WebSocket {
-    type Item = Vec<u8>;
+    type Item = Bytes;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         match self.as_mut().inner_pinned().poll_next(cx) {
@@ -97,6 +98,23 @@ impl Sink<Vec<u8>> for WebSocket {
     type Error = tungstenite::Error;
 
     fn start_send(self: Pin<&mut Self>, item: Vec<u8>) -> Result<(), Self::Error> {
+        self.inner_pinned()
+            .start_send(Message::Binary(Bytes::from_owner(item)))
+    }
+    fn poll_ready(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        self.inner_pinned().poll_ready(cx)
+    }
+    fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        self.inner_pinned().poll_close(cx)
+    }
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        self.inner_pinned().poll_flush(cx)
+    }
+}
+impl Sink<Bytes> for WebSocket {
+    type Error = tungstenite::Error;
+
+    fn start_send(self: Pin<&mut Self>, item: Bytes) -> Result<(), Self::Error> {
         self.inner_pinned().start_send(Message::Binary(item))
     }
     fn poll_ready(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {

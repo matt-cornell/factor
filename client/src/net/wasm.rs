@@ -6,6 +6,8 @@ use std::task::{Context, Poll};
 use thiserror::Error;
 use ws_stream_wasm::{WsErr, WsMessage, WsMeta, WsStream};
 
+pub type Bytes = Vec<u8>;
+
 #[derive(Debug, Error)]
 pub enum ConnectError {
     #[error(transparent)]

@@ -33,54 +33,56 @@ impl Plugin for ClientPlugin {
         fn clear_motion(mut attempt: ResMut<player::AttemptedMotion>) {
             *attempt = default();
         }
-        app.add_plugins(EguiPlugin)
-            .add_plugins(leafwing_input_manager::plugin::InputManagerPlugin::<
-                action::Action,
-            >::default())
-            .init_state::<ClientState>()
-            .init_state::<WorldLoaded>()
-            .add_sub_state::<LoadingFailed>()
-            .add_sub_state::<RenderGame>()
-            .insert_resource(LastState(ClientState::MainMenu))
-            .insert_resource(self.clone())
-            .add_systems(PreStartup, settings::load_config)
-            .add_systems(
-                Update,
+        app.add_plugins(EguiPlugin {
+            enable_multipass_for_primary_context: false,
+        })
+        .add_plugins(leafwing_input_manager::plugin::InputManagerPlugin::<
+            action::Action,
+        >::default())
+        .init_state::<ClientState>()
+        .init_state::<WorldLoaded>()
+        .add_sub_state::<LoadingFailed>()
+        .add_sub_state::<RenderGame>()
+        .insert_resource(LastState(ClientState::MainMenu))
+        .insert_resource(self.clone())
+        .add_systems(PreStartup, settings::load_config)
+        .add_systems(
+            Update,
+            (
+                track_state_changes.run_if(state_changed::<ClientState>),
+                render_main_menu.run_if(in_state(ClientState::MainMenu)),
+                render_mp_select.run_if(in_state(ClientState::MPSelect)),
+                render_settings.run_if(in_state(ClientState::Settings)),
+                render_loading.run_if(in_state(ClientState::WorldLoading)),
+                render_loading_failed.run_if(in_state(LoadingFailed)),
+                render_paused.run_if(in_state(ClientState::Paused)),
                 (
-                    track_state_changes.run_if(state_changed::<ClientState>),
-                    render_main_menu.run_if(in_state(ClientState::MainMenu)),
-                    render_mp_select.run_if(in_state(ClientState::MPSelect)),
-                    render_settings.run_if(in_state(ClientState::Settings)),
-                    render_loading.run_if(in_state(ClientState::WorldLoading)),
-                    render_loading_failed.run_if(in_state(LoadingFailed)),
-                    render_paused.run_if(in_state(ClientState::Paused)),
-                    (
-                        render::handle_keypresses,
-                        render::local_reflect_attempts,
-                        render::autopause,
-                    )
-                        .chain()
-                        .run_if(in_state(ClientState::Running)),
-                    (chunks::update_interest, render::link_camera)
-                        .before(render_paused)
-                        .run_if(in_state(RenderGame).and(settings::with_fps)),
-                ),
-            )
-            .add_systems(OnEnter(WorldLoaded(true)), render::setup_world_render)
-            .add_systems(OnExit(WorldLoaded(true)), render::cleanup_world_render)
-            .add_systems(OnEnter(RenderGame), render::resume_world_render)
-            .add_systems(OnExit(RenderGame), render::pause_world_render)
-            .add_systems(
-                OnEnter(ClientState::Running),
-                (setup_target_fps, render::grab_mouse),
-            )
-            .add_systems(
-                OnExit(ClientState::Running),
-                (limit_target_fps, clear_motion, render::release_mouse)
-                    .before(render::cleanup_world_render),
-            );
+                    render::handle_keypresses,
+                    render::local_reflect_attempts,
+                    render::autopause,
+                )
+                    .chain()
+                    .run_if(in_state(ClientState::Running)),
+                (chunks::update_interest, render::link_camera)
+                    .before(render_paused)
+                    .run_if(in_state(RenderGame).and(settings::with_fps)),
+            ),
+        )
+        .add_systems(OnEnter(WorldLoaded(true)), render::setup_world_render)
+        .add_systems(OnExit(WorldLoaded(true)), render::cleanup_world_render)
+        .add_systems(OnEnter(RenderGame), render::resume_world_render)
+        .add_systems(OnExit(RenderGame), render::pause_world_render)
+        .add_systems(
+            OnEnter(ClientState::Running),
+            (setup_target_fps, render::grab_mouse),
+        )
+        .add_systems(
+            OnExit(ClientState::Running),
+            (limit_target_fps, clear_motion, render::release_mouse)
+                .before(render::cleanup_world_render),
+        );
         #[cfg(not(target_family = "wasm"))]
-        app.add_plugins(bevy::pbr::wireframe::WireframePlugin);
+        app.add_plugins(bevy::pbr::wireframe::WireframePlugin::default());
     }
 }
 

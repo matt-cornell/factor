@@ -303,7 +303,7 @@ fn handle_keypresses(
     if keys.any_pressed([KeyCode::ControlLeft, KeyCode::ControlRight])
         && keys.just_pressed(KeyCode::KeyW)
     {
-        exit_evt.send(AppExit::Success);
+        exit_evt.write(AppExit::Success);
     }
     if keys.just_pressed(KeyCode::KeyS) {
         rotating.0 = !rotating.0;
@@ -326,7 +326,7 @@ fn handle_keypresses(
     if keys.just_pressed(KeyCode::KeyR) {
         commands.remove_resource::<TerrainData>();
         next_state.set(AppState::Healpix);
-        depth_evt.send(DepthChanged);
+        depth_evt.write(DepthChanged);
     }
     match *state.get() {
         AppState::Healpix => {
@@ -350,7 +350,7 @@ fn handle_keypresses(
                     evt = true;
                 }
                 if evt || keys.just_pressed(KeyCode::KeyC) {
-                    depth_evt.send(DepthChanged);
+                    depth_evt.write(DepthChanged);
                 }
             }
         }
@@ -362,7 +362,7 @@ fn handle_keypresses(
                 });
             }
             if keys.just_pressed(KeyCode::KeyC) {
-                recolor_evt.send(RecolorPlates);
+                recolor_evt.write(RecolorPlates);
             }
             if keys.just_pressed(KeyCode::KeyX) {
                 centers.0 = !centers.0;
@@ -415,8 +415,8 @@ fn update_texture(
     data: Res<HealpixPixels>,
     mut images: ResMut<Assets<Image>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
-    mut planet: Query<&mut MeshMaterial3d<StandardMaterial>, With<Planet>>,
-    mut minimap: Query<&mut Sprite, With<MiniMap>>,
+    mut planet: Single<&mut MeshMaterial3d<StandardMaterial>, With<Planet>>,
+    mut minimap: Single<&mut Sprite, With<MiniMap>>,
     terrain: Option<Res<TerrainData>>,
     show_centers: Res<ShowCenters>,
 ) {
@@ -431,7 +431,7 @@ fn update_texture(
         TextureFormat::Rgba8Unorm,
         RenderAssetUsages::RENDER_WORLD,
     );
-    'pixels: for (n, d) in bytemuck::cast_slice_mut(&mut img.data)
+    'pixels: for (n, d) in bytemuck::cast_slice_mut(img.data.as_mut().unwrap())
         .iter_mut()
         .enumerate()
     {
@@ -459,14 +459,13 @@ fn update_texture(
         *d = data.0[map.0[n]].as_u32();
     }
     let image = images.add(img);
-    planet.single_mut().0 = materials.add(StandardMaterial {
+    planet.0 = materials.add(StandardMaterial {
         base_color_texture: Some(image.clone()),
         ..default()
     });
-    minimap.single_mut().image = image;
+    minimap.image = image;
 }
 
-fn rotate_sphere(mut query: Query<&mut Transform, With<Planet>>, time: Res<Time>) {
-    let mut trans = query.single_mut();
-    trans.rotate_y(time.delta_secs() / 2.0);
+fn rotate_sphere(mut query: Single<&mut Transform, With<Planet>>, time: Res<Time>) {
+    query.rotate_y(time.delta_secs() / 2.0);
 }

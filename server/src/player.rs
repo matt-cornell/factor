@@ -1,7 +1,7 @@
 use crate::chunks::{chunk_height, ChunkCorners, ChunkInterest, ChunkLoaded, InterestChanged};
 use crate::config::WorldConfig;
 use crate::tables::PLAYERS;
-use crate::utils::database::{self as redb, Database};
+use crate::utils::database::{self as redb, Database, TableResultExt};
 use crate::utils::random_point_in_quadrilateral;
 use bevy::prelude::*;
 use factor_common::data::{PlayerId, Position};
@@ -106,16 +106,12 @@ pub fn load_player(
     let res: Result<_, redb::Error> = try {
         'load: {
             let txn = db.begin_read()?;
-            match txn.open_table(PLAYERS) {
-                Ok(table) => {
-                    if let Some(player) = table.get(id)? {
-                        if let Some(data) = player.value() {
-                            break 'load data;
-                        }
+            if let Some(table) = txn.open_table(PLAYERS).if_exists()? {
+                if let Some(player) = table.get(id)? {
+                    if let Some(data) = player.value() {
+                        break 'load data;
                     }
                 }
-                Err(redb::TableError::TableDoesNotExist(_)) => {}
-                Err(err) => Err(err)?,
             }
             txn.close()?;
             let txn = db.begin_write()?;

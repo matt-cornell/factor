@@ -1,9 +1,8 @@
 use crate::config::WorldConfig;
 use crate::tables::{NoiseLocation, CHUNKS, HIGH_GRAD_NOISE, HIGH_VALUE_NOISE, TERRAIN};
-use crate::utils::database::Database;
+use crate::utils::database::{Database, TableResultExt};
 use crate::utils::mesh::*;
 use bevy::prelude::*;
-use bevy::utils::{Entry, HashMap};
 use crossbeam_channel::Receiver;
 use factor_common::data::{ChunkId, PlayerId};
 use factor_common::{geo, PLANET_RADIUS};
@@ -14,6 +13,7 @@ use priority_queue::PriorityQueue;
 use rand::prelude::*;
 use redb::ReadableTable as _;
 use serde::{Deserialize, Serialize};
+use std::collections::hash_map::{Entry, HashMap};
 use std::io;
 use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -271,7 +271,7 @@ pub fn handle_interests(
         }
         handle.queue.remove(&chunk);
         if let Some((ChunkLoadingState::Loaded(_), _)) = chunks.chunks.remove(&chunk) {
-            unload.send(UnloadChunk::new(chunk));
+            unload.write(UnloadChunk::new(chunk));
         }
     }
 }
@@ -447,20 +447,16 @@ pub fn loader_interface(
 fn load_chunk(config: &WorldConfig, db: &Database, id: u64) -> Result<ChunkData, redb::Error> {
     {
         let txn = db.begin_read()?;
-        match txn.open_table(CHUNKS) {
-            Ok(table) => {
-                if let Some(chunk) = table.get(id)? {
-                    if let Some(data) = chunk.value() {
-                        drop(table);
-                        txn.close()?;
-                        return Ok(data);
-                    }
+        if let Some(table) = txn.open_table(CHUNKS).if_exists()? {
+            if let Some(chunk) = table.get(id)? {
+                if let Some(data) = chunk.value() {
+                    drop(table);
+                    txn.close()?;
+                    return Ok(data);
                 }
-                drop(table);
-                txn.close()?;
             }
-            Err(redb::TableError::TableDoesNotExist(_)) => {}
-            Err(err) => Err(err)?,
+            drop(table);
+            txn.close()?;
         }
     }
     let (surface, corners) = setup_chunk(config, id, db)?;
@@ -525,11 +521,16 @@ fn get_height(config: &WorldConfig, coords: LonLat, db: &Database) -> Result<f32
                 };
                 let val = match data {
                     either::Left(txn) => {
-                        let opt = match txn.open_table(HIGH_GRAD_NOISE) {
-                            Ok(table) => table.get(loc)?.as_ref().map(redb::AccessGuard::value),
-                            Err(redb::TableError::TableDoesNotExist(_)) => None,
-                            Err(err) => Err(err)?,
-                        };
+                        let opt = txn
+                            .open_table(HIGH_GRAD_NOISE)
+                            .if_exists()?
+                            .and_then(|table| {
+                                table
+                                    .get(loc)
+                                    .map(|g| g.as_ref().map(redb::AccessGuard::value))
+                                    .transpose()
+                            })
+                            .transpose()?;
                         if let Some(v) = opt {
                             data = either::Left(txn);
                             v
@@ -581,11 +582,16 @@ fn get_height(config: &WorldConfig, coords: LonLat, db: &Database) -> Result<f32
                 };
                 let val = match data {
                     either::Left(txn) => {
-                        let opt = match txn.open_table(HIGH_VALUE_NOISE) {
-                            Ok(table) => table.get(loc)?.as_ref().map(redb::AccessGuard::value),
-                            Err(redb::TableError::TableDoesNotExist(_)) => None,
-                            Err(err) => Err(err)?,
-                        };
+                        let opt = txn
+                            .open_table(HIGH_VALUE_NOISE)
+                            .if_exists()?
+                            .and_then(|table| {
+                                table
+                                    .get(loc)
+                                    .map(|g| g.as_ref().map(redb::AccessGuard::value))
+                                    .transpose()
+                            })
+                            .transpose()?;
                         if let Some(v) = opt {
                             data = either::Left(txn);
                             v

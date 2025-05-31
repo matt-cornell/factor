@@ -3,7 +3,6 @@ use bevy::input::mouse::*;
 use bevy::prelude::*;
 use bevy::render::render_asset::RenderAssetUsages;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
-use bevy::window::PrimaryWindow;
 use bevy_egui::{egui, EguiContexts, EguiPlugin};
 use factor_common::healpix;
 use factor_server::terrain::{climate::*, noise::*, tectonic::*};
@@ -356,7 +355,9 @@ fn main() {
             }),
             ..default()
         }))
-        .add_plugins(EguiPlugin)
+        .add_plugins(EguiPlugin {
+            enable_multipass_for_primary_context: false,
+        })
         .init_state::<AppState>()
         .add_sub_state::<SimulatingTectonics>()
         .add_sub_state::<SimulatingClimate>()
@@ -455,30 +456,25 @@ fn setup(
     mut meshes: ResMut<Assets<Mesh>>,
     mut images: ResMut<Assets<Image>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
-    window: Query<Entity, With<PrimaryWindow>>,
     params: Res<OrbitParams>,
 ) {
-    contexts
-        .ctx_for_entity_mut(window.single())
-        .data_mut(|mem| {
-            let data = mem
-                .get_persisted_mut_or_insert_with(egui::Id::new("noise-layers"), || {
-                    NoiseSourceRes {
-                        depth: 6,
-                        layers: vec![
-                            NoiseSourceBuilder::value(1, 0.0, 0.15),
-                            NoiseSourceBuilder::value(1, 0.1, 0.15),
-                            NoiseSourceBuilder::value(2, 0.2, 0.294),
-                            NoiseSourceBuilder::value(2, 0.3, 0.294),
-                            NoiseSourceBuilder::value(3, 0.5, 0.05),
-                            NoiseSourceBuilder::value(3, 0.7, 0.05),
-                            NoiseSourceBuilder::gradient(5, 0.0, 0.01),
-                        ],
-                    }
-                })
-                .clone();
-            commands.insert_resource(data);
-        });
+    contexts.ctx_mut().data_mut(|mem| {
+        let data = mem
+            .get_persisted_mut_or_insert_with(egui::Id::new("noise-layers"), || NoiseSourceRes {
+                depth: 6,
+                layers: vec![
+                    NoiseSourceBuilder::value(1, 0.0, 0.15),
+                    NoiseSourceBuilder::value(1, 0.1, 0.15),
+                    NoiseSourceBuilder::value(2, 0.2, 0.294),
+                    NoiseSourceBuilder::value(2, 0.3, 0.294),
+                    NoiseSourceBuilder::value(3, 0.5, 0.05),
+                    NoiseSourceBuilder::value(3, 0.7, 0.05),
+                    NoiseSourceBuilder::gradient(5, 0.0, 0.01),
+                ],
+            })
+            .clone();
+        commands.insert_resource(data);
+    });
 
     let image = images.add(Image::new(
         Extent3d {
@@ -544,7 +540,7 @@ fn handle_keypresses(
     clicks: Res<ButtonInput<MouseButton>>,
     mut drags: EventReader<MouseMotion>,
     mut scroll: EventReader<MouseWheel>,
-    mut camera_transform: Query<&mut Transform, With<Camera3d>>,
+    mut camera: Single<&mut Transform, With<Camera3d>>,
     state: Res<State<AppState>>,
     mut next_state: ResMut<NextState<AppState>>,
     mut oceans: ResMut<ShowOceans>,
@@ -559,13 +555,12 @@ fn handle_keypresses(
     if keys.any_pressed([KeyCode::ControlLeft, KeyCode::ControlRight])
         && keys.just_pressed(KeyCode::KeyW)
     {
-        exit_evt.send(AppExit::Success);
+        exit_evt.write(AppExit::Success);
     }
     if !has_focus {
         if keys.just_pressed(KeyCode::KeyO) {
             oceans.show = !oceans.show;
         }
-        let mut camera = camera_transform.single_mut();
         if clicks.pressed(MouseButton::Left) {
             for &MouseMotion {
                 delta: Vec2 { x, y },
@@ -575,7 +570,7 @@ fn handle_keypresses(
                 camera.rotation *= rot;
                 camera.translation = rot.mul_vec3(camera.translation);
             }
-            *camera = camera.looking_at(Vec3::ZERO, Vec3::Z);
+            **camera = camera.looking_at(Vec3::ZERO, Vec3::Z);
         } else {
             drags.clear();
         }
@@ -641,7 +636,7 @@ fn update_ui(
         Local<LayerFilter>,
         Local<Arc<OnceLock<String>>>,
     ),
-    (primary, minimap): (Query<Entity, With<PrimaryWindow>>, Res<MiniMap>),
+    minimap: Res<MiniMap>,
     mut reset_climate: EventWriter<ResetClimate>,
 ) {
     if let Some(input) = file_load.get() {
@@ -700,7 +695,7 @@ fn update_ui(
     } = &mut *docked_controls;
     let map_docked = docked_map.0;
     let image = contexts.add_image(minimap.image.clone());
-    let context = contexts.ctx_for_entity_mut(primary.single());
+    let context = contexts.ctx_mut();
     let render_display = {
         let docked = *dock_display;
         let render = |ui: &mut egui::Ui| {
@@ -767,7 +762,7 @@ fn update_ui(
                 let _ = &mut *focus;
             }
             if ui.button("Recolor Plates").clicked() {
-                recolor_plates.send(RecolorPlates);
+                recolor_plates.write(RecolorPlates);
             }
             ui.add(
                 egui::Slider::new(&mut time_scale.0, 0.0..=1000.0)
@@ -917,7 +912,7 @@ fn update_ui(
                 *dock_noise = !*dock_noise;
             }
             if ui.button("Reload All").clicked() {
-                reroll_rand.send(ReloadTerrain);
+                reroll_rand.write(ReloadTerrain);
             }
             if ui
                 .add(
@@ -1202,7 +1197,7 @@ fn update_ui(
                             });
                         }
                         if ui.button("Reset").clicked() {
-                            reset_climate.send(ResetClimate);
+                            reset_climate.write(ResetClimate);
                         }
                     });
                 }
@@ -1657,7 +1652,7 @@ fn update_climate(
     mut climate: ResMut<ClimateData>,
     params: Res<ClimateParams>,
     time: Res<TimeScale>,
-    planet: Query<&GlobalTransform, With<Planet>>,
+    planet: Single<&GlobalTransform, With<Planet>>,
     state: Res<State<AppState>>,
     mut next_state: ResMut<NextState<AppState>>,
     mut metrics: ResMut<ClimateMetrics>,
@@ -1670,7 +1665,6 @@ fn update_climate(
     else {
         return;
     };
-    let planet = planet.single();
     step_climate(
         &mut climate.0,
         |x, y| {
@@ -1727,7 +1721,7 @@ fn update_texture(
     features: Res<ShowFeatures>,
     mut images: ResMut<Assets<Image>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
-    mut planet: Query<(&mut MeshMaterial3d<StandardMaterial>, &GlobalTransform), With<Planet>>,
+    mut planet: Single<(&mut MeshMaterial3d<StandardMaterial>, &GlobalTransform), With<Planet>>,
     mut minimap: ResMut<MiniMap>,
     terrain: Option<Res<TerrainData>>,
 ) {
@@ -1742,8 +1736,8 @@ fn update_texture(
         TextureFormat::Rgba8Unorm,
         RenderAssetUsages::RENDER_WORLD,
     );
-    let (mut planet_material, planet_transform) = planet.single_mut();
-    'pixels: for (n, d) in bytemuck::cast_slice_mut(&mut img.data)
+    let (ref mut planet_material, planet_transform) = *planet;
+    'pixels: for (n, d) in bytemuck::cast_slice_mut(img.data.as_mut().unwrap())
         .iter_mut()
         .enumerate()
     {
@@ -1941,20 +1935,18 @@ fn update_texture(
 }
 
 fn update_positions(
-    mut center: Query<&mut Transform, With<PlanetCenter>>,
-    mut planet: Query<&mut Transform, (With<Planet>, Without<PlanetCenter>)>,
+    mut center: Single<&mut Transform, With<PlanetCenter>>,
+    mut planet: Single<&mut Transform, (With<Planet>, Without<PlanetCenter>)>,
     time: Res<Time>,
     scale: Res<TimeScale>,
     params: Res<OrbitParams>,
     mut last_tilt: Local<f32>,
 ) {
     let delta = time.delta_secs();
-    let mut center = center.single_mut();
     let mut angle = center.translation.xy().to_angle();
     let diff = delta / params.year_length * TAU * scale.0;
     angle += diff;
     center.translation = Vec2::from_angle(angle).extend(0.0) * params.distance;
-    let mut planet = planet.single_mut();
     planet.rotation = Quat::from_rotation_y(params.axial_tilt - *last_tilt)
         * planet.rotation
         * Quat::from_rotation_z(delta / params.day_length * TAU * scale.0);
@@ -1963,16 +1955,16 @@ fn update_positions(
 
 fn reparent_camera(
     mut commands: Commands,
-    camera: Query<Entity, With<Camera3d>>,
-    center: Query<Entity, With<PlanetCenter>>,
-    planet: Query<Entity, (With<Planet>, Without<PlanetCenter>)>,
-    star: Query<Entity, With<PointLight>>,
+    camera: Single<Entity, With<Camera3d>>,
+    center: Single<Entity, With<PlanetCenter>>,
+    planet: Single<Entity, (With<Planet>, Without<PlanetCenter>)>,
+    star: Single<Entity, With<PointLight>>,
     focus: Res<CameraFocus>,
 ) {
     let parent = match *focus {
-        CameraFocus::Planet => center.single(),
-        CameraFocus::Geosync => planet.single(),
-        CameraFocus::Star => star.single(),
+        CameraFocus::Planet => *center,
+        CameraFocus::Geosync => *planet,
+        CameraFocus::Star => *star,
     };
-    commands.entity(camera.single()).set_parent(parent);
+    commands.entity(*camera).insert(ChildOf(parent));
 }

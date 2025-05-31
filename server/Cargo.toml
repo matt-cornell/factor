@@ -43,7 +43,7 @@ wasm-bindgen = "0.2.95"
 web-sys = { version = "0.3.72", features = ["Document", "Storage", "Window", "console"] }
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
-etcetera = "0.8.0"
+etcetera = "0.10.0"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2.162"

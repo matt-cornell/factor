@@ -163,7 +163,6 @@ fn init_terrain_impl<R: Rng + ?Sized>(depth: u8, rng: &mut R) -> TectonicState {
         .iter()
         .enumerate()
         .map(|(n, delta)| {
-            use std::f32::consts::*;
             let c = healpix::geo::absolute(layer.center(n as _), delta.as_dvec2().into());
             let (plate, _) = plates
                 .iter()

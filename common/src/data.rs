@@ -1,7 +1,7 @@
 use crate::PLANET_RADIUS;
 use bevy::ecs::archetype::Archetype;
 use bevy::ecs::component::{ComponentId, Components, Tick};
-use bevy::ecs::query::{FilteredAccess, QueryFilter, WorldQuery};
+use bevy::ecs::query::{FilteredAccess, QueryData, QueryFilter, WorldQuery};
 use bevy::ecs::storage::{Table, TableRow};
 use bevy::prelude::*;
 use healpix::coords::LonLat;
@@ -153,12 +153,10 @@ type PIRef = &'static PlayerId;
 pub struct DefaultPlayer;
 unsafe impl WorldQuery for DefaultPlayer {
     type Fetch<'a> = <PIRef as WorldQuery>::Fetch<'a>;
-    type Item<'a> = ();
     type State = <PIRef as WorldQuery>::State;
 
     const IS_DENSE: bool = false;
 
-    fn shrink<'wlong: 'wshort, 'wshort>(_item: Self::Item<'wlong>) -> Self::Item<'wshort> {}
     fn shrink_fetch<'wlong: 'wshort, 'wshort>(fetch: Self::Fetch<'wlong>) -> Self::Fetch<'wshort> {
         PIRef::shrink_fetch(fetch)
     }
@@ -201,14 +199,6 @@ unsafe impl WorldQuery for DefaultPlayer {
 
     fn get_state(components: &Components) -> Option<Self::State> {
         PIRef::get_state(components)
-    }
-
-    unsafe fn fetch<'w>(
-        fetch: &mut Self::Fetch<'w>,
-        entity: Entity,
-        table_row: TableRow,
-    ) -> Self::Item<'w> {
-        PIRef::fetch(fetch, entity, table_row);
     }
 }
 unsafe impl QueryFilter for DefaultPlayer {

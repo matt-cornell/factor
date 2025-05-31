@@ -172,7 +172,7 @@ pub fn render_main_menu(
                     if ui.add(
                         egui::Button::new(egui::RichText::new("Quit").text_style(egui::TextStyle::Button)).min_size(egui::vec2(ui.max_rect().width(), 0.0))
                     ).clicked() {
-                        exit.send_default();
+                        exit.write_default();
                     }
                 });
             });

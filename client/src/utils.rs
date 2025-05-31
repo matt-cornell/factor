@@ -1,4 +1,4 @@
-use bevy::ecs::world::Command;
+use bevy::ecs::system::Command;
 use bevy::prelude::*;
 use std::future::Future;
 use std::pin::Pin;
