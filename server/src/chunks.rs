@@ -5,9 +5,9 @@ use crate::utils::mesh::*;
 use bevy::prelude::*;
 use bevy::utils::{Entry, HashMap};
 use crossbeam_channel::Receiver;
-use factor_common::coords::{get_absolute, get_relative, LonLat};
 use factor_common::data::{ChunkId, PlayerId};
-use factor_common::{healpix, PLANET_RADIUS};
+use factor_common::{geo, PLANET_RADIUS};
+use healpix::LonLat;
 use itertools::{EitherOrBoth, Itertools};
 use ordered_float::OrderedFloat;
 use priority_queue::PriorityQueue;
@@ -490,11 +490,11 @@ fn get_height(config: &WorldConfig, coords: LonLat, db: &Database) -> Result<f32
     let mut height = {
         let txn = db.begin_read()?;
         let terrain = txn.open_table(TERRAIN)?;
-        let layer = healpix::Layer::new(config.climate.depth);
+        let layer = healpix::get(config.climate.depth);
         let mut sum = 0.0;
         let mut scale = 0.0;
         for (n, w) in layer.bilinear_interpolation(coords) {
-            scale += w;
+            scale += w as f32;
             let h = terrain.get(n)?.ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::InvalidData,
@@ -502,7 +502,7 @@ fn get_height(config: &WorldConfig, coords: LonLat, db: &Database) -> Result<f32
                 )
             })?;
             let cell = h.value();
-            sum += cell.height * w;
+            sum += cell.height * w as f32;
         }
         drop(terrain);
         txn.close()?;
@@ -512,7 +512,7 @@ fn get_height(config: &WorldConfig, coords: LonLat, db: &Database) -> Result<f32
     for (n, noise) in config.noise.local.iter().enumerate() {
         let mut coords = coords;
         coords.lon -= noise.shift as f64;
-        let layer = healpix::Layer::new(noise.depth);
+        let layer = healpix::get(noise.depth);
         let mut sum = 0.0;
         let mut scale = 0.0;
         let grad_scale = ((1 << (noise.depth * 2)) as f32).recip() * 0.5;
@@ -568,10 +568,10 @@ fn get_height(config: &WorldConfig, coords: LonLat, db: &Database) -> Result<f32
                     }
                 };
                 sum += Vec2::from(val)
-                    .dot(get_relative(c, coords).as_vec2())
+                    .dot(geo::relative(c, coords).as_vec2())
                     .mul_add(grad_scale, 0.5)
-                    * w;
-                scale += w;
+                    * w as f32;
+                scale += w as f32;
             }
         } else {
             for (cell, w) in layer.bilinear_interpolation(coords) {
@@ -623,8 +623,8 @@ fn get_height(config: &WorldConfig, coords: LonLat, db: &Database) -> Result<f32
                         val
                     }
                 };
-                sum += w;
-                scale += val * w;
+                sum += w as f32;
+                scale += val * w as f32;
             }
         }
         height += sum / scale;
@@ -646,14 +646,14 @@ fn setup_chunk(
     hash: u64,
     db: &Database,
 ) -> Result<(MeshData, [Vec2; 4]), redb::Error> {
-    let center = healpix::Layer::new(12).center(hash >> 8);
-    let chunk_corners = healpix::Layer::new(16)
+    let center = healpix::get(12).center(hash >> 8);
+    let chunk_corners = healpix::get(16)
         .vertices(hash)
-        .map(|abs| (get_relative(center, abs) * PLANET_RADIUS).as_vec2()); // SENW
+        .map(|abs| (geo::relative(center, abs) * PLANET_RADIUS).as_vec2()); // SENW
     let mesh = try_mesh_quad(chunk_corners, 64, move |MeshPoint { abs, .. }| {
         get_height(
             config,
-            get_absolute(center, abs.as_dvec2() / PLANET_RADIUS),
+            geo::absolute(center, abs.as_dvec2() / PLANET_RADIUS),
             db,
         )
     });

@@ -1,3 +1,4 @@
+use ::healpix::LonLat;
 use bevy::math::Vec2;
 use factor_common::healpix;
 use rand::prelude::*;
@@ -50,8 +51,7 @@ pub struct TectonicCell {
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct TectonicPlate {
-    pub center_lat: f32,
-    pub center_long: f32,
+    pub center: LonLat,
     pub height: f32,
     pub base_height: f32,
     pub density: u32,
@@ -66,8 +66,10 @@ impl Distribution<TectonicPlate> for StandardUniform {
         let density = rng.random_range(100..=200) + u32::from(rng.random_bool(0.6)) * 125;
         let height = rng.random_range(-0.05..=0.05) - (density - 100) as f32 * 0.00005;
         TectonicPlate {
-            center_lat: rng.random_range(-1.0f32..1.0).asin(),
-            center_long: rng.random_range(-PI..=PI),
+            center: LonLat::from_f32s(
+                rng.random_range(-PI..=PI),
+                rng.random_range(-1.0f32..1.0).asin(),
+            ),
             base_height: height,
             height,
             density,
@@ -109,7 +111,7 @@ struct QualityMetrics {
 /// Initialize a plate setup without any quality metrics
 fn init_terrain_impl<R: Rng + ?Sized>(depth: u8, rng: &mut R) -> TectonicState {
     let noise = Normal::new(0.0, 0.5).unwrap();
-    let layer = healpix::nested::get(depth);
+    let layer = healpix::get(depth);
     let len = layer.n_hash() as _;
     let nplates = rng.random_range(12..=14);
     let mut changes = rng
@@ -162,21 +164,11 @@ fn init_terrain_impl<R: Rng + ?Sized>(depth: u8, rng: &mut R) -> TectonicState {
         .enumerate()
         .map(|(n, delta)| {
             use std::f32::consts::*;
-            let (long, lat) = layer.center(n as _);
-            let (lat, long) = (lat as f32, long as f32 + delta.x);
-            let lat = (lat + PI) % TAU - PI + delta.y;
+            let c = healpix::geo::absolute(layer.center(n as _), delta.as_dvec2().into());
             let (plate, _) = plates
                 .iter()
                 .enumerate()
-                .map(|(i, p)| {
-                    (
-                        i as u8,
-                        (lat - p.center_lat).powi(2)
-                            + (long - p.center_long)
-                                .min(TAU - long + p.center_long)
-                                .powi(2),
-                    )
-                })
+                .map(|(i, p)| (i as u8, healpix::geo::distance(c, p.center)))
                 .min_by(|a, b| a.1.total_cmp(&b.1))
                 .unwrap();
             let cell = TectonicCell {
@@ -245,13 +237,13 @@ fn step_terrain_impl<R: Rng + ?Sized>(
     use std::f64::consts::*;
     let mountain_spread = Normal::new(0.0, 2.0f32.powi(state.depth as _) * 0.00001).unwrap();
     let mountain_height = Normal::new(0.1, 0.02).unwrap();
-    let layer = healpix::nested::get(state.depth);
+    let layer = healpix::get(state.depth);
     let plate_scale = 0.25f32.powi(state.depth as i32);
     debug_assert_eq!(layer.n_hash(), state.cells.len() as u64);
     for i in state.boundaries.iter() {
         let cell = state.cells[i as usize];
         let plate = state.plates[cell.plate as usize];
-        let set = healpix::neighbors(state.depth, i, true);
+        let set = layer.neighbors(i);
         {
             let cell = &mut state.cells[i as usize];
             if let CellFeature {
@@ -267,19 +259,18 @@ fn step_terrain_impl<R: Rng + ?Sized>(
                 cell.height = new;
             }
         }
-        for &c2 in &set {
+        for &c2 in set.values() {
             let other = state.cells[c2 as usize];
             let p2 = other.plate;
             let plate2 = state.plates[p2 as usize];
-            let (lon1, lat1) = layer.center(i);
+            let [lon1, lat1] = layer.center(i).as_f64s();
             let dot = -plate.motion.dot(plate2.motion);
             if dot < 0.01 {
                 continue; // they aren't opposed enough to be interesting
             }
-            if (plate.center_long - plate2.center_long) * (plate.motion.x - plate2.motion.x)
-                + (plate.center_lat - plate2.center_lat) * (plate.motion.y - plate2.motion.y)
-                > 0.0
-            {
+            let delta = plate.motion - plate2.motion;
+            let offset = factor_common::geo::relative(plate2.center, plate.center).as_vec2();
+            if delta.dot(offset) > 0.0 {
                 // divergent
                 metrics.diverge += 1;
                 metrics.bits |= 1 << (lon1 % TAU / FRAC_PI_4) as u8;
@@ -299,7 +290,7 @@ fn step_terrain_impl<R: Rng + ?Sized>(
                     cell.height += 0.2 * dot;
                     cell.height = cell.height.min(5.0);
                     state.plates[cell.plate as usize].height -= plate_scale * 2.0;
-                    let (lon2, lat2) = layer.center(c2);
+                    let [lon2, lat2] = layer.center(c2).as_f64s();
                     let pos1 = Vec2::new(lon1 as _, lat1 as _);
                     let delta = (Vec2::new(lon2 as _, lat2 as _) - pos1).normalize_or_zero();
                     let diff = plate.motion.normalize_or_zero() * 0.25 + delta * 0.25;
@@ -310,10 +301,10 @@ fn step_terrain_impl<R: Rng + ?Sized>(
                     state.plates[other.plate as usize].height += plate_scale * 5.0;
                     for n in 0..4 {
                         let Vec2 { x, y } = pos1 + diff * (n as f32) * 0.25;
-                        let new = layer.hash(
+                        let new = layer.hash([
                             ((x as f64 + PI) % TAU) - PI,
                             (y as f64).clamp(-FRAC_PI_2, FRAC_PI_2),
-                        );
+                        ]);
                         if new == i {
                             continue;
                         }
@@ -347,7 +338,7 @@ fn step_terrain_impl<R: Rng + ?Sized>(
                     cell.height -= 0.4 * dot;
                     cell.height = cell.height.max(-5.0);
                     state.plates[cell.plate as usize].height -= plate_scale * 2.0;
-                    let (lon2, lat2) = layer.center(c2);
+                    let [lon2, lat2] = layer.center(c2).as_f32s();
                     let pos1 = Vec2::new(lon1 as _, lat1 as _);
                     let delta = (Vec2::new(lon2 as _, lat2 as _) - pos1).normalize_or_zero();
                     let diff = plate.motion.normalize_or_zero() * 0.25 + delta * 0.25;
@@ -358,10 +349,10 @@ fn step_terrain_impl<R: Rng + ?Sized>(
                     state.plates[other.plate as usize].height += plate_scale;
                     for n in 0..3 {
                         let Vec2 { x, y } = pos1 + diff * (n as f32).mul_add(0.25, 0.5);
-                        let new = layer.hash(
+                        let new = layer.hash([
                             ((x as f64 + PI) % TAU) - PI,
                             (y as f64).clamp(-FRAC_PI_2, FRAC_PI_2),
-                        );
+                        ]);
                         if new == i {
                             continue;
                         }

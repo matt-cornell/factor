@@ -85,7 +85,7 @@ fn cell_noise(gradient: bool, depth: u8, shift: f32) -> Shifted<ValueOrGradient>
             hasher: rand::rng()
                 .sample_iter(rand_distr::UnitCircle)
                 .map(|[x, y]| Vec2::new(x, y))
-                .take(healpix::n_hash(depth) as _)
+                .take(healpix::checked::n_hash(depth) as _)
                 .collect::<Box<[Vec2]>>(),
             scale: linear,
         })
@@ -94,7 +94,7 @@ fn cell_noise(gradient: bool, depth: u8, shift: f32) -> Shifted<ValueOrGradient>
             depth,
             hasher: rand::rng()
                 .sample_iter(rand_distr::StandardUniform)
-                .take(healpix::n_hash(depth) as _)
+                .take(healpix::checked::n_hash(depth) as _)
                 .collect::<Box<[f32]>>(),
             scale: linear,
         })

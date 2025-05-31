@@ -372,16 +372,17 @@ fn handle_keypresses(
 }
 
 fn update_healpix(mut commands: Commands, depth: Res<HealpixDepth>) {
+    let layer = healpix::get(depth.0);
     let start_data = rand::rng()
         .sample_iter(RandomColor)
-        .take(cdshealpix::n_hash(depth.0) as _)
+        .take(layer.n_hash() as _)
         .collect::<Box<[_]>>();
     let image_map = (0..(WIDTH * HEIGHT))
         .map(|i| {
             use std::f64::consts::*;
             let x = ((i % WIDTH) as f64).mul_add(TAU / WIDTH as f64, -PI);
             let y = ((i / WIDTH) as f64).mul_add(-PI / HEIGHT as f64, FRAC_PI_2);
-            cdshealpix::nested::hash(depth.0, x, y) as usize
+            layer.hash([x, y]) as usize
         })
         .collect();
 
@@ -441,7 +442,7 @@ fn update_texture(
                 let cx = ((n % WIDTH) as f32).mul_add(TAU / WIDTH as f32, -PI);
                 let cy = ((n / WIDTH) as f32).mul_add(-PI / HEIGHT as f32, FRAC_PI_2);
                 for (plate, color) in state.plates().iter().zip(colors) {
-                    let sqdist = (cx - plate.center_long).powi(2) + (cy - plate.center_lat).powi(2);
+                    let sqdist = Vec2::new(cx, cy).distance_squared(plate.center.as_f32s().into());
                     if sqdist < 0.005 {
                         *d = color.as_u32();
                         continue 'pixels;
